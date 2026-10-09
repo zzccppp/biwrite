@@ -71,7 +71,8 @@ pub fn run() {
                 cache.clone(),
                 sink,
                 EngineSettings {
-                    concurrency: settings.concurrency,
+                    concurrency: settings.effective_concurrency(),
+                    batch_size: settings.batch_size,
                     ..EngineSettings::default()
                 },
                 tauri::async_runtime::handle().inner().clone(),
@@ -115,6 +116,11 @@ pub fn run() {
             settings_commands::remove_api_key,
             settings_commands::clear_api_key,
             settings_commands::key_status,
+            settings_commands::list_api_keys,
+            settings_commands::rename_api_key,
+            settings_commands::test_api_key,
+            settings_commands::set_batch_size,
+            settings_commands::set_match_pool,
             settings_commands::set_assistant_provider,
             settings_commands::set_active_provider,
             settings_commands::test_provider,

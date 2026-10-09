@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use biwrite_core::glossary::{self, Glossary};
@@ -29,6 +30,9 @@ pub struct EngineSettings {
     pub backoff_max: Duration,
     /// Minimum interval between streamed partial updates per segment.
     pub stream_throttle: Duration,
+    /// Segments translated together in one request (1: one per request).
+    /// Only fresh translations are batched, never revisions of an edit.
+    pub batch_size: usize,
 }
 
 impl Default for EngineSettings {
@@ -42,9 +46,13 @@ impl Default for EngineSettings {
             backoff_base: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
             stream_throttle: Duration::from_millis(50),
+            batch_size: 1,
         }
     }
 }
+
+/// Largest batch the settings allow.
+pub const MAX_BATCH: usize = 8;
 
 /// Translation bookkeeping for one segment.
 #[derive(Debug)]
@@ -75,6 +83,8 @@ pub(crate) struct SegMeta {
     pub placeholder: bool,
     /// Fingerprint of the glossary entries `translation` was made with.
     pub glossary_fp: u64,
+    /// A batch had no usable answer for this segment: send it on its own.
+    pub single: bool,
 }
 
 impl SegMeta {
@@ -93,6 +103,7 @@ impl SegMeta {
             exact: false,
             placeholder: false,
             glossary_fp: 0,
+            single: false,
         }
     }
 
@@ -140,6 +151,15 @@ pub(crate) struct Running {
     /// Fingerprint of the glossary entries sent with the request.
     pub glossary_fp: u64,
     pub abort: AbortHandle,
+    /// Set when the request carries other segments too.
+    pub batch: Option<Arc<BatchLink>>,
+}
+
+/// Shared by the segments of one batch request: the request is aborted
+/// only when every one of them has been cancelled.
+#[derive(Debug)]
+pub(crate) struct BatchLink {
+    pub live: AtomicUsize,
 }
 
 pub(crate) struct State {
@@ -230,15 +250,34 @@ impl State {
         }
     }
 
-    /// Drop any queued or in-flight job for `id`.
+    /// Drop any queued or in-flight job for `id`. A batch request goes on
+    /// for its other segments, and the result for `id` is discarded.
     pub fn cancel(&mut self, id: SegmentId) {
         self.queue.retain(|q| *q != id);
         if let Some(running) = self.running.remove(&id) {
-            running.abort.abort();
+            let last = running
+                .batch
+                .as_ref()
+                .is_none_or(|link| link.live.fetch_sub(1, Ordering::SeqCst) == 1);
+            if last {
+                running.abort.abort();
+            }
             if let Some(meta) = self.meta.get_mut(&id) {
                 meta.generation += 1;
             }
         }
+    }
+
+    /// Provider requests in flight (a batch counts once).
+    pub fn requests_in_flight(&self) -> usize {
+        let mut batches = HashSet::new();
+        self.running
+            .values()
+            .filter(|r| match &r.batch {
+                None => true,
+                Some(link) => batches.insert(Arc::as_ptr(link)),
+            })
+            .count()
     }
 
     pub fn cancel_all(&mut self) {

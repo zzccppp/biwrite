@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use biwrite_engine::{
-    BoxFuture, PartialFn, TokenUsage, TranslateError, TranslationOutput, TranslationRequest,
-    Translator,
+    BatchOutput, BatchPartialFn, BoxFuture, PartialFn, TokenUsage, TranslateError,
+    TranslationOutput, TranslationRequest, Translator,
 };
 use reqwest::RequestBuilder;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
@@ -255,6 +255,43 @@ impl HttpProvider {
         })
     }
 
+    async fn translate_many(
+        &self,
+        reqs: &[TranslationRequest],
+        on_partial: BatchPartialFn<'_>,
+    ) -> Result<BatchOutput, TranslateError> {
+        let Some(first) = reqs.first() else {
+            return Ok(BatchOutput {
+                texts: Vec::new(),
+                usage: TokenUsage::default(),
+            });
+        };
+        let messages = prompt::build_batch(reqs, self.core.prompts.system_prompt(first.direction));
+        // Each block of the streamed answer goes to its own segment.
+        let show = |visible: &str| {
+            for b in prompt::batch_blocks(visible) {
+                if let Some(i) = b.n.checked_sub(1).filter(|&i| i < reqs.len()) {
+                    on_partial(i, &b.text);
+                }
+            }
+        };
+        let out = self
+            .exchange(TRANSLATE, &messages.system, &messages.user, &show)
+            .await?;
+        let texts = prompt::parse_batch(&out.text, reqs.len())
+            .into_iter()
+            .zip(reqs)
+            .map(|(text, req)| {
+                text.map(|t| clean_output(&t, &req.source))
+                    .filter(|t| !t.is_empty())
+            })
+            .collect();
+        Ok(BatchOutput {
+            texts,
+            usage: out.usage,
+        })
+    }
+
     async fn complete_one(
         &self,
         req: &ChatRequest,
@@ -293,6 +330,14 @@ impl Translator for HttpProvider {
         on_partial: PartialFn<'a>,
     ) -> BoxFuture<'a, Result<TranslationOutput, TranslateError>> {
         Box::pin(self.translate_one(request, on_partial))
+    }
+
+    fn translate_batch<'a>(
+        &'a self,
+        requests: &'a [TranslationRequest],
+        on_partial: BatchPartialFn<'a>,
+    ) -> BoxFuture<'a, Result<BatchOutput, TranslateError>> {
+        Box::pin(self.translate_many(requests, on_partial))
     }
 }
 

@@ -13,6 +13,8 @@ use crate::request_log::LogSettings;
 
 pub const MOCK_ID: &str = "mock";
 const DEFAULT_CONCURRENCY: usize = 4;
+/// Most parallel requests (a large key pool can carry this many).
+pub const MAX_CONCURRENCY: usize = 32;
 
 /// A configured provider plus non-secret key status.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -27,6 +29,9 @@ pub struct ProviderEntry {
     /// ignore it and read `has_key`.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub key_count: usize,
+    /// Names of the pool's keys, by key fingerprint (never the key itself).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub key_names: BTreeMap<String, String>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -47,6 +52,11 @@ pub struct AppSettings {
     /// provider.
     pub assistant_provider: String,
     pub request_log: LogSettings,
+    /// Paragraphs translated together in one request (1: one per request).
+    pub batch_size: usize,
+    /// With a per-key limit, run as many requests as the pool carries
+    /// (keys × limit) instead of `concurrency`.
+    pub match_pool: bool,
 }
 
 impl Default for AppSettings {
@@ -59,6 +69,8 @@ impl Default for AppSettings {
             glossary: Vec::new(),
             assistant_provider: String::new(),
             request_log: LogSettings::default(),
+            batch_size: 1,
+            match_pool: true,
         }
     }
 }
@@ -80,6 +92,7 @@ fn mock_entry() -> ProviderEntry {
         },
         has_key: false,
         key_count: 0,
+        key_names: BTreeMap::new(),
     }
 }
 
@@ -112,8 +125,22 @@ impl AppSettings {
                 (true, n) => n,
             };
         }
-        self.concurrency = self.concurrency.clamp(1, 16);
+        self.concurrency = self.concurrency.clamp(1, MAX_CONCURRENCY);
+        self.batch_size = self.batch_size.clamp(1, biwrite_engine::MAX_BATCH);
         self
+    }
+
+    /// Parallel requests for the active provider: its whole key pool
+    /// (keys × per-key limit) when it has a limit and `match_pool` is on,
+    /// else the `concurrency` setting.
+    pub fn effective_concurrency(&self) -> usize {
+        let active = self.active();
+        match (self.match_pool, active.config.key_concurrency) {
+            (true, Some(per_key)) if active.key_count > 0 => {
+                (active.key_count * per_key as usize).clamp(1, MAX_CONCURRENCY)
+            }
+            _ => self.concurrency,
+        }
     }
 
     /// Record how many keys provider `id` now has.
@@ -204,6 +231,8 @@ pub struct ProviderView {
     pub config: ProviderConfig,
     pub has_key: bool,
     pub key_count: usize,
+    /// Key names by fingerprint.
+    pub key_names: BTreeMap<String, String>,
     pub builtin: bool,
     pub needs_key: bool,
 }
@@ -229,6 +258,10 @@ pub struct SettingsView {
     /// The assistant has a real model (not the offline mock).
     pub assistant_ready: bool,
     pub request_log: LogSettings,
+    pub batch_size: usize,
+    pub match_pool: bool,
+    /// Parallel requests in effect (see `AppSettings::effective_concurrency`).
+    pub effective_concurrency: usize,
 }
 
 pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> SettingsView {
@@ -241,6 +274,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
                 config: p.config.clone(),
                 has_key: p.has_key,
                 key_count: p.key_count,
+                key_names: p.key_names.clone(),
                 builtin: p.config.id == MOCK_ID,
                 needs_key: p.config.kind.needs_key(),
             })
@@ -256,6 +290,9 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         assistant_label: label(&settings.assistant().config),
         assistant_ready: settings.assistant().config.kind != ProviderKind::Mock,
         request_log: settings.request_log,
+        batch_size: settings.batch_size,
+        match_pool: settings.match_pool,
+        effective_concurrency: settings.effective_concurrency(),
     }
 }
 
@@ -309,6 +346,7 @@ mod tests {
             },
             has_key: true,
             key_count: 2,
+            key_names: BTreeMap::new(),
         }
     }
 
@@ -341,7 +379,7 @@ mod tests {
         .unwrap();
         let repaired = load(&path);
         assert_eq!(repaired.active_provider, MOCK_ID);
-        assert_eq!(repaired.concurrency, 16);
+        assert_eq!(repaired.concurrency, MAX_CONCURRENCY);
 
         // Corrupt files are moved aside.
         std::fs::write(&path, "{not json").unwrap();
@@ -450,6 +488,24 @@ mod tests {
         ));
         assert!(old.providers[1].has_key);
         assert_eq!(old.providers[1].config.id, "p-relay");
+    }
+
+    #[test]
+    fn parallel_requests_follow_the_key_pool() {
+        let mut s = AppSettings::default();
+        let mut relay = deepseek();
+        relay.config.key_concurrency = Some(2);
+        relay.key_count = 6;
+        s.providers.push(relay);
+        s.active_provider = "p-1".into();
+        assert_eq!(s.effective_concurrency(), 12);
+        s.match_pool = false;
+        assert_eq!(s.effective_concurrency(), DEFAULT_CONCURRENCY);
+        s.match_pool = true;
+        s.provider_mut("p-1").unwrap().key_count = 40;
+        assert_eq!(s.effective_concurrency(), MAX_CONCURRENCY);
+        s.provider_mut("p-1").unwrap().config.key_concurrency = None;
+        assert_eq!(s.effective_concurrency(), DEFAULT_CONCURRENCY);
     }
 
     #[test]

@@ -387,3 +387,45 @@ async fn a_dropped_request_is_recorded_as_cancelled() {
     assert_eq!(recs.len(), 1);
     assert_eq!(recs[0].state, RecordState::Cancelled);
 }
+
+#[tokio::test]
+async fn several_paragraphs_share_one_request() {
+    let server = MockServer::start().await;
+    server.push(ok(&[
+        "<translation n=\"1\">第一段。</translation>\n",
+        "<translation n=\"2\">第二",
+        "段。</translation>\n<translation n=\"3\">第三段。</translation>",
+    ]));
+    let (p, records) = provider(&server, &[KEY_A]);
+    let reqs: Vec<TranslationRequest> = ["One.", "Two.", "Three."]
+        .iter()
+        .map(|s| request(s))
+        .collect();
+    let seen = Mutex::new(Vec::<(usize, String)>::new());
+    let out = p
+        .translate_batch(&reqs, &|i, text| {
+            seen.lock().unwrap().push((i, text.to_owned()))
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        out.texts,
+        vec![
+            Some("第一段。".into()),
+            Some("第二段。".into()),
+            Some("第三段。".into())
+        ]
+    );
+    assert_eq!(server.requests().len(), 1);
+    let body = server.requests()[0].json();
+    let input = body["input"][0]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        input.contains("<source n=\"3\">\nThree.\n</source>"),
+        "{input}"
+    );
+    // Streaming reached each paragraph separately, the second while open.
+    let seen = seen.lock().unwrap();
+    assert!(seen.contains(&(1, "第二".to_owned())), "{seen:?}");
+    assert!(seen.contains(&(2, "第三段。".to_owned())));
+    assert_eq!(records.finished().len(), 1);
+}

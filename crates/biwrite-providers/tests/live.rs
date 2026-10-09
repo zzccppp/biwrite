@@ -252,3 +252,52 @@ async fn anyrouter_pool_carries_parallel_paragraphs() {
     }
     assert_eq!(ok, results.len());
 }
+
+#[tokio::test]
+#[ignore = "needs BIWRITE_LIVE_ANYROUTER_KEYS and network access"]
+async fn anyrouter_translates_three_paragraphs_in_one_request() {
+    let Some(keys) = pool_keys() else {
+        eprintln!("BIWRITE_LIVE_ANYROUTER_KEYS is not set; skipping");
+        return;
+    };
+    let records = Arc::new(Records::default());
+    let provider = build_http(
+        &anyrouter_config("live-batch"),
+        Arc::new(move || Ok(keys.clone())),
+        Arc::new(DefaultPrompts),
+        records.clone(),
+    )
+    .unwrap();
+    let reqs: Vec<TranslationRequest> = [
+        "We evaluate on ⟦0⟧ datasets and report the mean over ⟦1⟧ runs.",
+        "Results",
+        "The method keeps ⟦0⟧ fixed and tunes only the threshold.",
+    ]
+    .iter()
+    .map(|s| TranslationRequest {
+        source: (*s).into(),
+        ..Default::default()
+    })
+    .collect();
+    let mut last = None;
+    for attempt in 0..8u32 {
+        match provider.translate_batch(&reqs, &|_, _| {}).await {
+            Ok(out) => {
+                for (i, t) in out.texts.iter().enumerate() {
+                    println!("{}: {:?}", i + 1, t);
+                }
+                assert!(out.texts.iter().all(Option::is_some), "{:?}", out.texts);
+                assert!(out.texts[0].as_deref().unwrap().contains("⟦1⟧"));
+                last = None;
+                break;
+            }
+            Err(e) if e.is_retryable() => {
+                println!("attempt {attempt}: {e}");
+                last = Some(e);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(last.is_none(), "{last:?}");
+}

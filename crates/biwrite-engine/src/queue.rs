@@ -1,7 +1,8 @@
 //! Job dispatch: concurrency limit, per-segment generations, streaming,
 //! exponential backoff, and applying results.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use biwrite_core::{ContentHash, Protector, SegmentId, glossary, similarity};
@@ -11,8 +12,11 @@ use crate::cache::CacheKey;
 use crate::engine::Inner;
 use crate::events::SegmentStatus;
 use crate::random::random_between;
-use crate::state::{Running, SegError, State};
+use crate::state::{BatchLink, MAX_BATCH, Priority, Running, SegError, State};
 use crate::translator::{Revision, TokenUsage, TranslateError, TranslationRequest, Translator};
+
+/// How far down the queue a batch looks for segments to join it.
+const BATCH_LOOKAHEAD: usize = 32;
 
 /// A dispatched translation request.
 pub(crate) struct Job {
@@ -55,17 +59,60 @@ pub(crate) fn backoff_delay(
 }
 
 impl Inner {
-    /// Start queued jobs until the concurrency limit is reached.
+    /// Start queued jobs until the concurrency limit (provider requests in
+    /// flight) is reached. With a batch size above one, fresh translations
+    /// queued together go out in one request.
     pub(crate) fn pump(self: &Arc<Self>, st: &mut State) {
-        while st.running.len() < st.settings.concurrency.max(1) {
+        while st.requests_in_flight() < st.settings.concurrency.max(1) {
             let Some(id) = st.queue.pop_front() else {
                 break;
             };
-            let Some(job) = prepare_job(st, id) else {
+            let size = st.settings.batch_size.clamp(1, MAX_BATCH);
+            if size > 1 && batchable(st, id) {
+                let mut ids = vec![id];
+                let mut i = 0;
+                while ids.len() < size && i < st.queue.len().min(BATCH_LOOKAHEAD) {
+                    let candidate = st.queue[i];
+                    if batchable(st, candidate) {
+                        st.queue.remove(i);
+                        ids.push(candidate);
+                    } else {
+                        i += 1;
+                    }
+                }
+                let jobs: Vec<Job> = ids
+                    .into_iter()
+                    .filter_map(|id| prepare_job(st, id))
+                    .collect();
+                self.spawn_jobs(st, jobs);
                 continue;
-            };
-            let (generation, hash, glossary_fp) = (job.generation, job.hash, job.key.glossary);
-            let handle = self.runtime.spawn(run_job(Arc::clone(self), job));
+            }
+            if let Some(job) = prepare_job(st, id) {
+                self.spawn_jobs(st, vec![job]);
+            }
+        }
+    }
+
+    /// Run prepared jobs: one alone, several as one batch request.
+    fn spawn_jobs(self: &Arc<Self>, st: &mut State, mut jobs: Vec<Job>) {
+        let members: Vec<(SegmentId, u64, ContentHash, u64)> = jobs
+            .iter()
+            .map(|j| (j.id, j.generation, j.hash, j.key.glossary))
+            .collect();
+        let (handle, batch) = match jobs.len() {
+            0 => return,
+            1 => match jobs.pop() {
+                Some(job) => (self.runtime.spawn(run_job(Arc::clone(self), job)), None),
+                None => return,
+            },
+            n => (
+                self.runtime.spawn(run_batch(Arc::clone(self), jobs)),
+                Some(Arc::new(BatchLink {
+                    live: AtomicUsize::new(n),
+                })),
+            ),
+        };
+        for (id, generation, hash, glossary_fp) in members {
             st.running.insert(
                 id,
                 Running {
@@ -73,6 +120,7 @@ impl Inner {
                     hash,
                     glossary_fp,
                     abort: handle.abort_handle(),
+                    batch: batch.clone(),
                 },
             );
         }
@@ -109,6 +157,52 @@ impl Inner {
 
     fn finish_job(self: &Arc<Self>, job: Job, result: Result<String, TranslateError>) {
         let mut st = self.lock();
+        self.apply_result(&mut st, job, result);
+        self.pump(&mut st);
+        self.emit_after(st);
+    }
+
+    /// Settle a batch: usable answers are applied like single results,
+    /// segments without one go back to the queue to be sent on their own.
+    fn finish_batch(self: &Arc<Self>, jobs: Vec<Job>, outcomes: Vec<Outcome>) {
+        let mut st = self.lock();
+        let mut alone = Vec::new();
+        for (job, outcome) in jobs.into_iter().zip(outcomes) {
+            match outcome {
+                Outcome::Done(text) => self.apply_result(&mut st, job, Ok(text)),
+                Outcome::Failed(e) => self.apply_result(&mut st, job, Err(e)),
+                Outcome::Alone => {
+                    if st
+                        .running
+                        .get(&job.id)
+                        .is_some_and(|r| r.generation == job.generation)
+                    {
+                        st.running.remove(&job.id);
+                    }
+                    if is_current(&st, &job) {
+                        st.update(job.id, |m| {
+                            m.single = true;
+                            m.partial = None;
+                        });
+                        alone.push(job.id);
+                    }
+                }
+            }
+        }
+        if !alone.is_empty() {
+            st.notices.push(format!(
+                "{} paragraph(s) of a batch came back unusable; translating them one by one",
+                alone.len()
+            ));
+            st.enqueue_all(&alone, Priority::Urgent);
+        }
+        self.pump(&mut st);
+        self.emit_after(st);
+    }
+
+    /// Record one segment's result: cache it, and show it if the segment
+    /// still has the text it was made for.
+    fn apply_result(&self, st: &mut State, job: Job, result: Result<String, TranslateError>) {
         if st
             .running
             .get(&job.id)
@@ -116,11 +210,7 @@ impl Inner {
         {
             st.running.remove(&job.id);
         }
-        let current = st
-            .meta
-            .get(&job.id)
-            .is_some_and(|m| m.generation == job.generation)
-            && st.doc.get(job.id).is_some_and(|s| s.hash == job.hash);
+        let current = is_current(st, &job);
 
         match result {
             Ok(text) => {
@@ -144,6 +234,7 @@ impl Inner {
                         m.partial = None;
                         m.error = None;
                         m.forced = false;
+                        m.single = false;
                     });
                 }
             }
@@ -162,8 +253,10 @@ impl Inner {
                 }
             }
         }
+    }
 
-        self.pump(&mut st);
+    /// Deliver the states touched by a finished job and the usage.
+    fn emit_after(&self, mut st: MutexGuard<'_, State>) {
         let states = st.take_touched();
         let usage = st.usage;
         self.release(st);
@@ -172,6 +265,61 @@ impl Inner {
         }
         self.sink.usage(&usage);
     }
+}
+
+/// The segment still exists with the text the job was made for, and no
+/// newer job replaced it.
+fn is_current(st: &State, job: &Job) -> bool {
+    st.meta
+        .get(&job.id)
+        .is_some_and(|m| m.generation == job.generation)
+        && st.doc.get(job.id).is_some_and(|s| s.hash == job.hash)
+}
+
+/// What a batch request gave one of its segments.
+enum Outcome {
+    Done(String),
+    Failed(TranslateError),
+    /// No usable answer: send the segment on its own.
+    Alone,
+}
+
+/// Previous source and translation to revise, if the segment has a real
+/// translation of similar older text.
+fn revise_basis(
+    st: &State,
+    id: SegmentId,
+    source: &str,
+    hash: ContentHash,
+) -> Option<(String, String)> {
+    let meta = st.meta.get(&id)?;
+    // Revise mode needs a real previous translation of similar text. Mock
+    // output is only a stand-in, and an unchanged source with a current
+    // translation means an explicit retranslate: start fresh.
+    match (&meta.translation, &meta.translated_source) {
+        (Some(old_translation), Some(old_source))
+            if meta.translated_hash != Some(hash)
+                && !meta.placeholder
+                && !old_translation.is_empty()
+                && similarity(old_source, source) > st.settings.revise_threshold =>
+        {
+            Some((old_source.clone(), old_translation.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// A fresh translation that may share a request with others: edits keep
+/// their own request so revise mode stays minimal.
+fn batchable(st: &State, id: SegmentId) -> bool {
+    let Some(seg) = st.doc.get(id) else {
+        return false;
+    };
+    if !seg.kind().is_translatable() || st.meta.get(&id).is_none_or(|m| m.single) {
+        return false;
+    }
+    let source = seg.segment.content(st.doc.text());
+    !source.trim().is_empty() && revise_basis(st, id, source, seg.hash).is_none()
 }
 
 /// Build the request from the *current* document state and mark the segment
@@ -195,21 +343,8 @@ fn prepare_job(st: &mut State, id: SegmentId) -> Option<Job> {
     let context_after = neighbor(&mut (idx + 1..segments.len()));
     let hash = seg.hash;
 
-    let meta = st.meta.get(&id)?;
-    // Revise mode needs a real previous translation of similar text. Mock
-    // output is only a stand-in, and an unchanged source with a current
-    // translation means an explicit retranslate: start fresh.
-    let previous = match (&meta.translation, &meta.translated_source) {
-        (Some(old_translation), Some(old_source))
-            if meta.translated_hash != Some(hash)
-                && !meta.placeholder
-                && !old_translation.is_empty()
-                && similarity(old_source, &source) > st.settings.revise_threshold =>
-        {
-            Some((old_source.clone(), old_translation.clone()))
-        }
-        _ => None,
-    };
+    st.meta.get(&id)?;
+    let previous = revise_basis(st, id, &source, hash);
     // Old and new text share one numbering, so unchanged math keeps its
     // placeholder in all three texts.
     let mut protector = Protector::new(st.doc.mode());
@@ -329,6 +464,78 @@ async fn run_job(inner: Arc<Inner>, job: Job) {
         }
     };
     inner.finish_job(job, result);
+}
+
+/// One request for several segments. Transient errors retry the whole
+/// batch with backoff. Each segment's answer is restored with its own
+/// placeholders; a segment without a usable answer is sent again alone.
+async fn run_batch(inner: Arc<Inner>, jobs: Vec<Job>) {
+    let Some(first) = jobs.first() else {
+        return;
+    };
+    let translator = Arc::clone(&first.translator);
+    let retry = first.retry;
+    let throttle = first.stream_throttle;
+    let requests: Vec<TranslationRequest> = jobs.iter().map(|j| j.request.clone()).collect();
+    let last_emit: Vec<Mutex<Option<Instant>>> = jobs.iter().map(|_| Mutex::new(None)).collect();
+    let on_partial = |i: usize, partial: &str| {
+        let (Some(job), Some(last)) = (jobs.get(i), last_emit.get(i)) else {
+            return;
+        };
+        let due = {
+            let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
+            let now = Instant::now();
+            let due = last.is_none_or(|t| now.duration_since(t) >= throttle);
+            if due {
+                *last = Some(now);
+            }
+            due
+        };
+        if due {
+            let shown = job.protector.restore_partial(partial);
+            inner.publish_partial(job.id, job.generation, Some(shown));
+        }
+    };
+    let discard_partials = || {
+        for job in &jobs {
+            inner.publish_partial(job.id, job.generation, None);
+        }
+    };
+
+    let mut retries: u32 = 0;
+    let result = loop {
+        let attempt = translator.translate_batch(&requests, &on_partial).await;
+        let usage = attempt.as_ref().map(|out| out.usage).unwrap_or_default();
+        inner.count_request(usage);
+        match attempt {
+            Ok(out) => break Ok(out.texts),
+            Err(e) if e.is_retryable() && retries < retry.max_retries => {
+                let delay = backoff_delay(retries, e.retry_after(), retry);
+                inner
+                    .sink
+                    .notice(&format!("{e}; retrying in {:.1}s", delay.as_secs_f32()));
+                discard_partials();
+                tokio::time::sleep(delay).await;
+                retries += 1;
+            }
+            Err(e) => break Err(e),
+        }
+    };
+    let outcomes = match result {
+        Ok(texts) => jobs
+            .iter()
+            .enumerate()
+            .map(|(i, job)| match texts.get(i).cloned().flatten() {
+                Some(text) => match job.protector.restore(&text) {
+                    Ok(text) => Outcome::Done(text),
+                    Err(_) => Outcome::Alone,
+                },
+                None => Outcome::Alone,
+            })
+            .collect(),
+        Err(e) => jobs.iter().map(|_| Outcome::Failed(e.clone())).collect(),
+    };
+    inner.finish_batch(jobs, outcomes);
 }
 
 #[cfg(test)]

@@ -57,6 +57,19 @@ pub struct TranslationOutput {
     pub usage: TokenUsage,
 }
 
+/// Result of a batch request: one entry per request, `None` where the
+/// answer held no usable translation of that segment (it is then retried
+/// on its own).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchOutput {
+    pub texts: Vec<Option<String>>,
+    pub usage: TokenUsage,
+}
+
+/// Streaming callback of a batch: the segment's position in the batch and
+/// its whole visible output so far.
+pub type BatchPartialFn<'a> = &'a (dyn Fn(usize, &str) + Send + Sync);
+
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TranslateError {
     #[error("rate limited by the provider")]
@@ -124,4 +137,25 @@ pub trait Translator: Send + Sync {
         request: &'a TranslationRequest,
         on_partial: PartialFn<'a>,
     ) -> BoxFuture<'a, Result<TranslationOutput, TranslateError>>;
+
+    /// Translate several segments in one request (the "paragraphs per
+    /// request" setting). The default translates them one after another,
+    /// so a translator without batch support still works.
+    fn translate_batch<'a>(
+        &'a self,
+        requests: &'a [TranslationRequest],
+        on_partial: BatchPartialFn<'a>,
+    ) -> BoxFuture<'a, Result<BatchOutput, TranslateError>> {
+        Box::pin(async move {
+            let mut texts = Vec::with_capacity(requests.len());
+            let mut usage = TokenUsage::default();
+            for (i, request) in requests.iter().enumerate() {
+                let out = self.translate(request, &|p| on_partial(i, p)).await?;
+                usage.input_tokens += out.usage.input_tokens;
+                usage.output_tokens += out.usage.output_tokens;
+                texts.push(Some(out.text));
+            }
+            Ok(BatchOutput { texts, usage })
+        })
+    }
 }

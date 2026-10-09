@@ -8,13 +8,15 @@ use std::time::Duration;
 use biwrite_core::Direction;
 use biwrite_engine::TranslationRequest;
 use biwrite_providers::prompt::{default_prompt, prompt_file_name};
-use biwrite_providers::{KeyStatus, ProviderConfig, ProviderKind, key_tail, list_models};
+use biwrite_providers::{
+    KeyStatus, ProviderConfig, ProviderKind, key_fingerprint, key_tail, list_models,
+};
 use serde::Serialize;
 use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::provider_state::translator_for;
-use crate::secrets::{self, MAX_KEYS};
+use crate::secrets::{self, MAX_KEYS, NamedKey};
 use crate::settings::{MOCK_ID, ProviderEntry, SettingsView};
 use crate::state::AppState;
 
@@ -101,6 +103,7 @@ pub async fn save_provider(
                 config,
                 has_key: false,
                 key_count: 0,
+                key_names: Default::default(),
             }),
             None => return Err(not_found(&id)),
         }
@@ -147,40 +150,65 @@ pub async fn delete_provider(
     Ok(state.settings_view())
 }
 
-fn parse_keys(text: &str) -> CommandResult<Vec<String>> {
-    secrets::parse_keys(text).map_err(CommandError::Settings)
+fn parse_named(text: &str) -> CommandResult<Vec<NamedKey>> {
+    secrets::parse_named_keys(text).map_err(CommandError::Settings)
 }
 
-/// Replace the provider's keys with the pasted ones (one or more, one per
-/// line). Keys go to the OS keychain. Write-only: no command returns keys.
+/// Remember the names written next to pasted keys (by fingerprint).
+fn remember_names(state: &AppState, id: &str, keys: &[NamedKey]) {
+    let mut s = state.settings();
+    if let Some(entry) = s.provider_mut(id) {
+        for k in keys {
+            if let Some(name) = &k.name {
+                entry
+                    .key_names
+                    .insert(key_fingerprint(&k.key), name.trim().to_owned());
+            }
+        }
+    }
+}
+
+/// Replace the provider's keys with the pasted ones: one or more, each
+/// optionally named (`name` on the line before the key, or `name: key`).
+/// Keys go to the OS keychain. Write-only: no command returns keys.
 #[tauri::command]
 pub async fn set_api_key(
     state: State<'_, AppState>,
     id: String,
     key: String,
 ) -> CommandResult<SettingsView> {
-    let keys = parse_keys(&key)?;
+    let named = parse_named(&key)?;
     if state.settings().provider(&id).is_none() {
         return Err(not_found(&id));
     }
+    let keys: Vec<String> = named.iter().map(|k| k.key.clone()).collect();
     let count = keys.len();
     let store = state.secrets.clone();
     let account = id.clone();
     blocking(move || secrets::set_keys(store.as_ref(), &account, &keys)).await?;
+    {
+        let mut s = state.settings();
+        if let Some(entry) = s.provider_mut(&id) {
+            entry.key_names.clear();
+        }
+    }
+    remember_names(&state, &id, &named);
     update_key_count(&state, &id, count)
 }
 
-/// Add the pasted keys to the provider's pool (duplicates are skipped).
+/// Add the pasted keys (optionally named) to the provider's pool;
+/// duplicates are skipped.
 #[tauri::command]
 pub async fn add_api_keys(
     state: State<'_, AppState>,
     id: String,
     keys: String,
 ) -> CommandResult<SettingsView> {
-    let added = parse_keys(&keys)?;
+    let named = parse_named(&keys)?;
     if state.settings().provider(&id).is_none() {
         return Err(not_found(&id));
     }
+    let added: Vec<String> = named.iter().map(|k| k.key.clone()).collect();
     let store = state.secrets.clone();
     let account = id.clone();
     let count = blocking(move || {
@@ -197,7 +225,147 @@ pub async fn add_api_keys(
         Ok(pool.len())
     })
     .await?;
+    remember_names(&state, &id, &named);
     update_key_count(&state, &id, count)
+}
+
+/// One key of a pool as the key manager shows it (never the key itself).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyEntryView {
+    pub number: usize,
+    pub fingerprint: String,
+    pub tail: String,
+    pub name: String,
+    /// `ready`, `cooling`, `rejected`, or `idle` before the first request.
+    pub state: String,
+    pub in_flight: u32,
+    pub detail: Option<String>,
+}
+
+/// The keys of provider `id` with their names and live state. Reads the
+/// keychain, so it is only called when the key manager opens.
+#[tauri::command]
+pub async fn list_api_keys(
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<Vec<KeyEntryView>> {
+    let names = state
+        .settings()
+        .provider(&id)
+        .ok_or_else(|| not_found(&id))?
+        .key_names
+        .clone();
+    let store = state.secrets.clone();
+    let account = id.clone();
+    let keys = blocking(move || secrets::get_keys(store.as_ref(), &account)).await?;
+    let live = state.key_status(&id).unwrap_or_default();
+    Ok(keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| {
+            let fingerprint = key_fingerprint(key);
+            let status = live.iter().find(|s| s.fingerprint == fingerprint);
+            KeyEntryView {
+                number: i + 1,
+                name: names.get(&fingerprint).cloned().unwrap_or_default(),
+                tail: key_tail(key),
+                state: status.map_or("idle", |s| s.state).to_owned(),
+                in_flight: status.map_or(0, |s| s.in_flight),
+                detail: status.and_then(|s| s.detail.clone()),
+                fingerprint,
+            }
+        })
+        .collect())
+}
+
+/// Name (or rename) the key with this fingerprint. An empty name removes it.
+#[tauri::command]
+pub async fn rename_api_key(
+    state: State<'_, AppState>,
+    id: String,
+    fingerprint: String,
+    name: String,
+) -> CommandResult<SettingsView> {
+    {
+        let mut s = state.settings();
+        let entry = s.provider_mut(&id).ok_or_else(|| not_found(&id))?;
+        let name: String = name.trim().chars().take(40).collect();
+        if name.is_empty() {
+            entry.key_names.remove(&fingerprint);
+        } else {
+            entry.key_names.insert(fingerprint, name);
+        }
+        state.persist(&s)?;
+    }
+    Ok(state.settings_view())
+}
+
+/// Translate the test sentence with one key of the pool only.
+#[tauri::command]
+pub async fn test_api_key(
+    state: State<'_, AppState>,
+    id: String,
+    fingerprint: String,
+) -> CommandResult<String> {
+    let entry = state
+        .settings()
+        .provider(&id)
+        .cloned()
+        .ok_or_else(|| not_found(&id))?;
+    let store = state.secrets.clone();
+    let account = id.clone();
+    let key = blocking(move || secrets::get_keys(store.as_ref(), &account))
+        .await?
+        .into_iter()
+        .find(|k| key_fingerprint(k) == fingerprint)
+        .ok_or_else(|| CommandError::Settings("that key is no longer in the pool".into()))?;
+    let provider = biwrite_providers::build_http(
+        &entry.config,
+        std::sync::Arc::new(move || Ok(vec![key.clone()])),
+        state.prompts(),
+        state.request_log.clone(),
+    )?;
+    let request = TranslationRequest {
+        source: TEST_SENTENCE.to_owned(),
+        ..Default::default()
+    };
+    let run = biwrite_engine::Translator::translate(provider.as_ref(), &request, &|_| {});
+    match tokio::time::timeout(Duration::from_secs(120), run).await {
+        Ok(result) => Ok(result?.text),
+        Err(_) => Err(CommandError::Settings(
+            "no answer within 120 seconds".into(),
+        )),
+    }
+}
+
+/// Paragraphs per translation request (1: one per request).
+#[tauri::command]
+pub async fn set_batch_size(
+    state: State<'_, AppState>,
+    size: usize,
+) -> CommandResult<SettingsView> {
+    let size = size.clamp(1, biwrite_engine::MAX_BATCH);
+    {
+        let mut s = state.settings();
+        s.batch_size = size;
+        state.persist(&s)?;
+    }
+    state.engine.set_batch_size(size);
+    Ok(state.settings_view())
+}
+
+/// Let parallel requests follow the key pool (keys × per-key limit).
+#[tauri::command]
+pub async fn set_match_pool(state: State<'_, AppState>, on: bool) -> CommandResult<SettingsView> {
+    let effective = {
+        let mut s = state.settings();
+        s.match_pool = on;
+        state.persist(&s)?;
+        s.effective_concurrency()
+    };
+    state.engine.set_concurrency(effective);
+    Ok(state.settings_view())
 }
 
 /// Remove key `number` (1-based) of the pool, if it still ends in `tail`.
@@ -215,16 +383,18 @@ pub async fn remove_api_key(
     let account = id.clone();
     let count = blocking(move || {
         let mut pool = secrets::get_keys(store.as_ref(), &account)?;
-        match number.checked_sub(1).filter(|&i| i < pool.len()) {
-            Some(i) if key_tail(&pool[i]) == tail => {
-                pool.remove(i);
-            }
+        let removed = match number.checked_sub(1).filter(|&i| i < pool.len()) {
+            Some(i) if key_tail(&pool[i]) == tail => pool.remove(i),
             _ => return Err("the keys have changed; reopen the settings and try again".into()),
-        }
+        };
         secrets::set_keys(store.as_ref(), &account, &pool)?;
-        Ok(pool.len())
+        Ok((pool.len(), key_fingerprint(&removed)))
     })
     .await?;
+    let (count, fingerprint) = count;
+    if let Some(entry) = state.settings().provider_mut(&id) {
+        entry.key_names.remove(&fingerprint);
+    }
     update_key_count(&state, &id, count)
 }
 
@@ -357,13 +527,14 @@ pub async fn set_concurrency(
     state: State<'_, AppState>,
     concurrency: usize,
 ) -> CommandResult<SettingsView> {
-    let n = concurrency.clamp(1, 16);
-    {
+    let n = concurrency.clamp(1, crate::settings::MAX_CONCURRENCY);
+    let effective = {
         let mut s = state.settings();
         s.concurrency = n;
         state.persist(&s)?;
-    }
-    state.engine.set_concurrency(n);
+        s.effective_concurrency()
+    };
+    state.engine.set_concurrency(effective);
     Ok(state.settings_view())
 }
 

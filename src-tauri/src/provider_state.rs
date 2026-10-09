@@ -84,6 +84,8 @@ impl AppState {
             self.request_log.clone(),
         )?;
         self.engine.set_translator(built.translator);
+        self.engine
+            .set_concurrency(settings.effective_concurrency());
         self.set_translation_http(settings.active().config.id.clone(), built.http);
         log::info!("provider: {}", settings::label(&settings.active().config));
         Ok(())

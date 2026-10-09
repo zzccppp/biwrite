@@ -369,6 +369,15 @@ impl Engine {
         self.emit_touched(st);
     }
 
+    /// Segments sent together in one request (1: one per request). Only
+    /// fresh translations are combined.
+    pub fn set_batch_size(&self, n: usize) {
+        let mut st = self.inner.lock();
+        st.settings.batch_size = n.clamp(1, crate::state::MAX_BATCH);
+        self.inner.pump(&mut st);
+        self.emit_touched(st);
+    }
+
     pub fn set_doc_note(&self, note: Option<String>) {
         self.inner.lock().settings.doc_note = note.filter(|n| !n.trim().is_empty());
     }
