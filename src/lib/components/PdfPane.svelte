@@ -24,7 +24,9 @@
     onclosemenu: () => void;
     /** Show the PDF of another language (built if it never was). */
     onlang: (lang: PdfLang) => void;
-    /** Save the Chinese version as a .tex file. */
+    /** The language of the file on disk; the other PDF is built from the translation. */
+    fileLang: PdfLang;
+    /** Save the translation (the other language) as a .tex file. */
     onexporttex: () => void;
   }
 
@@ -41,8 +43,11 @@
     onopenfile,
     onclosemenu,
     onlang,
+    fileLang,
     onexporttex,
   }: Props = $props();
+
+  const exportLabel = $derived(fileLang === "en" ? t("pdf.exportTex") : t("pdf.exportTexEn"));
 
   const ZOOM_KEY = "biwrite.pdf.zoom";
   const mod = navigator.platform.toLowerCase().includes("mac") ? "⌘" : "Ctrl+";
@@ -359,8 +364,8 @@
     <button class="icon" onclick={() => latexIpc.savePdf(lang).catch(() => {})} disabled={!doc} title={t("pdf.save")} aria-label={t("pdf.save")}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5V10M5.5 7.5 8 10l2.5-2.5M3 11v2.5h10V11" /></svg>
     </button>
-    {#if lang === "zh"}
-      <button class="icon" onclick={onexporttex} disabled={!compilable} title={t("pdf.exportTex")} aria-label={t("pdf.exportTex")}>
+    {#if lang !== fileLang}
+      <button class="icon" onclick={onexporttex} disabled={!compilable} title={exportLabel} aria-label={exportLabel}>
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5.5L12 5v8.5H4zM9.5 2.5V5H12M6 9.5h4M8 7.5v4" /></svg>
       </button>
     {/if}
@@ -372,7 +377,7 @@
   {#if build && (showProblems || build.outcome !== "ok") && (build.issues.length || build.outcome !== "ok")}
     <div class="problems">
       {#if build.stale && build.outcome !== "ok" && build.hasPdf}<p class="note">{t("pdf.stale")}</p>{/if}
-      {#if lang === "zh" && build.untranslated > 0}<p class="note">{t("pdf.untranslated", { n: build.untranslated })}</p>{/if}
+      {#if lang !== fileLang && build.untranslated > 0}<p class="note">{t("pdf.untranslated", { n: build.untranslated })}</p>{/if}
       <ul>
         {#each build.issues.slice(0, 80) as issue, i (i)}
           <li>
@@ -389,7 +394,7 @@
         {#if showOutput}<pre class="output">{build.output.slice(-6000)}</pre>{/if}
       {/if}
     </div>
-  {:else if lang === "zh" && build && build.untranslated > 0}
+  {:else if lang !== fileLang && build && build.untranslated > 0}
     <div class="problems"><p class="note">{t("pdf.untranslated", { n: build.untranslated })}</p></div>
   {/if}
 

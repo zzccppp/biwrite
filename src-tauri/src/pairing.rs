@@ -8,11 +8,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use biwrite_core::lang::{chinese_share, written_in};
 use biwrite_core::pair::{Edit, Origin, align, patch, units};
 use biwrite_core::{Direction, Mode, SegmentId, TextFile};
 use serde::Serialize;
 use tauri::{AppHandle, WebviewWindow};
 
+use crate::commands::home_text;
 use crate::error::{CommandError, CommandResult};
 use crate::files;
 use crate::state::{AppState, SessionView, display_name};
@@ -64,22 +66,7 @@ fn fail(message: impl Into<String>) -> CommandError {
     CommandError::Settings(message.into())
 }
 
-/// The text is mostly Chinese.
-pub fn is_chinese(text: &str) -> bool {
-    cjk_share(text) > 0.3
-}
-
-fn cjk_share(text: &str) -> f64 {
-    let (mut cjk, mut letters) = (0usize, 0usize);
-    for c in text.chars() {
-        if matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF) {
-            cjk += 1;
-        } else if c.is_ascii_alphabetic() {
-            letters += 1;
-        }
-    }
-    cjk as f64 / (cjk + letters / 5).max(1) as f64
-}
+pub use biwrite_core::lang::is_chinese;
 
 /// Folder names of a language and their counterparts.
 const FOLDERS: &[(&str, &str)] = &[
@@ -155,7 +142,7 @@ pub fn load_paired(
             pairing.a_units.max(pairing.b_units)
         )));
     }
-    let direction = if cjk_share(text) > cjk_share(&other) {
+    let direction = if chinese_share(text) > chinese_share(&other) {
         Direction::ZhEn
     } else {
         Direction::EnZh
@@ -215,6 +202,11 @@ pub fn open(
     state.engine.set_doc_note(Some(state.note_for(Some(&path))));
     let mode = Mode::from_path(&path);
     let mut pair = None;
+    // A Chinese file is the Chinese side: translated into English.
+    let alone = |state: &AppState, text: &str| {
+        let home = written_in(text, mode).unwrap_or_default();
+        state.engine.load_known(text.to_owned(), mode, home, Vec::new())
+    };
     let snapshot = match mirror {
         Some((mirror_path, mirror)) => {
             match load_paired(state, &path, file.text(), mode, mirror_path, mirror) {
@@ -224,18 +216,24 @@ pub fn open(
                 }
                 Err(e) => {
                     log::info!("not paired: {e}");
-                    state.engine.load(file.text().to_owned(), mode)
+                    alone(state, file.text())
                 }
             }
         }
-        None => state.engine.load(file.text().to_owned(), mode),
+        None => alone(state, file.text()),
     };
-    log::info!("opened {} ({:?})", display_name(Some(&path)), snapshot.mode);
+    log::info!(
+        "opened {} ({:?}, {})",
+        display_name(Some(&path)),
+        snapshot.mode,
+        snapshot.direction.as_str()
+    );
     *state.file() = crate::state::FileState {
         path: Some(path),
         file,
         dirty: false,
         pair,
+        home: snapshot.direction,
     };
     snapshot
 }
@@ -479,10 +477,15 @@ pub async fn import_mirror(
     }
     let mirror = files::read_text_file(mirror_path.clone()).await?;
     let mode = state.engine.mode();
+    // The file's own text: the editor's, or composed from the translations
+    // while the other language is edited.
+    let text = home_text(&state, text)?;
     let (snapshot, pair) = load_paired(&state, &path, &text, mode, mirror_path, mirror)?;
     let dirty = {
         let mut fs = state.file();
         fs.pair = Some(pair);
+        fs.home = snapshot.direction;
+        fs.dirty = text != fs.file.text();
         fs.dirty
     };
     let mut view = state.session_view(snapshot);
@@ -569,6 +572,7 @@ pub fn swap(state: &AppState, text: String) -> CommandResult<SessionView> {
         let old_file = std::mem::take(&mut fs.file);
         fs.path = Some(old_pair.path);
         fs.file = old_pair.file;
+        fs.home = direction;
         fs.dirty = new_text != fs.file.text();
         fs.pair = old_path.map(|path| PairState {
             path,
@@ -648,12 +652,5 @@ mod tests {
             p("draft_zh-2.tex")
         );
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn chinese_share() {
-        assert!(cjk_share("我们研究表格数据清洗。") > 0.9);
-        assert!(cjk_share("We study tabular data cleaning.") < 0.1);
-        assert!(cjk_share("我们使用 TabPFN 和 CARVEPrep 方法。") > 0.5);
     }
 }

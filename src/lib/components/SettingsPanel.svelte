@@ -146,6 +146,19 @@
       </div>
     </section>
 
+    <section id="window">
+      <h3 class="smallcaps">{t("settings.window")}</h3>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={settings.closeToTray}
+          onchange={(e) => run(() => settingsIpc.setCloseToTray(e.currentTarget.checked))}
+        />
+        <span>{t("settings.closeToTray")}</span>
+      </label>
+      <p class="explain">{t("settings.closeToTrayHint")}</p>
+    </section>
+
     <section>
       <h3 class="smallcaps">{t("settings.provider")}</h3>
       <ul class="providers" role="radiogroup" aria-label={t("settings.provider")}>

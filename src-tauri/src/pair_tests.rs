@@ -15,7 +15,7 @@ use crate::secrets::{MemoryStore, SecretStore};
 use crate::settings::{AppSettings, Paths};
 use crate::state::AppState;
 
-fn app_state(dir: &Path) -> AppState {
+pub(crate) fn app_state(dir: &Path) -> AppState {
     let engine = Engine::new(
         Arc::new(MockTranslator::with_delay(
             Duration::from_millis(1),
@@ -43,7 +43,7 @@ fn app_state(dir: &Path) -> AppState {
     )
 }
 
-async fn settle(state: &AppState) {
+pub(crate) async fn settle(state: &AppState) {
     for _ in 0..2000 {
         if state.engine.pending() == 0 {
             return;

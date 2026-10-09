@@ -473,6 +473,28 @@ pub async fn set_check_updates(
     Ok(state.settings_view())
 }
 
+/// Close to the tray (hide the window) or quit when the window is closed.
+#[tauri::command]
+pub async fn set_close_to_tray(
+    state: State<'_, AppState>,
+    tray: State<'_, crate::tray::Tray>,
+    on: bool,
+) -> CommandResult<SettingsView> {
+    {
+        let mut s = state.settings();
+        s.close_to_tray = on;
+        state.persist(&s)?;
+    }
+    tray.set_visible(on);
+    Ok(state.settings_view())
+}
+
+/// The tray menu follows the interface language ("zh" or "en").
+#[tauri::command]
+pub fn set_tray_language(tray: State<'_, crate::tray::Tray>, lang: String) {
+    tray.set_language(lang == "zh");
+}
+
 /// Remove key `number` (1-based) of the pool, if it still ends in `tail`.
 #[tauri::command]
 pub async fn remove_api_key(

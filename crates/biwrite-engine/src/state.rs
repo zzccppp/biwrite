@@ -5,13 +5,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use biwrite_core::compose::fit;
 use biwrite_core::glossary::{self, Glossary};
 use biwrite_core::utf16::byte_to_utf16;
-use biwrite_core::{ContentHash, Direction, DocumentModel, GlossaryEntry, Protector, SegmentId};
+use biwrite_core::{ContentHash, Direction, DocumentModel, Protector, SegmentId};
 use tokio::task::AbortHandle;
 
 use crate::cache::CacheKey;
-use crate::events::{SegmentLayout, SegmentState, SegmentStatus, SessionUsage, Snapshot};
+use crate::events::{Fill, SegmentLayout, SegmentState, SegmentStatus, SessionUsage, Snapshot};
 use crate::translator::Translator;
 
 /// User-tunable engine behaviour.
@@ -85,6 +86,11 @@ pub(crate) struct SegMeta {
     pub glossary_fp: u64,
     /// A batch had no usable answer for this segment: send it on its own.
     pub single: bool,
+    /// Still written in the language of the translations (left so by an
+    /// early swap): while the segment's hash is this one, it is translated
+    /// into the edited language and replaced in the editor, and its own
+    /// translation stays the exact original.
+    pub fill: Option<ContentHash>,
 }
 
 impl SegMeta {
@@ -104,6 +110,7 @@ impl SegMeta {
             placeholder: false,
             glossary_fp: 0,
             single: false,
+            fill: None,
         }
     }
 
@@ -182,6 +189,8 @@ pub(crate) struct State {
     pub touched: Vec<SegmentId>,
     /// Non-fatal messages to surface after the lock is released.
     pub notices: Vec<String>,
+    /// Paragraphs for the editor to replace, sent after the lock is released.
+    pub fills: Vec<Fill>,
 }
 
 impl State {
@@ -201,33 +210,45 @@ impl State {
             usage: SessionUsage::default(),
             touched: Vec::new(),
             notices: Vec::new(),
+            fills: Vec::new(),
         }
     }
 
     pub fn cache_key(&self, hash: ContentHash, glossary_fp: u64) -> CacheKey {
+        self.cache_key_toward(self.direction, hash, glossary_fp)
+    }
+
+    /// Cache key of a translation in `direction` (the other way round for
+    /// a paragraph still in the language of the translations).
+    pub fn cache_key_toward(
+        &self,
+        direction: Direction,
+        hash: ContentHash,
+        glossary_fp: u64,
+    ) -> CacheKey {
         CacheKey {
             hash,
-            direction: self.direction,
+            direction,
             provider: self.translator.provider().to_owned(),
             model: self.translator.model().to_owned(),
             glossary: glossary_fp,
         }
     }
 
-    /// Glossary entries to send with `masked` (a segment's text with
-    /// protected spans masked, so terms inside citation keys or math don't
-    /// count).
-    pub fn glossary_for_masked(&self, masked: &str) -> Vec<GlossaryEntry> {
-        self.glossary.relevant(masked, self.direction)
-    }
-
     /// Fingerprint of the entries a segment with this text gets.
     pub fn glossary_fp(&self, content: &str) -> u64 {
+        self.glossary_fp_toward(self.direction, content)
+    }
+
+    /// [`Self::glossary_fp`] for a translation in `direction`. Entries are
+    /// matched on the text with protected spans masked, so terms inside
+    /// citation keys or math don't count.
+    pub fn glossary_fp_toward(&self, direction: Direction, content: &str) -> u64 {
         if self.glossary.is_empty() {
             return 0;
         }
         let masked = Protector::new(self.doc.mode()).mask(content);
-        glossary::fingerprint(&self.glossary_for_masked(&masked))
+        glossary::fingerprint(&self.glossary.relevant(&masked, direction))
     }
 
     /// Mutate a segment's meta, bump its version and mark it for emission.
@@ -238,6 +259,55 @@ impl State {
             meta.version = self.version_seq;
             self.touched.push(id);
         }
+    }
+
+    /// Replace a paragraph still in the language of the translations with
+    /// `translation` (into the edited language): the editor is sent the new
+    /// text (a [`Fill`]), and once it arrives the paragraph's translation is
+    /// its present text, exactly.
+    pub fn fill(&mut self, id: SegmentId, translation: &str) {
+        let Some(seg) = self.doc.get(id) else {
+            return;
+        };
+        let text = self.doc.text();
+        let (range, content) = (seg.segment.range.clone(), seg.segment.content.clone());
+        let present = text[content.clone()].to_owned();
+        let shaped = fit(translation.trim(), seg.kind(), self.doc.mode(), &present);
+        let fill = (!shaped.trim().is_empty() && shaped != present).then(|| Fill {
+            id,
+            old: text[range.clone()].to_owned(),
+            new: format!(
+                "{}{shaped}{}",
+                &text[range.start..content.start],
+                &text[content.end..range.end]
+            ),
+        });
+        let hash = ContentHash::of(&shaped);
+        if fill.is_some() {
+            // Also by content, in case the paragraph's ID changes on the way.
+            self.seeds
+                .entry(hash)
+                .and_modify(|known| {
+                    if known.as_deref() != Some(present.as_str()) {
+                        *known = None;
+                    }
+                })
+                .or_insert_with(|| Some(present.clone()));
+        }
+        let current = seg.hash;
+        self.update(id, |m| {
+            m.fill = None;
+            m.forced = false;
+            m.partial = None;
+            m.error = None;
+            if m.translated_hash == Some(current) {
+                m.status = SegmentStatus::Translated;
+            }
+            if fill.is_some() {
+                m.seed = Some((hash, present));
+            }
+        });
+        self.fills.extend(fill);
     }
 
     /// Set a status (and clear transient fields) only if it differs.

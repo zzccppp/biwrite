@@ -14,6 +14,7 @@ import type {
   ClearedView,
   Direction,
   ExportView,
+  Fill,
   GlossaryEntry,
   InstalledView,
   MirrorSaved,
@@ -28,6 +29,7 @@ import type {
   PromptView,
   ProviderConfig,
   Range16,
+  ReferenceView,
   RequestRecord,
   SavedView,
   SegmentState,
@@ -56,11 +58,22 @@ export const ipc = {
   setDirty: (dirty: boolean) => invoke<void>("set_dirty", { dirty }),
   /** `keep`: swap now, untranslated paragraphs stay as they are. */
   swapLanguages: (text: string, keep = false) => invoke<SessionView>("swap_languages", { text, keep }),
+  /**
+   * Read the file as written in the other language (a Chinese file opened
+   * as English). `onlyIfNeeded`: only when its text plainly is; `null`
+   * when nothing changed.
+   */
+  retargetLanguage: (text: string, onlyIfNeeded: boolean) =>
+    invoke<SessionView | null>("retarget_language", { text, onlyIfNeeded }),
+  /** Translate what is left; returns how many paragraphs were taken up. */
+  continueTranslation: (text: string) => invoke<number>("continue_translation", { text }),
   exportBilingual: (text: string) => invoke<ExportView | null>("export_bilingual", { text }),
   /** Open a known link ("skill", "repo", "releases") in the browser. */
   openLink: (name: "skill" | "repo" | "releases") => invoke<void>("open_link", { name }),
-  /** The bundled user guide in the system's PDF viewer. */
+  /** The user guide on GitHub, in the browser. */
   openManual: (lang: "en" | "zh") => invoke<void>("open_manual", { lang }),
+  /** The tray menu in the interface language. */
+  setTrayLanguage: (lang: "en" | "zh") => invoke<void>("set_tray_language", { lang }),
 };
 
 /** Glossary commands. CSV files are picked in native dialogs on the Rust side. */
@@ -92,6 +105,7 @@ export const settingsIpc = {
   setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),
   setMatchPool: (on: boolean) => invoke<SettingsView>("set_match_pool", { on }),
   setCheckUpdates: (on: boolean) => invoke<SettingsView>("set_check_updates", { on }),
+  setCloseToTray: (on: boolean) => invoke<SettingsView>("set_close_to_tray", { on }),
   /** Save the pool (names and keys) to a file picked in Rust. */
   exportKeys: (id: string) => invoke<string | null>("export_api_keys", { id }),
   importKeys: (id: string) => invoke<SettingsView | null>("import_api_keys", { id }),
@@ -116,6 +130,8 @@ export const assistIpc = {
   /** Hand the engine an approved translation before the edit is applied. */
   offer: (source: string, translation: string) => invoke<void>("assist_offer", { source, translation }),
   attachImage: () => invoke<AttachmentView | null>("attach_image"),
+  /** A reference paper or text from a file (.tex, .md, .txt). */
+  loadReference: () => invoke<ReferenceView | null>("load_reference"),
   dropAttachment: (id: number) => invoke<void>("drop_attachment", { id }),
   getSkill: () => invoke<SkillInfo>("get_skill"),
   updateSkill: () => invoke<SkillInfo>("update_skill"),
@@ -189,6 +205,7 @@ export interface EngineEvents {
   onNotice(message: string): void;
   onRequest(record: RequestRecord): void;
   onAssist(event: AssistEvent): void;
+  onFills(fills: Fill[]): void;
 }
 
 export async function subscribe(handlers: EngineEvents): Promise<UnlistenFn> {
@@ -198,6 +215,7 @@ export async function subscribe(handlers: EngineEvents): Promise<UnlistenFn> {
     listen<string>("notice", (e) => handlers.onNotice(e.payload)),
     listen<RequestRecord>("request-log", (e) => handlers.onRequest(e.payload)),
     listen<AssistEvent>("assist", (e) => handlers.onAssist(e.payload)),
+    listen<Fill[]>("segment-fills", (e) => handlers.onFills(e.payload)),
   ]);
   return () => unlisten.forEach((fn) => fn());
 }

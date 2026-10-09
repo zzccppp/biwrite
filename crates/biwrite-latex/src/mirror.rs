@@ -8,6 +8,9 @@ use crate::project::{preamble, uncommented};
 /// Where the mirror build lives, relative to the project folder.
 pub const MIRROR_DIR: &str = ".biwrite/zh";
 
+/// Where the English mirror of a Chinese document is built.
+pub const EN_MIRROR_DIR: &str = ".biwrite/en";
+
 /// Loads that already typeset Chinese.
 const CJK_SUPPORT: &[&str] = &[
     "{ctex}",

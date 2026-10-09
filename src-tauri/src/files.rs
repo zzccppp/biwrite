@@ -273,7 +273,17 @@ pub fn known_link(name: &str) -> Option<&'static str> {
         "skill" => Some("https://github.com/qzkinhit/research-builder"),
         "repo" => Some("https://github.com/zzccppp/biwrite"),
         "releases" => Some("https://github.com/zzccppp/biwrite/releases"),
+        "manual-zh" | "manual-en" => Some(manual_url(&name[7..])),
         _ => None,
+    }
+}
+
+/// The user guide on GitHub, in Chinese for `"zh"`, else in English.
+pub fn manual_url(lang: &str) -> &'static str {
+    if lang == "zh" {
+        "https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-zh.pdf"
+    } else {
+        "https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-en.pdf"
     }
 }
 

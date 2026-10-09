@@ -8,15 +8,16 @@ pub mod compile;
 pub mod locate;
 pub mod log;
 pub mod mirror;
+pub mod packages;
 pub mod project;
 pub mod synctex;
 pub mod templates;
 pub mod toolchain;
 
 pub use compile::{CompileError, Compiled, Job, Outcome, compile};
-pub use locate::locate;
+pub use locate::{find_words, locate};
 pub use log::{Issue, Severity};
-pub use mirror::{MIRROR_DIR, redirect_include, with_chinese};
+pub use mirror::{EN_MIRROR_DIR, MIRROR_DIR, redirect_include, with_chinese};
 pub use project::{
     Engine, ProjectError, clean, engine_for, find_main, is_main, project_engine, root_for,
     tex_files,

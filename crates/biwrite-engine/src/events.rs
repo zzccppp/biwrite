@@ -78,12 +78,26 @@ pub struct Snapshot {
     pub usage: SessionUsage,
 }
 
+/// A paragraph still in the language of the translations (left so by an
+/// early swap), now translated into the edited language: the editor
+/// replaces the segment's text `old` (markup included) with `new`, unless
+/// it changed meanwhile. Its translation stays the exact original.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fill {
+    pub id: SegmentId,
+    pub old: String,
+    pub new: String,
+}
+
 /// Receives asynchronous engine events (from background translation jobs).
 pub trait EventSink: Send + Sync {
     fn segment_states(&self, states: &[SegmentState]);
     fn usage(&self, usage: &SessionUsage);
     /// Non-fatal message for the status bar (retries, cache problems).
     fn notice(&self, message: &str);
+    /// Paragraphs whose text in the editor is to be replaced (see [`Fill`]).
+    fn fills(&self, _fills: &[Fill]) {}
 }
 
 /// Sink that drops everything (tests, headless use).

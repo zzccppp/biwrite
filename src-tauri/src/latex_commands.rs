@@ -17,7 +17,8 @@ use biwrite_core::pair::units;
 use biwrite_core::utf16::{byte_to_utf16, utf16_to_byte};
 use biwrite_core::{Direction, Mode, SegmentId};
 use biwrite_latex::{
-    self as latex, Engine, Issue, Job, MIRROR_DIR, Outcome, PdfBox, Severity, Template, Toolchain,
+    self as latex, EN_MIRROR_DIR, Engine, Issue, Job, MIRROR_DIR, Outcome, PdfBox, Severity,
+    Template, Toolchain,
     templates,
 };
 use serde::{Deserialize, Serialize};
@@ -413,7 +414,9 @@ pub struct BuildView {
 /// original file: the mirror's copies map back to what they mirror.
 fn original(name: &str) -> String {
     let name = name.trim_start_matches("./");
-    name.strip_prefix(MIRROR_DIR)
+    [MIRROR_DIR, EN_MIRROR_DIR]
+        .iter()
+        .find_map(|dir| name.strip_prefix(dir))
         .map(|rest| rest.trim_start_matches('/'))
         .unwrap_or(name)
         .to_owned()
@@ -447,9 +450,10 @@ fn write_file(path: &Path, text: &str) -> CommandResult<()> {
     std::fs::write(path, text).map_err(|e| CommandError::io(path, e))
 }
 
-/// Build the English PDF (from the files on disk) or the Chinese one (from
-/// the composed translation). `text` is the editor's current text. A new
-/// build of the same language replaces a running one.
+/// Build the PDF of the file's own language (from the files on disk) or of
+/// the other language (the Chinese PDF of an English paper, the English one
+/// of a Chinese paper: from the translation). `text` is the editor's
+/// current text. A new build of the same language replaces a running one.
 #[tauri::command]
 pub async fn latex_compile(
     state: State<'_, AppState>,
@@ -461,6 +465,8 @@ pub async fn latex_compile(
         state.engine.update(text.clone());
     }
     let direction = state.engine.direction();
+    // The language of the file on disk.
+    let file_lang = source_lang(state.file().home);
     // A pair keeps each language in its own files: build the file of this
     // language as it is on disk.
     let mirror = {
@@ -481,7 +487,7 @@ pub async fn latex_compile(
     let doc_is_root = p.path == p.root;
     let mut untranslated = 0;
     let (job, doc_file, basis) = match lang {
-        _ if paired || lang == Lang::En => (
+        _ if paired || lang == file_lang => (
             Job {
                 dir: p.dir.clone(),
                 root: PathBuf::from(&root_rel),
@@ -498,46 +504,54 @@ pub async fn latex_compile(
             },
         ),
         _ => {
-            let zh = match direction {
-                Direction::EnZh => {
-                    let mirror = state.engine.compose_mirror();
-                    untranslated = mirror.untranslated;
-                    mirror.text
-                }
-                Direction::ZhEn => text.clone(),
+            // The editor's text if it is in this language, else composed
+            // from the translations.
+            let other = if lang == source_lang(direction) {
+                text.clone()
+            } else {
+                let mirror = state.engine.compose_mirror();
+                untranslated = mirror.untranslated;
+                mirror.text
             };
-            let out = p.dir.join(MIRROR_DIR);
+            // Chinese needs font support; an English mirror keeps the
+            // Chinese file's preamble, which has it.
+            let (folder, prepare): (&str, fn(&str) -> String) = match lang {
+                Lang::Zh => (MIRROR_DIR, latex::with_chinese),
+                Lang::En => (EN_MIRROR_DIR, str::to_owned),
+            };
+            let out = p.dir.join(folder);
             let doc_out = out.join(&doc_rel);
             if doc_is_root {
-                write_file(&doc_out, &latex::with_chinese(&zh))?;
+                write_file(&doc_out, &prepare(&other))?;
             } else {
-                write_file(&doc_out, &zh)?;
+                write_file(&doc_out, &other)?;
                 let from = doc_rel.trim_end_matches(".tex");
-                let to = format!("{MIRROR_DIR}/{from}");
+                let to = format!("{folder}/{from}");
                 let root = latex::redirect_include(&p.root_text, from, &to).ok_or_else(|| {
                     fail(format!(
-                        "The Chinese PDF needs {root_rel} to \\input or \\include {doc_rel} directly."
+                        "The translated PDF needs {root_rel} to \\input or \\include {doc_rel} directly."
                     ))
                 })?;
-                write_file(&out.join(&root_rel), &latex::with_chinese(&root))?;
+                write_file(&out.join(&root_rel), &prepare(&root))?;
             }
-            let engine = match latex::engine_for(&p.root_text) {
-                Engine::Lualatex => Engine::Lualatex,
-                _ => Engine::Xelatex,
+            let engine = match (lang, latex::engine_for(&p.root_text)) {
+                (Lang::Zh, Engine::Lualatex) => Engine::Lualatex,
+                (Lang::Zh, _) => Engine::Xelatex,
+                (Lang::En, _) => latex::project_engine(&p.root, &p.root_text),
             };
             (
                 Job {
                     dir: p.dir.clone(),
-                    root: Path::new(MIRROR_DIR).join(&root_rel),
+                    root: Path::new(folder).join(&root_rel),
                     engine,
-                    out_dir: Some(PathBuf::from(MIRROR_DIR)),
+                    out_dir: Some(PathBuf::from(folder)),
                     timeout: BUILD_TIMEOUT,
                 },
                 canonical(&doc_out),
                 Basis {
-                    compiled: zh,
+                    compiled: other,
                     editor: text,
-                    same_language: direction == Direction::ZhEn,
+                    same_language: lang == source_lang(direction),
                     mode: Mode::Latex,
                 },
             )
@@ -600,6 +614,27 @@ pub async fn latex_compile(
         },
     );
     Ok(view)
+}
+
+/// The editor holds the open file's own language (as on disk, give or
+/// take unsaved edits): always with a pair, else unless swapped.
+fn editing_own_language(state: &AppState) -> bool {
+    let fs = state.file();
+    fs.pair.is_some() || state.engine.direction() == fs.home
+}
+
+/// `paper_zh` → `paper`: the name of a Chinese file without its language tag.
+fn without_chinese_tag(stem: &str) -> &str {
+    ["_zh", "-zh", ".zh", "_cn", "-cn", "_chinese"]
+        .iter()
+        .find_map(|tag| {
+            stem.len()
+                .checked_sub(tag.len())
+                .filter(|&at| stem.is_char_boundary(at) && stem[at..].eq_ignore_ascii_case(tag))
+                .map(|at| &stem[..at])
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or(stem)
 }
 
 /// The language of the edited text.
@@ -727,10 +762,11 @@ pub async fn latex_save_pdf(
     Ok(Some(dest.display().to_string()))
 }
 
-/// Save the Chinese version of the open document as a `.tex` file that
-/// compiles on its own (Chinese font support added). Paragraphs not
-/// translated yet stay in English. With a pair, the Chinese file exists
-/// already and is the one to use.
+/// Save the translation of the open document (the Chinese version of an
+/// English file, the English version of a Chinese one) as a `.tex` file; a
+/// Chinese main file gets font support so it compiles on its own.
+/// Paragraphs not translated yet stay in the file's language. With a pair,
+/// the translation is the paired file already.
 #[tauri::command]
 pub async fn latex_export_tex(
     app: AppHandle,
@@ -740,16 +776,21 @@ pub async fn latex_export_tex(
 ) -> CommandResult<Option<String>> {
     if let Some(pair) = state.file().pair.as_ref() {
         return Err(fail(format!(
-            "The Chinese version is the paired file {}.",
+            "The translation is the paired file {}.",
             crate::state::display_name(Some(&pair.path))
         )));
     }
     if state.engine.text() != text {
         state.engine.update(text.clone());
     }
-    let chinese = match state.engine.direction() {
-        Direction::EnZh => state.engine.compose_mirror().text,
-        Direction::ZhEn => text,
+    let target = match source_lang(state.file().home) {
+        Lang::En => Lang::Zh,
+        Lang::Zh => Lang::En,
+    };
+    let translated = if source_lang(state.engine.direction()) == target {
+        text
+    } else {
+        state.engine.compose_mirror().text
     };
     let path = state.file().path.clone();
     let stem = path
@@ -757,17 +798,19 @@ pub async fn latex_export_tex(
         .and_then(Path::file_stem)
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "paper".into());
-    let standalone = latex::is_main(&chinese);
-    let body = if standalone {
-        latex::with_chinese(&chinese)
+    let body = if target == Lang::Zh && latex::is_main(&translated) {
+        latex::with_chinese(&translated)
     } else {
-        chinese
+        translated
     };
     let dir = path
         .as_deref()
         .and_then(Path::parent)
         .map(Path::to_path_buf);
-    let name = format!("{stem}_zh.tex");
+    let name = match target {
+        Lang::Zh => format!("{stem}_zh.tex"),
+        Lang::En => format!("{}_en.tex", without_chinese_tag(&stem)),
+    };
     let Some(dest) =
         files::pick_save_kind(&app, &window, "LaTeX", &["tex"], dir.as_deref(), &name).await
     else {
@@ -846,9 +889,10 @@ pub async fn latex_inverse(
     else {
         return Ok(None);
     };
+    let click = utf16_to_byte(&span, click);
+    let point = checked_point(&state, lang, point, &span, click);
     let file = canonical(&point.file);
     let line = point.line as usize;
-    let click = utf16_to_byte(&span, click);
     let current = state.file().path.as_deref().map(canonical);
     if let Some(range) = mirror_hit(&state, &file, line, &text) {
         return Ok(Some(SyncHit {
@@ -888,8 +932,7 @@ pub async fn latex_inverse(
     }
     // Another file of the project that is open now (the build was made
     // while a different one was): its text on disk is what TeX read.
-    let same_file_on_disk =
-        state.engine.direction() == Direction::EnZh || state.file().pair.is_some();
+    let same_file_on_disk = editing_own_language(&state);
     if current.as_ref() == Some(&file) && same_file_on_disk {
         let saved = state.file().file.text().to_owned();
         let l = map_line(&saved, &text, line);
@@ -904,6 +947,82 @@ pub async fn latex_inverse(
         paragraph: false,
         open,
     }))
+}
+
+/// For a figure: the packages the document loads, and whether the open
+/// file holds the preamble (then missing ones can be added to it). `None`
+/// outside LaTeX, or for a part of a project whose main file is unknown.
+pub(crate) fn document_packages(
+    state: &AppState,
+    editor_text: &str,
+) -> Option<(std::collections::BTreeSet<String>, bool)> {
+    if state.engine.mode() != Mode::Latex {
+        return None;
+    }
+    if latex::is_main(editor_text) {
+        let dir = state
+            .file()
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        return Some((latex::packages::loaded(&dir, editor_text), true));
+    }
+    let p = project(state).ok()?;
+    Some((latex::packages::loaded(&p.dir, &p.root_text), false))
+}
+
+/// SyncTeX names the box on top at the click, which may be drawn over the
+/// text: the line-number ruler of a submission, a running header. When the
+/// clicked words are not near the line it names, they are looked up in the
+/// document as compiled and then in the project's other files.
+fn checked_point(
+    state: &AppState,
+    lang: Lang,
+    point: latex::synctex::SourcePoint,
+    span: &str,
+    click: usize,
+) -> latex::synctex::SourcePoint {
+    let builds = state.latex.builds();
+    let Some(build) = builds.get(&lang) else {
+        return point;
+    };
+    let source = |file: &Path| -> Option<String> {
+        if file == build.doc_file {
+            Some(build.basis.compiled.clone())
+        } else {
+            std::fs::read_to_string(file).ok()
+        }
+    };
+    let named = canonical(&point.file);
+    if source(&named)
+        .is_some_and(|text| latex::find_words(&text, Some(point.line), span, click).is_some())
+    {
+        return point;
+    }
+    let others = latex::tex_files(&build.dir)
+        .into_iter()
+        .map(|f| canonical(&f))
+        .filter(|f| *f != build.doc_file);
+    for file in std::iter::once(build.doc_file.clone()).chain(others).take(400) {
+        let Some(text) = source(&file) else {
+            continue;
+        };
+        if let Some(at) = latex::find_words(&text, None, span, click) {
+            log::info!(
+                "the click is in {} rather than at {}:{}",
+                file.display(),
+                named.display(),
+                point.line
+            );
+            return latex::synctex::SourcePoint {
+                line: (line_of(&text, at) + 1) as u32,
+                file,
+            };
+        }
+    }
+    point
 }
 
 /// The project file to open for a hit in `file`: the file itself, or, for
@@ -953,9 +1072,7 @@ pub async fn latex_forward(
                 return Ok(Vec::new());
             };
             (pdf, build.doc_file.clone(), line)
-        } else if let Some(path) = current
-            .filter(|_| state.engine.direction() == Direction::EnZh || state.file().pair.is_some())
-        {
+        } else if let Some(path) = current.filter(|_| editing_own_language(&state)) {
             // Another file of the project: as saved.
             let saved = state.file().file.text().to_owned();
             let line = map_line(&text, &saved, line_of(&text, at) + 1);

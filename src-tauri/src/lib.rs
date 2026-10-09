@@ -19,12 +19,17 @@ mod sink;
 mod skills;
 mod state;
 mod storage_commands;
+mod tray;
 mod updater;
 
+#[cfg(test)]
+mod home_tests;
 #[cfg(test)]
 mod leak_tests;
 #[cfg(test)]
 mod pair_tests;
+#[cfg(test)]
+mod workflow_tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,7 +50,13 @@ use crate::state::AppState;
 pub fn run() {
     // First, so even failures before setup (e.g. no WebView2) are reported.
     logging::init();
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // First, so a second launch goes no further than handing over.
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        tray::show_window(app);
+    }));
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let log_dir = app.path().app_log_dir().ok();
@@ -117,6 +128,13 @@ pub fn run() {
                 skills,
                 latex,
             );
+            let close_to_tray = state.settings().close_to_tray;
+            match tray::Tray::build(app, close_to_tray) {
+                Ok(tray) => {
+                    app.manage(tray);
+                }
+                Err(e) => log::error!("no tray icon: {e}"),
+            }
             state.set_translation_http(active_id, built.http);
             if let Some(path) = std::env::args_os().nth(1).map(std::path::PathBuf::from) {
                 // `biwrite paper.tex`: open a file from the command line.
@@ -145,6 +163,8 @@ pub fn run() {
             commands::set_auto_translate,
             commands::set_dirty,
             commands::swap_languages,
+            commands::retarget_language,
+            commands::continue_translation,
             commands::open_link,
             commands::open_manual,
             settings_commands::get_settings,
@@ -183,6 +203,7 @@ pub fn run() {
             assist_commands::assist_cancel,
             assist_commands::assist_offer,
             assist_commands::attach_image,
+            assist_commands::load_reference,
             assist_commands::drop_attachment,
             assist_commands::get_skill,
             assist_commands::update_skill,
@@ -219,6 +240,8 @@ pub fn run() {
             updater::install_release,
             updater::relaunch,
             settings_commands::set_check_updates,
+            settings_commands::set_close_to_tray,
+            settings_commands::set_tray_language,
             log_commands::get_request_log,
             log_commands::set_request_log,
             log_commands::clear_request_log,
@@ -287,11 +310,19 @@ fn open_cache(app: &App) -> (Arc<dyn TranslationCache>, Option<PathBuf>) {
     }
 }
 
-/// Ask before closing a window with unsaved changes.
+/// Closing the window hides it in the tray (the setting), or asks first
+/// about unsaved changes and quits.
 fn on_window_event(window: &Window, event: &WindowEvent) {
     let WindowEvent::CloseRequested { api, .. } = event else {
         return;
     };
+    let to_tray = window.state::<AppState>().settings().close_to_tray
+        && window.try_state::<tray::Tray>().is_some();
+    if to_tray {
+        api.prevent_close();
+        tray::hide_window(window);
+        return;
+    }
     if !window.state::<AppState>().needs_close_confirmation() {
         return;
     }
@@ -307,21 +338,25 @@ fn on_window_event(window: &Window, event: &WindowEvent) {
     });
 }
 
-/// Ask before quitting (e.g. Cmd+Q) with unsaved changes.
+/// Ask before quitting (e.g. Cmd+Q) with unsaved changes, with the window
+/// shown even if it was hidden in the tray. A click on the Dock icon brings
+/// a hidden window back.
 fn on_run_event(app: &AppHandle, event: RunEvent) {
-    let RunEvent::ExitRequested { api, .. } = event else {
-        return;
-    };
-    if !app.state::<AppState>().needs_close_confirmation() {
-        return;
-    }
-    api.prevent_exit();
-    let handle = app.clone();
-    let parent = app.get_webview_window("main").map(|w| w.as_ref().window());
-    files::ask_discard(app, parent.as_ref(), move |discard| {
-        if discard {
-            handle.state::<AppState>().confirm_discard_on_close();
-            handle.exit(0);
+    match event {
+        RunEvent::ExitRequested { api, .. } => {
+            if app
+                .try_state::<AppState>()
+                .is_some_and(|s| s.needs_close_confirmation())
+            {
+                api.prevent_exit();
+                tray::quit_app(app);
+            }
         }
-    });
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } => tray::show_window(app),
+        _ => {}
+    }
 }

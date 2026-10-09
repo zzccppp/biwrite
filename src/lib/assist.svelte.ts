@@ -16,6 +16,7 @@ import type {
   AssistStarted,
   AssistTarget,
   AttachmentView,
+  Sample,
 } from "./types";
 
 export type JobState = "running" | "done" | "failed" | "applied" | "discarded";
@@ -26,6 +27,7 @@ export const ACTION_LABEL = {
   ask: "assist.action.ask",
   figure: "assist.action.figure",
   mirror: "assist.action.mirror",
+  write: "assist.action.write",
 } as const;
 
 export const SCOPE_LABEL = {
@@ -40,6 +42,7 @@ export const PLACEHOLDER = {
   ask: "assist.placeholder.ask",
   figure: "assist.placeholder.figure",
   mirror: "assist.placeholder.mirror",
+  write: "assist.placeholder.write",
 } as const;
 
 const ACTION_KEY = "biwrite.assist.action";
@@ -119,8 +122,10 @@ export class AssistJob {
 export class AssistStore {
   jobs = $state<AssistJob[]>([]);
   attachments = $state<AttachmentView[]>([]);
-  samples = $state<string[]>([]);
-  action = $state<AssistAction>(load(ACTION_KEY, ["polish", "edit", "ask", "figure", "mirror"] as const, "polish"));
+  samples = $state<Sample[]>([]);
+  action = $state<AssistAction>(
+    load(ACTION_KEY, ["polish", "edit", "ask", "figure", "mirror", "write"] as const, "polish"),
+  );
   scope = $state<AssistScope>(load(SCOPE_KEY, ["target", "neighbors", "document"] as const, "neighbors"));
   instruction = $state("");
   /** Bumped when another document is loaded. */
@@ -200,6 +205,16 @@ export class AssistStore {
   async attach(): Promise<void> {
     const view = await assistIpc.attachImage();
     if (view) this.attachments = [...this.attachments, view];
+  }
+
+  /** A reference paper from a file. */
+  async addFile(): Promise<void> {
+    const view = await assistIpc.loadReference();
+    if (view) this.samples = [...this.samples, { name: view.name, text: view.text, truncated: view.truncated }];
+  }
+
+  addText(text: string): void {
+    this.samples = [...this.samples, { name: null, text, truncated: false }];
   }
 
   detach(id: number): void {

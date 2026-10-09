@@ -37,6 +37,9 @@ pub enum Action {
     /// The author rewrote the paragraph's translation (the instruction):
     /// bring the paragraph in line with it.
     Mirror,
+    /// Write new paragraphs as the instruction says, in the manner of the
+    /// reference samples, to insert after the target.
+    Write,
 }
 
 impl Action {
@@ -48,7 +51,14 @@ impl Action {
             Self::Ask => "ask",
             Self::Figure => "figure",
             Self::Mirror => "mirror",
+            Self::Write => "write",
         }
+    }
+
+    /// The answer is new text inserted after the target, not a revision of
+    /// it.
+    pub fn inserts(self) -> bool {
+        matches!(self, Self::Figure | Self::Write)
     }
 
     /// The skill files the task's system prompt is built from, in order.
@@ -67,6 +77,12 @@ impl Action {
                 "figure-style/tables/README.md",
                 "figure-style/tables/table_macros.tex",
                 "writing-deai.md",
+            ],
+            Self::Write => &[
+                "writing-deai.md",
+                "writing-playbook.md",
+                "knowledge/paper-anatomy.md",
+                "knowledge/storytelling.md",
             ],
         }
     }
@@ -128,6 +144,8 @@ pub struct Request<'a> {
     pub images: usize,
     /// Earlier questions and answers in this conversation.
     pub history: &'a [(String, String)],
+    /// The packages the document loads (for a figure), when known.
+    pub packages: Option<&'a [String]>,
 }
 
 /// The messages for a request, and the protector that restores the answer.
@@ -182,7 +200,7 @@ pub fn system_prompt(action: Action, direction: Direction, skill: &Skill) -> Str
 pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
     let action = req.action;
     let mut protector = Protector::new(req.mode);
-    let masked = if action == Action::Figure {
+    let masked = if action.inserts() {
         req.target.trim().to_owned()
     } else {
         protector.mask(req.target.trim())
@@ -214,6 +232,11 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
         if let Some(after) = req.after {
             block(&mut user, "context_after", after);
         }
+    }
+    if action == Action::Figure
+        && let Some(packages) = req.packages
+    {
+        block(&mut user, "loaded_packages", &packages.join(", "));
     }
     for (i, sample) in req.references.iter().enumerate() {
         user.push_str(&format!(
@@ -253,9 +276,13 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
             "The author rewrote the {other} version of the text in <target>; the new {other} version is in <instruction>. Revise <target>, {kind} written in {src}, so that it says what the new {other} version says. Keep every part the new version does not change word for word, with its terms, commands, citations and math, and follow the rules in the wording you write."
         ),
         Action::Figure => match req.mode {
+            Mode::Latex if req.packages.is_some() => "Write the LaTeX for the figure or table that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>. Give it a caption and a \\label. Prefer the packages in <loaded_packages>; beyond them use only common ones (tikz, pgfplots, booktabs, graphicx, multirow, xcolor), never \\usepackage, and name any package it needs that is not loaded in the change notes.".to_owned(),
             Mode::Latex => "Write the LaTeX for the figure or table that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>. Use only common packages (tikz, pgfplots, booktabs, graphicx), give it a caption and a \\label, and make it compile on its own inside the document.".to_owned(),
             _ => format!("Write the {kind} table or figure description that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>."),
         },
+        Action::Write => format!(
+            "Write new {kind} in {src} as <instruction> asks: the content, how many paragraphs and how long they are. It is inserted after the text in <target>, so it continues from there (<target> may be empty). Follow the rules. Write about the author's subject as the instruction and the context give it, and never invent results, numbers or citations the author did not give: leave a clearly marked placeholder such as [result] instead."
+        ),
     };
     user.push_str(&task);
     if req.document.is_some() || req.before.is_some() || req.after.is_some() {
@@ -264,7 +291,9 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
     if !req.glossary.is_empty() {
         user.push_str(" Use the glossary renderings.");
     }
-    if !req.references.is_empty() {
+    if !req.references.is_empty() && action == Action::Write {
+        user.push_str(" The <reference_text> blocks are papers whose writing to imitate closely: how a paragraph opens and closes, how claims are set up and supported, sentence patterns and length, the level of terms. Take their manner, not their content: never copy their sentences, claims, numbers or citations.");
+    } else if !req.references.is_empty() {
         user.push_str(" The <reference_text> blocks show the style to follow (wording, sentence length, structure). Do not copy their content.");
     }
     if req.images > 0 {
@@ -297,6 +326,9 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
         ),
         Action::Figure => format!(
             "\n\nReply in exactly this form:\n<revision>\nthe source to insert\n</revision>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\nat most three short lines in Chinese describing the figure\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
+        ),
+        Action::Write => format!(
+            "\n\nReply in exactly this form:\n<revision>\nthe new text in {src}, paragraphs separated by a blank line\n</revision>\n<translation>\na faithful {other} translation, paragraph for paragraph, separated the same way\n</translation>\n<changes_zh>\nat most three short lines in Chinese on what the text says and which features of the references it follows\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
         ),
     };
     user.push_str(&format);
@@ -410,11 +442,7 @@ fn placeholder_counts(text: &str) -> BTreeMap<usize, usize> {
 pub fn parse(action: Action, text: &str, protector: &Protector) -> Result<Answer, AssistError> {
     let revision_raw = tag(text, "revision");
     let translation_raw = tag(text, "translation");
-    if matches!(
-        action,
-        Action::Polish | Action::Edit | Action::Figure | Action::Mirror
-    ) && revision_raw.is_none()
-    {
+    if action != Action::Ask && revision_raw.is_none() {
         return Err(AssistError::NoRevision);
     }
     let mut answer = Answer {
@@ -432,7 +460,7 @@ pub fn parse(action: Action, text: &str, protector: &Protector) -> Result<Answer
     let Some(revision) = revision_raw.filter(|r| !r.is_empty()) else {
         return Ok(answer);
     };
-    if action == Action::Figure {
+    if action.inserts() {
         answer.revision = Some(revision.to_owned());
         answer.translation = translation_raw.map(str::to_owned);
         answer.translation_matches = false;

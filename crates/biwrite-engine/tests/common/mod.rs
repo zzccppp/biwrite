@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use biwrite_core::{Mode, Protector, SegmentId};
 use biwrite_engine::{
-    BoxFuture, Engine, EngineSettings, EventSink, MemoryCache, PartialFn, SegmentState,
+    BoxFuture, Engine, EngineSettings, EventSink, Fill, MemoryCache, PartialFn, SegmentState,
     SegmentStatus, SessionUsage, TokenUsage, TranslateError, TranslationOutput, TranslationRequest,
     Translator,
 };
@@ -134,6 +134,7 @@ pub struct RecordingSink {
     pub states: Mutex<Vec<SegmentState>>,
     pub notices: Mutex<Vec<String>>,
     pub usage: Mutex<Option<SessionUsage>>,
+    pub fills: Mutex<Vec<Fill>>,
 }
 
 impl EventSink for RecordingSink {
@@ -145,6 +146,9 @@ impl EventSink for RecordingSink {
     }
     fn notice(&self, message: &str) {
         self.notices.lock().unwrap().push(message.to_owned());
+    }
+    fn fills(&self, fills: &[Fill]) {
+        self.fills.lock().unwrap().extend_from_slice(fills);
     }
 }
 

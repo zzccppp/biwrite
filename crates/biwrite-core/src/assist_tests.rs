@@ -284,3 +284,61 @@ fn mirror_requests_carry_the_new_translation_and_ask_for_a_revision_only() {
     );
     assert!(parse(Action::Mirror, "no tags", &p.protector).is_err());
 }
+
+#[test]
+fn write_requests_imitate_the_references_and_insert_new_text() {
+    let uniclean = vec![
+        "\\section{Introduction}\nData cleaning is a crucial step. We present UniClean, a cleaning \
+         system that composes operators.\n"
+            .to_owned(),
+    ];
+    let req = Request {
+        action: Action::Write,
+        mode: Mode::Latex,
+        target: "Errors cost accuracy \\cite{x} for $k=5$ models.",
+        instruction: "Two paragraphs motivating row-level cleaning, like the UniClean introduction.",
+        references: &uniclean,
+        ..Default::default()
+    };
+    let p = build(&req, &skill());
+    assert!(p.system.contains("ANATOMY"), "writing new text uses the paper anatomy");
+    assert!(p.system.contains("DEAI RULES"));
+    // The paragraph before is context, sent as written (nothing to restore).
+    assert!(p.user.contains("<target>\nErrors cost accuracy \\cite{x} for $k=5$ models.\n</target>"));
+    assert_eq!(p.protector.len(), 0);
+    assert!(p.user.contains("<reference_text n=\"1\">\n\\section{Introduction}"));
+    assert!(p.user.contains("imitate closely"));
+    assert!(p.user.contains("never copy their sentences, claims, numbers or citations"));
+    assert!(p.user.contains("never invent results"));
+    assert!(p.user.contains("paragraphs separated by a blank line"));
+
+    let reply = "<revision>\nFirst paragraph \\cite{x}.\n\nSecond paragraph.\n</revision>\n\
+                 <translation>\n第一段 \\cite{x}。\n\n第二段。\n</translation>\n\
+                 <changes_zh>\n- 两段动机\n</changes_zh>\n<changes_en>\n- two paragraphs\n</changes_en>";
+    let a = parse(Action::Write, reply, &p.protector).unwrap();
+    assert_eq!(a.revision.as_deref(), Some("First paragraph \\cite{x}.\n\nSecond paragraph."));
+    assert_eq!(a.translation.as_deref(), Some("第一段 \\cite{x}。\n\n第二段。"));
+    assert_eq!(a.changes_zh, ["两段动机"]);
+    assert!(Action::Write.inserts() && Action::Figure.inserts() && !Action::Edit.inserts());
+    assert_eq!(parse(Action::Write, "no tags", &p.protector), Err(AssistError::NoRevision));
+}
+
+#[test]
+fn figures_are_told_which_packages_the_document_loads() {
+    let loaded = vec!["booktabs".to_owned(), "graphicx".to_owned()];
+    let req = Request {
+        action: Action::Figure,
+        mode: Mode::Latex,
+        target: "We compare the methods.",
+        instruction: "A table of accuracy per dataset.",
+        packages: Some(&loaded),
+        ..Default::default()
+    };
+    let p = build(&req, &skill());
+    assert!(p.user.contains("<loaded_packages>\nbooktabs, graphicx\n</loaded_packages>"));
+    assert!(p.user.contains("never \\usepackage"));
+    // Unknown packages: the old wording.
+    let p = build(&Request { packages: None, ..req }, &skill());
+    assert!(!p.user.contains("<loaded_packages>"));
+    assert!(p.user.contains("compile on its own"));
+}

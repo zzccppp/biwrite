@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use biwrite_core::{LineEnding, Mode, TextFile};
+use biwrite_core::{Direction, LineEnding, Mode, TextFile};
 use biwrite_engine::{Engine, Snapshot, TranslationCache};
 use biwrite_providers::HttpProvider;
 use serde::Serialize;
@@ -31,6 +31,11 @@ pub struct FileState {
     pub dirty: bool,
     /// The file in the other language this one is paired with.
     pub pair: Option<PairState>,
+    /// The direction in which the editor holds the file's own text: `EnZh`
+    /// for an English file, `ZhEn` for a Chinese one. Editing the other
+    /// language (after a swap), saving writes the file's language composed
+    /// from the translations.
+    pub home: Direction,
 }
 
 impl FileState {
@@ -155,6 +160,7 @@ impl AppState {
             line_ending: fs.file.line_ending(),
             bom: fs.file.has_bom(),
             pair: fs.pair.as_ref().map(|p| crate::pairing::view(p, units)),
+            home: fs.home,
             snapshot,
         }
     }
@@ -173,6 +179,8 @@ pub struct SessionView {
     pub bom: bool,
     /// The paired file in the other language.
     pub pair: Option<PairView>,
+    /// The direction in which the editor holds the file's own language.
+    pub home: Direction,
     pub snapshot: Snapshot,
 }
 

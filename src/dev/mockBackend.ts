@@ -39,7 +39,14 @@ function clone<T>(value: T): T {
 }
 
 /** `dev/mock.html?latex` opens the sample LaTeX paper (its PDF: dev/sample.pdf). */
-const LATEX = new URLSearchParams(window.location.search).has("latex");
+const PARAMS = new URLSearchParams(window.location.search);
+const LATEX = PARAMS.has("latex");
+/** `pending=N`: the last N paragraphs are still being translated. */
+const PENDING = Number(PARAMS.get("pending") ?? 0);
+/** `zhfile`: the sample paper's Chinese version is the open file. */
+const ZH_FILE = PARAMS.has("zhfile") && LATEX;
+/** `wrong`: that Chinese file was taken for English. */
+const WRONG = PARAMS.has("wrong");
 
 const SAMPLE = `Graph neural networks can learn new tasks from a few examples in context.
 
@@ -61,9 +68,28 @@ function chineseText(): string {
   }).join("\n\n");
 }
 
+/** Indices (in `EN_BLOCKS`) of the sample paper's paragraphs. */
+function paragraphIndices(): number[] {
+  const body = PAPER.indexOf("\\begin{document}");
+  let at = 0;
+  const out: number[] = [];
+  EN_BLOCKS.forEach((b, i) => {
+    const from = PAPER.indexOf(b, at);
+    at = from + b.length;
+    if (latexKind(b, body >= 0 && from < body).type === "paragraph") out.push(i);
+  });
+  return out;
+}
+
 const state = {
-  direction: "en-zh" as "en-zh" | "zh-en",
-  text: LATEX ? PAPER : SAMPLE,
+  direction: (ZH_FILE && !WRONG ? "zh-en" : "en-zh") as "en-zh" | "zh-en",
+  /** The direction in which the editor holds the file's own language. */
+  home: (ZH_FILE && !WRONG ? "zh-en" : "en-zh") as "en-zh" | "zh-en",
+  /** Blocks still being translated (indices into the layout). */
+  pending: new Set<number>(LATEX ? paragraphIndices().slice(-PENDING || paragraphIndices().length) : []),
+  /** Blocks left in English by an early swap, filled in later. */
+  kept: new Set<number>(),
+  text: ZH_FILE ? "" : LATEX ? PAPER : SAMPLE,
   revision: 1,
   version: 1,
   nextRecord: 1,
@@ -141,9 +167,12 @@ const state = {
     effectiveConcurrency: 12,
     latex: { compileOnSave: true },
     checkUpdates: true,
+    closeToTray: true,
     version: "0.1.1",
   } as SettingsView,
   records: [] as RequestRecord[],
+  /** Translations the assistant handed over (for UI tests). */
+  offers: [] as { source: string; translation: string }[],
 };
 
 /** Paragraphs separated by blank lines (LaTeX blocks get a rough kind). */
@@ -188,15 +217,18 @@ function snapshot(full = true): Snapshot {
     const source = state.text.slice(s.from, s.to);
     const skipped = s.kind.type === "skipped";
     const index = segs.indexOf(s);
-    const shown =
-      state.direction === "zh-en"
-        ? (EN_BLOCKS[index] ?? source)
-        : ((LATEX ? sampleChinese(source) : null) ?? fakeChinese(source));
+    // The Chinese file's own language is Chinese: its translation is English.
+    const chineseSource = state.direction === "zh-en";
+    const shown = chineseSource
+      ? (EN_BLOCKS[index] ?? source)
+      : ((LATEX ? sampleChinese(source) : null) ?? fakeChinese(source));
+    const waiting = !chineseSource && state.pending.has(index);
+    const filling = chineseSource && state.kept.has(index);
     return {
       id: s.id,
       version: state.version++,
-      status: skipped ? "skipped" : "translated",
-      text: skipped ? null : shown,
+      status: skipped ? "skipped" : waiting || filling ? "translating" : "translated",
+      text: skipped || waiting ? null : shown,
       partial: false,
       error: null,
     };
@@ -213,17 +245,64 @@ function snapshot(full = true): Snapshot {
 }
 
 function session(): SessionView {
+  const name = ZH_FILE ? "paper_zh.tex" : LATEX ? "paper.tex" : "notes.txt";
   return {
-    path: LATEX ? "/Users/me/papers/gnn-icl/paper.tex" : "/Users/me/paper/notes.txt",
-    name: LATEX ? "paper.tex" : "notes.txt",
+    path: LATEX ? `/Users/me/papers/gnn-icl/${name}` : "/Users/me/paper/notes.txt",
+    name,
     text: state.text,
     dirty: false,
     autoTranslate: true,
     lineEnding: "lf",
     bom: false,
     pair: null,
+    home: state.home,
     snapshot: snapshot(),
   };
+}
+
+/** The sample paper with Chinese paragraphs, except the blocks in `keep`. */
+function chineseKeeping(keep: Set<number>): string {
+  const zh = chineseText().split("\n\n");
+  return EN_BLOCKS.map((b, i) => (keep.has(i) ? b : (zh[i] ?? b))).join("\n\n");
+}
+
+/** Put the kept blocks in Chinese one after another, as their translations arrive. */
+function fillKept(): number {
+  const zh = chineseText().split("\n\n");
+  const kept = [...state.kept];
+  kept.forEach((index, k) => {
+    setTimeout(() => {
+      if (!state.kept.has(index)) return;
+      const segs = layout(state.text);
+      const seg = segs[index];
+      if (!seg) return;
+      if (zh[index] === EN_BLOCKS[index]) {
+        // Nothing to put in (the engine sends no fill then): just done.
+        state.kept.delete(index);
+        void emit("segment-states", snapshot().states);
+        return;
+      }
+      void emit("segment-fills", [{ id: seg.id, old: EN_BLOCKS[index], new: zh[index] }]);
+    }, 1400 + 700 * k);
+  });
+  return kept.length;
+}
+
+/** Translations of the pending blocks arrive. */
+function finishPending(delay: number): number {
+  const n = state.pending.size;
+  setTimeout(() => {
+    state.pending.clear();
+    if (state.direction === state.home) void emit("segment-states", snapshot().states);
+  }, delay);
+  return n;
+}
+
+/** Share of Han characters against English words, as the Rust side judges. */
+function chineseShare(text: string): number {
+  const han = (text.match(/[\u3400-\u9fff]/g) ?? []).length;
+  const letters = (text.match(/[A-Za-z]/g) ?? []).length;
+  return han + letters / 5 > 0 ? han / (han + letters / 5) : 0;
 }
 
 /** A finished request as the Rust side would report it. */
@@ -314,6 +393,27 @@ const POLISHED: Record<string, { revision: string; translation: string; zh: stri
     en: ["The first sentence states the question instead of announcing a collection of questions.", "Replaced “seems important” with a checkable statement that points to the results."],
   },
 };
+
+/** What the stand-in writes for "Write": two paragraphs and their Chinese. */
+const WRITTEN = {
+  revision:
+    "Graph learning tasks change faster than labelled data can be collected. A citation graph gains new topics every month, and a molecule graph gains new properties with every assay, yet a trained graph neural network answers only the label set it was trained on.\n\n" +
+    "We close this gap with prompt graphs. Instead of retraining, the model reads a handful of labelled example nodes attached to the query and predicts the new labels from them. Section~\\ref{sec:method} builds the prompt graph, and Section~\\ref{sec:experiments} shows that four benchmarks need no gradient update.",
+  translation:
+    "图学习任务的变化快于标注数据的积累。引文图每个月都有新主题，分子图每做一次实验就多出新的性质，而训练好的图神经网络只能回答训练时的标签集合。\n\n" +
+    "我们用提示图弥补这一差距。模型不再重新训练，而是读取附在查询节点上的少量带标签示例节点，并据此预测新的标签。第~\\ref{sec:method}~节给出提示图的构建方法，第~\\ref{sec:experiments}~节表明四个基准都无需梯度更新。",
+  zh: ["仿照参照论文引言的写法，先用两个具体场景说明问题，再给出方法。", "结果与引用都指向论文已有的小节，没有新增数字。"],
+  en: ["Follows the reference introduction: two concrete settings state the problem, then the method answers it.", "Results and references point to the paper's own sections; no new numbers."],
+};
+
+/** A reference paper as `load_reference` returns it. */
+const UNICLEAN = `\\section{Introduction}
+Data cleaning is a crucial step in the data analysis pipeline. Real-world tables contain missing values, typos and violated constraints, and every downstream model inherits them.
+
+We present UniClean, a cleaning system that composes operators into a pipeline and decides which operator to apply to each record.`;
+
+const TABLE =
+  "\\begin{table}[t]\n  \\centering\n  \\caption{Accuracy on four benchmarks (\\%).}\n  \\label{tab:accuracy}\n  \\begin{tabular}{lrrrr}\n    \\toprule\n    Method & Cora & CiteSeer & PubMed & arXiv \\\\\n    \\midrule\n    Fine-tuned GNN & 81.5 & 70.3 & 79.0 & 71.7 \\\\\n    Prompt graph (ours) & 80.9 & 69.8 & 78.6 & 70.9 \\\\\n    \\bottomrule\n  \\end{tabular}\n\\end{table}";
 
 function emitLater(delay: number, payload: unknown): void {
   setTimeout(() => void emit("assist", clone(payload)), delay);
@@ -421,11 +521,42 @@ const handlers: Record<string, (args: Args) => unknown> = {
   write_mirror: () => ({ name: "paper_zh.tex", written: true, pending: 0, changed: 1 }),
   export_api_keys: () => "/Users/me/Desktop/AnyRouter-keys.txt",
   import_api_keys: () => state.settings,
-  swap_languages: () => {
+  swap_languages: (a) => {
     state.direction = state.direction === "en-zh" ? "zh-en" : "en-zh";
-    state.text = state.direction === "zh-en" && LATEX ? chineseText() : LATEX ? PAPER : SAMPLE;
+    if (state.direction === "zh-en" && LATEX) {
+      // Swapping early keeps the untranslated paragraphs in English for now.
+      state.kept = a.keep ? new Set(state.pending) : new Set();
+      state.pending.clear();
+      state.text = chineseKeeping(state.kept);
+      if (state.kept.size > 0) fillKept();
+    } else {
+      state.kept.clear();
+      state.text = LATEX ? PAPER : SAMPLE;
+    }
     return session();
   },
+  retarget_language: (a) => {
+    const text = String(a.text);
+    if (a.onlyIfNeeded && (state.direction !== state.home || (state.home === "en-zh") === chineseShare(text) <= 0.5)) {
+      return null;
+    }
+    state.home = state.home === "en-zh" ? "zh-en" : "en-zh";
+    state.direction = state.home;
+    state.pending.clear();
+    state.kept.clear();
+    state.text = text;
+    return session();
+  },
+  continue_translation: (a) => {
+    state.text = String(a.text);
+    if (state.direction !== state.home) return fillKept();
+    return finishPending(1500);
+  },
+  set_close_to_tray: (a) => {
+    state.settings.closeToTray = Boolean(a.on);
+    return state.settings;
+  },
+  set_tray_language: () => null,
   latex_pdf: async (a) => (await fetch(a.lang === "zh" ? "/dev/sample-zh.pdf" : "/dev/sample.pdf")).arrayBuffer(),
   latex_reveal_pdf: () => null,
   latex_save_pdf: () => "/Users/me/papers/gnn-icl/paper.pdf",
@@ -451,16 +582,18 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const req = a.request as { action: string; text: string; from: number; to: number; instruction: string };
     const id = nextJob++;
     let [from, to] = req.from === req.to ? paragraphAround(req.text, req.from) : [req.from, req.to];
-    const insert = req.action === "figure";
+    const insert = req.action === "figure" || req.action === "write";
     if (insert) from = to;
     const original = insert ? req.text.slice(...paragraphAround(req.text, req.from)) : req.text.slice(from, to);
     const p = POLISHED.default;
     const revision =
       req.action === "figure"
-        ? "\\begin{figure}[t]\n  \\centering\n  \\begin{tikzpicture}\n    % grouped bars\n  \\end{tikzpicture}\n  \\caption{Accuracy per dataset.}\n  \\label{fig:accuracy}\n\\end{figure}"
-        : req.action === "ask"
-          ? null
-          : p.revision;
+        ? TABLE
+        : req.action === "write"
+          ? WRITTEN.revision
+          : req.action === "ask"
+            ? null
+            : p.revision;
     const chunks = ["<revision>\nThis note asks", "<revision>\nThis note asks whether the same idea transfers", "<revision>\nThis note asks whether the same idea transfers to graph neural networks."];
     chunks.forEach((c, i) => emitLater(300 + i * 350, { kind: "partial", id, text: c.replace("<revision>\n", "") }));
     emitLater(1600, {
@@ -468,9 +601,16 @@ const handlers: Record<string, (args: Args) => unknown> = {
       id,
       result: {
         revision,
-        translation: req.action === "figure" ? "各数据集上的准确率。" : req.action === "ask" ? null : p.translation,
-        changesZh: req.action === "ask" ? [] : p.zh,
-        changesEn: req.action === "ask" ? [] : p.en,
+        translation:
+          req.action === "figure"
+            ? "四个基准上的准确率（%）。"
+            : req.action === "write"
+              ? WRITTEN.translation
+              : req.action === "ask"
+                ? null
+                : p.translation,
+        changesZh: req.action === "ask" ? [] : req.action === "write" ? WRITTEN.zh : p.zh,
+        changesEn: req.action === "ask" ? [] : req.action === "write" ? WRITTEN.en : p.en,
         answer:
           req.action === "ask"
             ? "第二句的“seems important”没有给出依据。建议改为指向结果的陈述，例如写明消息传递带来的准确率提升，并引用对应的表。"
@@ -478,9 +618,12 @@ const handlers: Record<string, (args: Args) => unknown> = {
         removed: [],
         repeated: [],
         translationMatches: true,
-        diff: revision && req.action !== "figure" ? roughDiff(original, revision) : [],
+        diff: revision && !insert ? roughDiff(original, revision) : [],
         usage: { inputTokens: 5210, outputTokens: 412 },
         durationMs: 9400,
+        // The sample paper loads amsmath, graphicx, hyperref, natbib: the table needs booktabs.
+        missingPackages: req.action === "figure" && LATEX ? ["booktabs"] : [],
+        preambleHere: req.action === "figure" && LATEX,
       },
     });
     return {
@@ -491,7 +634,11 @@ const handlers: Record<string, (args: Args) => unknown> = {
     };
   },
   assist_cancel: () => null,
-  assist_offer: () => null,
+  load_reference: () => ({ name: "uniclean.tex", text: UNICLEAN, chars: UNICLEAN.length, truncated: false }),
+  assist_offer: (a) => {
+    state.offers.push({ source: String(a.source), translation: String(a.translation) });
+    return null;
+  },
   attach_image: () => ({
     id: Date.now() % 100000,
     name: "reference-figure.png",
@@ -515,6 +662,12 @@ const handlers: Record<string, (args: Args) => unknown> = {
   get_session: () => session(),
   update_document: (a) => {
     state.text = String(a.text);
+    // A filled block (now Chinese) is no longer waiting.
+    const segs = layout(state.text);
+    for (const index of [...state.kept]) {
+      const seg = segs[index];
+      if (!seg || state.text.slice(seg.from, seg.to) !== EN_BLOCKS[index]) state.kept.delete(index);
+    }
     return snapshot(false);
   },
   set_mode: (a) => {
@@ -579,6 +732,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
 
 /** Install the stand-in backend. Unknown commands fail like a missing Rust command. */
 export function installMockBackend(): void {
+  if (ZH_FILE) state.text = chineseText();
+  if (PENDING > 0 && state.direction === state.home) finishPending(60_000);
   const names = ["main", "lab", "backup-1", "backup-2", "team", "spare"];
   POOL.forEach((k, i) => (state.settings.providers[1].keyNames[k.fingerprint] = names[i]));
   seedRecords();

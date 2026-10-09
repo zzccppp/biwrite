@@ -55,6 +55,17 @@ export const messages = {
 
   // ── Settings: language and translation pacing ─────────────────────
   "settings.language": { en: "Language", zh: "界面语言" },
+  "settings.window": { en: "Window", zh: "窗口" },
+  "settings.closeToTray": {
+    en: "Closing the window hides BiWrite in the tray",
+    zh: "关闭窗口时隐藏到托盘",
+  },
+  "settings.closeToTrayHint": {
+    en: "BiWrite keeps running with the document open. Its icon in the menu bar (macOS) or the notification area (Windows) shows the window again or quits. Turned off, closing the window quits.",
+    zh: "BiWrite 带着打开的文档继续运行。菜单栏（macOS）或任务栏通知区域（Windows）里的图标可以重新显示窗口或退出。关闭此项后，关闭窗口即退出。",
+  },
+  "lang.english": { en: "English", zh: "英文" },
+  "lang.chinese": { en: "Chinese", zh: "中文" },
   "settings.languageHint": {
     en: "The interface language. Translation directions do not change.",
     zh: "只改变界面文字，翻译方向不变。",
@@ -117,6 +128,7 @@ export const messages = {
   "assist.action.ask": { en: "Ask", zh: "提问" },
   "assist.action.figure": { en: "Figure", zh: "图表" },
   "assist.action.mirror": { en: "Via translation", zh: "按译文改" },
+  "assist.action.write": { en: "Write", zh: "仿写" },
   "assist.scope.target": { en: "This text", zh: "仅目标" },
   "assist.scope.neighbors": { en: "With neighbours", zh: "含前后段" },
   "assist.scope.document": { en: "Whole document", zh: "全文" },
@@ -140,6 +152,10 @@ export const messages = {
     en: "Which figure or table? For example: accuracy per dataset as grouped bars",
     zh: "想要什么图或表？例如：各数据集准确率的分组柱状图",
   },
+  "assist.placeholder.write": {
+    en: "What to write, how many paragraphs, how long. Add a paper to imitate under References. For example: two paragraphs motivating row-level cleaning, like the introduction of the reference",
+    zh: "写什么、几段、多长。要模仿的论文加在“参照样例”里。例如：仿照参照论文的引言，写两段说明逐行清洗的动机",
+  },
   "assist.placeholder.mirror": {
     en: "The paragraph's translation: rewrite it, and the paragraph follows",
     zh: "这一段的译文：直接改写译文，原文会随之修改",
@@ -155,6 +171,26 @@ export const messages = {
   "assist.references": { en: "References to imitate", zh: "参照样例" },
   "assist.addText": { en: "+ Text", zh: "+ 文本" },
   "assist.addImage": { en: "+ Image", zh: "+ 图片" },
+  "assist.addFile": { en: "+ File", zh: "+ 文件" },
+  "assist.addFileTitle": {
+    en: "A paper or text whose writing to follow (.tex, .md, .txt). For LaTeX, the body without comments is kept.",
+    zh: "添加要模仿其写法的论文或文本（.tex、.md、.txt）。LaTeX 文件只取正文，去掉注释。",
+  },
+  "assist.chars": { en: "{n} characters", zh: "{n} 字" },
+  "assist.tenThousand": { en: "×10k", zh: " 万" },
+  "assist.cut": { en: "cut", zh: "已截断" },
+  "assist.truncated": {
+    en: "The file is longer: only its first part is sent. Split it into several files to send other parts.",
+    zh: "文件较长，只发送前一部分。想发送其他部分，可以拆成几个文件分别添加。",
+  },
+  "assist.packagesAdded": {
+    en: "Inserting also adds these packages to the preamble: {packages}",
+    zh: "插入时会同时在导言区加入这些宏包：{packages}",
+  },
+  "assist.packagesNeeded": {
+    en: "The document does not load every package this needs. Add to the main file's preamble: {packages}",
+    zh: "文档还没有加载这段代码需要的全部宏包，请在主文件导言区加入：{packages}",
+  },
   "assist.samplePlaceholder": {
     en: "Paste a passage whose style to follow",
     zh: "粘贴一段想模仿其写法的文字",
@@ -226,8 +262,8 @@ export const messages = {
   "pdf.timedOut": { en: "Stopped after 5 minutes.", zh: "编译超过 5 分钟，已停止。" },
   "pdf.stale": { en: "This is the last PDF that compiled.", zh: "当前显示的是上一次编译成功的 PDF。" },
   "pdf.untranslated": {
-    en: "{n} paragraphs are not translated yet and appear in English.",
-    zh: "有 {n} 段尚未翻译，暂以英文排版。",
+    en: "{n} paragraphs are not translated yet and appear in the original language.",
+    zh: "有 {n} 段尚未翻译，暂以原文排版。",
   },
   "pdf.locate": { en: "Find the cursor in the PDF ({key})", zh: "在 PDF 中定位光标（{key}）" },
   "pdf.zoomIn": { en: "Zoom in", zh: "放大" },
@@ -380,6 +416,7 @@ export const messages = {
     zh: "改写这段译文，原文随之修改",
   },
   "pdf.exportTex": { en: "Export Chinese .tex…", zh: "导出中文 .tex…" },
+  "pdf.exportTexEn": { en: "Export English .tex…", zh: "导出英文 .tex…" },
   "pdf.texExported": { en: "Saved {path}.", zh: "已导出 {path}。" },
   "keys.export": { en: "Export to file…", zh: "导出到文件…" },
   "keys.import": { en: "Import from file…", zh: "从文件导入…" },
@@ -420,20 +457,42 @@ export const messages = {
   },
   "toolbar.mode": { en: "Document mode", zh: "文档模式" },
   "toolbar.swap": {
-    en: "Swap: edit the Chinese and let the English follow. Unchanged paragraphs keep your exact English.",
-    zh: "切换为编辑中文，英文随之更新。未改动的段落保留你原来的英文。",
+    en: "Edit the {edit} and let the {own} follow. Unchanged paragraphs keep your exact {own}.",
+    zh: "切换为编辑{edit}，{own}随之更新。未改动的段落保留你原来的{own}。",
   },
   "toolbar.swapBack": {
-    en: "Editing Chinese. English (saved to the file) follows on the right. Click to edit English again.",
-    zh: "正在编辑中文，右侧的英文随之更新，保存时写入文件。点击切回编辑英文。",
+    en: "Editing {edit}. The {own} on the right follows and is what gets saved. Click to edit the {own} again.",
+    zh: "正在编辑{edit}，右侧的{own}随之更新，保存时写入文件。点击切回编辑{own}。",
   },
   "toolbar.segment": { en: "Segment", zh: "本段" },
   "toolbar.segmentTitle": { en: "Retranslate the segment at the cursor", zh: "重新翻译光标所在的段落" },
   "toolbar.all": { en: "All", zh: "全部" },
-  "toolbar.allTitle": { en: "Retranslate every segment", zh: "重新翻译所有段落" },
+  "toolbar.allTitle": {
+    en: "Retranslate every paragraph, continue with the rest, or change the document's language",
+    zh: "重新翻译所有段落、继续翻译剩余段落，或改变原文的语言",
+  },
   "toolbar.retranslateOff": {
-    en: "Disabled while editing Chinese: it would replace your English with machine translation",
-    zh: "编辑中文时不可用，否则机器翻译会替换你写的英文",
+    en: "Not available while you edit the translation, because machine translation would replace your {own} on the right",
+    zh: "编辑译文时不可用，否则机器翻译会替换右侧你写的{own}",
+  },
+  "toolbar.retranslateAll": { en: "Retranslate every paragraph", zh: "重新翻译所有段落" },
+  "toolbar.retranslateAllHint": {
+    en: "Each paragraph is translated afresh, without the cache.",
+    zh: "每段都重新请求翻译，不使用缓存。",
+  },
+  "toolbar.continue": { en: "Continue with the rest", zh: "继续翻译剩余段落" },
+  "toolbar.continueHint": {
+    en: "Only paragraphs without a translation or whose translation failed, also while translation is paused.",
+    zh: "只翻译还没有译文或翻译失败的段落，暂停自动翻译时也会执行。",
+  },
+  "toolbar.continueSwappedHint": {
+    en: "Paragraphs on the left still in {own} are translated into {edit} and put in their place, and paragraphs without a translation are translated.",
+    zh: "左侧仍是{own}的段落译成{edit}后替换到原处，没有译文的段落也会翻译。",
+  },
+  "toolbar.retarget": { en: "Read the document as {lang}, translate into {other}", zh: "把原文当作{lang}，翻译成{other}" },
+  "toolbar.retargetHint": {
+    en: "When the document's language was taken wrongly. The file stays as it is and is translated again.",
+    zh: "原文语言判断错误时使用。文件内容不变，按新的原文语言重新翻译。",
   },
   "toolbar.pause": { en: "Pause", zh: "暂停" },
   "toolbar.pauseTitle": { en: "Pause auto-translate", zh: "暂停自动翻译" },
@@ -473,11 +532,41 @@ export const messages = {
     en: "Swapping needs every paragraph translated. {n} not ready yet.",
     zh: "切换前需要所有段落都已翻译，还有 {n} 段未完成。",
   },
-  "doc.editingZh": {
-    en: "Editing Chinese. The English on the right is what gets saved.",
-    zh: "正在编辑中文，保存时写入的是右侧的英文。",
+  "doc.editingOther": {
+    en: "Editing {edit}. The {own} on the right is what gets saved.",
+    zh: "正在编辑{edit}，保存时写入的是右侧的{own}。",
   },
-  "doc.editingEn": { en: "Editing English again.", zh: "已切回编辑英文。" },
+  "doc.editingOwn": { en: "Editing the {own} again.", zh: "已切回编辑{own}。" },
+  "doc.swappedFilling.one": {
+    en: "Editing {edit}. The paragraph not translated yet is put in {edit} on the left once its translation arrives.",
+    zh: "正在编辑{edit}。尚未译完的 {n} 段会在后台译好后替换到左侧。",
+  },
+  "doc.swappedFilling.many": {
+    en: "Editing {edit}. The {n} paragraphs not translated yet are put in {edit} on the left as their translations arrive.",
+    zh: "正在编辑{edit}。尚未译完的 {n} 段会在后台译好后替换到左侧。",
+  },
+  "doc.swappedPaused.one": {
+    en: "Editing {edit}. Translation is paused, so {n} paragraph stays in {own} until you choose All, then Continue with the rest.",
+    zh: "正在编辑{edit}。自动翻译已暂停，仍有 {n} 段是{own}，可在“全部”菜单里点“继续翻译剩余段落”。",
+  },
+  "doc.swappedPaused.many": {
+    en: "Editing {edit}. Translation is paused, so {n} paragraphs stay in {own} until you choose All, then Continue with the rest.",
+    zh: "正在编辑{edit}。自动翻译已暂停，仍有 {n} 段是{own}，可在“全部”菜单里点“继续翻译剩余段落”。",
+  },
+  "doc.retargetedAuto": {
+    en: "This text is {lang}, so it is now translated into {other}. Saving writes it as it is.",
+    zh: "原文是{lang}，已改为翻译成{other}。保存时写入的仍是左侧的原文。",
+  },
+  "doc.retargeted": {
+    en: "The document is read as {lang} now and translated into {other}.",
+    zh: "已把原文当作{lang}，重新翻译成{other}。",
+  },
+  "doc.continued.one": { en: "Translating {n} more paragraph.", zh: "继续翻译 {n} 段。" },
+  "doc.continued.many": { en: "Translating {n} more paragraphs.", zh: "继续翻译 {n} 段。" },
+  "doc.nothingLeft": {
+    en: "Every paragraph is translated or on its way.",
+    zh: "所有段落都已翻译或正在翻译。",
+  },
 
   // ── Status bar ────────────────────────────────────────────────────
   "status.paused": { en: "auto-translate paused", zh: "自动翻译已暂停" },

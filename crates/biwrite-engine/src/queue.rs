@@ -32,6 +32,10 @@ pub(crate) struct Job {
     translator: Arc<dyn Translator>,
     retry: RetryPolicy,
     stream_throttle: Duration,
+    /// A paragraph still in the language of the translations, translated
+    /// the other way round to replace it in the editor. Its output is not
+    /// streamed: the right pane keeps showing the original.
+    fill: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,12 +72,14 @@ impl Inner {
                 break;
             };
             let size = st.settings.batch_size.clamp(1, MAX_BATCH);
-            if size > 1 && batchable(st, id) {
+            if size > 1
+                && let Some(group) = batch_group(st, id)
+            {
                 let mut ids = vec![id];
                 let mut i = 0;
                 while ids.len() < size && i < st.queue.len().min(BATCH_LOOKAHEAD) {
                     let candidate = st.queue[i];
-                    if batchable(st, candidate) {
+                    if batch_group(st, candidate) == Some(group) {
                         st.queue.remove(i);
                         ids.push(candidate);
                     } else {
@@ -220,7 +226,9 @@ impl Inner {
                 if let Err(e) = self.cache.put(&job.key, &text) {
                     st.notices.push(e.to_string());
                 }
-                if current {
+                if current && job.fill {
+                    st.fill(job.id, &text);
+                } else if current {
                     let placeholder = job.translator.is_placeholder();
                     let glossary_fp = job.key.glossary;
                     st.update(job.id, |m| {
@@ -239,7 +247,24 @@ impl Inner {
                 }
             }
             Err(e) => {
-                if current {
+                if current && job.fill {
+                    // The paragraph keeps its text, and its translation the
+                    // original; "continue" tries again.
+                    let hash = job.hash;
+                    st.update(job.id, |m| {
+                        if m.translated_hash == Some(hash) {
+                            m.status = SegmentStatus::Translated;
+                        } else {
+                            m.status = SegmentStatus::Stale;
+                        }
+                        m.partial = None;
+                        m.forced = false;
+                        m.fill = None;
+                    });
+                    st.notices.push(format!(
+                        "a paragraph still in the other language could not be translated: {e}"
+                    ));
+                } else if current {
                     st.update(job.id, |m| {
                         m.status = SegmentStatus::Error;
                         m.error = Some(SegError {
@@ -309,17 +334,23 @@ fn revise_basis(
     }
 }
 
-/// A fresh translation that may share a request with others: edits keep
-/// their own request so revise mode stays minimal.
-fn batchable(st: &State, id: SegmentId) -> bool {
-    let Some(seg) = st.doc.get(id) else {
-        return false;
-    };
-    if !seg.kind().is_translatable() || st.meta.get(&id).is_none_or(|m| m.single) {
-        return false;
-    }
+/// Whether a segment may share a request with others, and with which:
+/// fresh translations go together, and so do paragraphs translated the
+/// other way round (`Some(true)`), since a request has one direction. Edits
+/// keep their own request so revise mode stays minimal.
+fn batch_group(st: &State, id: SegmentId) -> Option<bool> {
+    let seg = st.doc.get(id)?;
+    let meta = st.meta.get(&id)?;
     let source = seg.segment.content(st.doc.text());
-    !source.trim().is_empty() && revise_basis(st, id, source, seg.hash).is_none()
+    if !seg.kind().is_translatable() || meta.single || source.trim().is_empty() {
+        return None;
+    }
+    if meta.fill == Some(seg.hash) {
+        return Some(true);
+    }
+    revise_basis(st, id, source, seg.hash)
+        .is_none()
+        .then_some(false)
 }
 
 /// Build the request from the *current* document state and mark the segment
@@ -343,8 +374,19 @@ fn prepare_job(st: &mut State, id: SegmentId) -> Option<Job> {
     let context_after = neighbor(&mut (idx + 1..segments.len()));
     let hash = seg.hash;
 
-    st.meta.get(&id)?;
-    let previous = revise_basis(st, id, &source, hash);
+    let fill = st.meta.get(&id)?.fill == Some(hash);
+    // A paragraph still in the language of the translations is translated
+    // the other way round, afresh.
+    let direction = if fill {
+        st.direction.flipped()
+    } else {
+        st.direction
+    };
+    let previous = if fill {
+        None
+    } else {
+        revise_basis(st, id, &source, hash)
+    };
     // Old and new text share one numbering, so unchanged math keeps its
     // placeholder in all three texts.
     let mut protector = Protector::new(st.doc.mode());
@@ -353,10 +395,10 @@ fn prepare_job(st: &mut State, id: SegmentId) -> Option<Job> {
         old_source: protector.mask_context(&old_source),
         old_translation: protector.mask_known(&old_translation),
     });
-    let glossary = st.glossary_for_masked(&masked);
-    let key = st.cache_key(hash, glossary::fingerprint(&glossary));
+    let glossary = st.glossary.relevant(&masked, direction);
+    let key = st.cache_key_toward(direction, hash, glossary::fingerprint(&glossary));
     let request = TranslationRequest {
-        direction: st.direction,
+        direction,
         source: masked,
         context_before,
         context_after,
@@ -390,6 +432,7 @@ fn prepare_job(st: &mut State, id: SegmentId) -> Option<Job> {
             max: st.settings.backoff_max,
         },
         stream_throttle: st.settings.stream_throttle,
+        fill,
     })
 }
 
@@ -404,6 +447,9 @@ async fn run_job(inner: Arc<Inner>, job: Job) {
         last_emit: None,
     });
     let on_partial = |partial: &str| {
+        if job.fill {
+            return;
+        }
         let due = {
             let mut b = buffer.lock().unwrap_or_else(PoisonError::into_inner);
             partial.clone_into(&mut b.text);
@@ -482,6 +528,9 @@ async fn run_batch(inner: Arc<Inner>, jobs: Vec<Job>) {
         let (Some(job), Some(last)) = (jobs.get(i), last_emit.get(i)) else {
             return;
         };
+        if job.fill {
+            return;
+        }
         let due = {
             let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
             let now = Instant::now();

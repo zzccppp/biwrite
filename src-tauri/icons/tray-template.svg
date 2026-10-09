@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+  <!-- Menu bar icon (a macOS template: only the alpha counts). Rendered at
+       36 x 36 into tray-template.rgba (raw RGBA, black). -->
+  <defs>
+    <mask id="cut">
+      <rect width="36" height="36" fill="white"/>
+      <g stroke="black" stroke-width="2.2" stroke-linecap="round">
+        <path d="M8.6 12h5.8M8.6 16h4.2M8.6 20h5.8M8.6 24h3.4"/>
+      </g>
+    </mask>
+  </defs>
+  <path d="M18 4.5H9.4a5.5 5.5 0 0 0-5.5 5.5v16a5.5 5.5 0 0 0 5.5 5.5H18z" fill="black" mask="url(#cut)"/>
+  <path d="M18 5.6h8.6a4.4 4.4 0 0 1 4.4 4.4v16a4.4 4.4 0 0 1-4.4 4.4H18" fill="none" stroke="black" stroke-width="2.2" stroke-linejoin="round"/>
+  <g stroke="black" stroke-width="2.2" stroke-linecap="round">
+    <path d="M21.6 12h5.8M23 16h4.4M21.6 20h5.8M24 24h3.4"/>
+  </g>
+</svg>

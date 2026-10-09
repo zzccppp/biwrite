@@ -3,7 +3,7 @@
 //! Payloads are segment states, usage counters and notices only; nothing that
 //! passes through here may contain credentials.
 
-use biwrite_engine::{EventSink, SegmentState, SegmentStatus, SessionUsage};
+use biwrite_engine::{EventSink, Fill, SegmentState, SegmentStatus, SessionUsage};
 use biwrite_providers::RequestRecord;
 use tauri::{AppHandle, Emitter};
 
@@ -13,6 +13,7 @@ pub const EVENT_SEGMENT_STATES: &str = "segment-states";
 pub const EVENT_USAGE: &str = "usage";
 pub const EVENT_NOTICE: &str = "notice";
 pub const EVENT_REQUEST_LOG: &str = "request-log";
+pub const EVENT_FILLS: &str = "segment-fills";
 
 pub struct TauriSink {
     app: AppHandle,
@@ -50,6 +51,10 @@ impl EventSink for TauriSink {
     fn notice(&self, message: &str) {
         log::info!("{message}");
         self.emit(EVENT_NOTICE, message);
+    }
+
+    fn fills(&self, fills: &[Fill]) {
+        self.emit(EVENT_FILLS, fills);
     }
 }
 

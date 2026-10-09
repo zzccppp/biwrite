@@ -88,6 +88,21 @@
             <p class="translation" lang="zh-CN">{r.translation}</p>
           </section>
         {/if}
+        {#if r.missingPackages.length}
+          <p class="warn">
+            {r.preambleHere
+              ? t("assist.packagesAdded", { packages: r.missingPackages.join(", ") })
+              : t("assist.packagesNeeded", { packages: r.missingPackages.map((p) => `\\usepackage{${p}}`).join(" ") })}
+          </p>
+        {/if}
+      {:else if job.action === "write"}
+        <p class="written">{r.revision}</p>
+        {#if r.translation}
+          <section>
+            <h4 class="smallcaps">{t("assist.translation")}</h4>
+            <p class="translation written">{r.translation}</p>
+          </section>
+        {/if}
       {:else if unchanged}
         <p class="note">{t("assist.noChange")}</p>
       {:else}
@@ -121,7 +136,7 @@
     {#if r.repeated.length}
       <p class="warn">{t("assist.repeated", { items: r.repeated.join(", ") })}</p>
     {/if}
-    {#if r.revision && job.action !== "figure" && r.translation && !r.translationMatches}
+    {#if r.revision && job.action !== "figure" && job.action !== "write" && r.translation && !r.translationMatches}
       <p class="warn">{t("assist.translationDiffers")}</p>
     {/if}
 
@@ -139,7 +154,7 @@
       <div class="row">
         {#if r.revision && !unchanged}
           <button class="btn small primary" onclick={() => onaccept(job)}>
-            {job.action === "figure" ? t("assist.insert") : t("assist.accept")}
+            {job.target.insert ? t("assist.insert") : t("assist.accept")}
           </button>
         {/if}
         <button class="btn small" onclick={() => onagain(job)}>{t("assist.again")}</button>
@@ -274,6 +289,16 @@
   .answer,
   .translation {
     margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .written {
+    margin: 0;
+    max-height: 320px;
+    overflow: auto;
     font-size: 14px;
     line-height: 1.6;
     white-space: pre-wrap;

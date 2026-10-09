@@ -41,7 +41,7 @@
   }
   let addingSample = $state(false);
 
-  const actions: AssistAction[] = ["polish", "edit", "ask", "figure", "mirror"];
+  const actions: AssistAction[] = ["polish", "edit", "ask", "write", "figure", "mirror"];
   /** The paragraph whose translation the box was last filled with. */
   let prefilled: string | null = null;
 
@@ -65,9 +65,15 @@
 
   function addSample(): void {
     const text = sampleDraft.trim();
-    if (text) store.samples = [...store.samples, text];
+    if (text) store.addText(text);
     sampleDraft = "";
     addingSample = false;
+  }
+
+  /** "12,345 characters" / "1.2 万字", for a reference from a file. */
+  function size(text: string): string {
+    const n = [...text].length;
+    return t("assist.chars", { n: n >= 10000 ? `${(n / 10000).toFixed(1)}${t("assist.tenThousand")}` : String(n) });
   }
 
   function onKeydown(e: KeyboardEvent): void {
@@ -128,6 +134,7 @@
         <span class="label smallcaps">{t("assist.references")}</span>
         <span class="spacer"></span>
         <button class="link" onclick={() => (addingSample = !addingSample)}>{t("assist.addText")}</button>
+        <button class="link" onclick={() => store.addFile()} title={t("assist.addFileTitle")}>{t("assist.addFile")}</button>
         <button class="link" onclick={() => store.attach()}>{t("assist.addImage")}</button>
       </div>
       {#if addingSample}
@@ -138,8 +145,14 @@
       {#if store.samples.length || store.attachments.length}
         <ul class="chips">
           {#each store.samples as s, i (i)}
-            <li>
-              <span class="chip-text">“{s.slice(0, 40)}{s.length > 40 ? "…" : ""}”</span>
+            <li title={s.truncated ? t("assist.truncated") : undefined}>
+              {#if s.name}
+                <span class="chip-text"
+                  ><span class="file">{s.name}</span> · {size(s.text)}{s.truncated ? ` · ${t("assist.cut")}` : ""}</span
+                >
+              {:else}
+                <span class="chip-text">“{s.text.slice(0, 40)}{s.text.length > 40 ? "…" : ""}”</span>
+              {/if}
               <button
                 class="x"
                 aria-label={t("common.remove")}
@@ -331,7 +344,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 220px;
+    max-width: 260px;
+  }
+  .chip-text .file {
+    font-family: var(--font-mono);
   }
   .x {
     border: 0;

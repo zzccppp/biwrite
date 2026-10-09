@@ -68,7 +68,20 @@ export interface SessionView {
   bom: boolean;
   /** The paired file in the other language. */
   pair: PairView | null;
+  /** The direction in which the editor holds the file's own language. */
+  home: Direction;
   snapshot: Snapshot;
+}
+
+/**
+ * A paragraph still in the language of the translations (left so by an
+ * early swap), translated into the edited language: replace the segment's
+ * text `old` with `new`, unless it changed meanwhile.
+ */
+export interface Fill {
+  id: number;
+  old: string;
+  new: string;
 }
 
 export interface SavedView {
@@ -175,6 +188,8 @@ export interface SettingsView {
   latex: LatexSettings;
   /** Look for a newer release at startup. */
   checkUpdates: boolean;
+  /** Closing the window hides BiWrite in the tray. */
+  closeToTray: boolean;
   /** This build's version. */
   version: string;
 }
@@ -293,7 +308,7 @@ export const KIND_LABELS: Record<ProviderKind, string> = {
 
 // ── Writing assistant ────────────────────────────────────────────────
 
-export type AssistAction = "polish" | "edit" | "ask" | "figure" | "mirror";
+export type AssistAction = "polish" | "edit" | "ask" | "figure" | "mirror" | "write";
 export type AssistScope = "target" | "neighbors" | "document";
 
 /** What a job works on, in UTF-16 offsets of the text it started with. */
@@ -303,8 +318,25 @@ export interface AssistTarget {
   text: string;
   /** Exactly one paragraph's content: its approved translation can be kept. */
   wholeParagraph: boolean;
-  /** The answer is inserted at `from` (figures). */
+  /** The answer is inserted at `from` (figures, new text). */
   insert: boolean;
+}
+
+/** A reference text read from a file. */
+export interface ReferenceView {
+  name: string;
+  text: string;
+  chars: number;
+  /** The file had more than was kept. */
+  truncated: boolean;
+}
+
+/** A text whose writing to follow: pasted, or from a file. */
+export interface Sample {
+  /** The file it came from. */
+  name: string | null;
+  text: string;
+  truncated: boolean;
 }
 
 export interface AssistStarted {
@@ -332,6 +364,10 @@ export interface AssistResult {
   diff: DiffPart[];
   usage: { inputTokens: number; outputTokens: number };
   durationMs: number;
+  /** Packages a figure needs that the document does not load. */
+  missingPackages: string[];
+  /** The open file holds the preamble. */
+  preambleHere: boolean;
 }
 
 export type AssistEvent =

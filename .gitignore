@@ -22,5 +22,9 @@ temp/
 # Mock viewer PDF (compile samples/paper.tex into dev/sample.pdf)
 dev/*.pdf
 
-# Manual build output
-docs/manual/*.pdf
+# Manual build output (the guides themselves are docs/manual/BiWrite-Manual-*.pdf)
+docs/manual/manual-*.pdf
+docs/manual/*.aux
+docs/manual/*.log
+docs/manual/*.out
+docs/manual/*.synctex.gz

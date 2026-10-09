@@ -5,7 +5,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { bracketMatching, StreamLanguage } from "@codemirror/language";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import { Compartment, EditorState, type Extension, type Text } from "@codemirror/state";
+import { Compartment, EditorState, type Extension, type Text, Transaction } from "@codemirror/state";
 import {
   drawSelection,
   dropCursor,
@@ -162,6 +162,21 @@ export class SourceEditor {
       effects: EditorView.scrollIntoView(pos2, { y: "start", yMargin: Math.max(0, offsetY) }),
     });
     this.view.focus();
+  }
+
+  /**
+   * Replace `from`..`to` with `text` if it still reads `old` (a paragraph
+   * translated in the background). Not an undo step: undo passes over it.
+   * Returns whether it was replaced.
+   */
+  replaceIf(from: number, to: number, old: string, text: string): boolean {
+    const doc = this.view.state.doc;
+    if (from < 0 || to > doc.length || from > to || doc.sliceString(from, to) !== old) return false;
+    this.view.dispatch({
+      changes: { from, to, insert: text },
+      annotations: [Transaction.addToHistory.of(false), Transaction.userEvent.of("input.fill")],
+    });
+    return true;
   }
 
   /** Select `from`..`to` and scroll it to the middle of the view. */

@@ -64,6 +64,9 @@ pub struct AppSettings {
     pub latex: LatexSettings,
     /// Look for a newer release at startup.
     pub check_updates: bool,
+    /// Closing the window hides BiWrite in the menu bar or notification
+    /// area instead of quitting.
+    pub close_to_tray: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +103,7 @@ impl Default for AppSettings {
             skill_folder: None,
             latex: LatexSettings::default(),
             check_updates: true,
+            close_to_tray: true,
         }
     }
 }
@@ -293,6 +297,7 @@ pub struct SettingsView {
     pub effective_concurrency: usize,
     pub latex: LatexSettings,
     pub check_updates: bool,
+    pub close_to_tray: bool,
     /// This build's version.
     pub version: String,
 }
@@ -328,6 +333,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         effective_concurrency: settings.effective_concurrency(),
         latex: settings.latex.clone(),
         check_updates: settings.check_updates,
+        close_to_tray: settings.close_to_tray,
         version: env!("CARGO_PKG_VERSION").to_owned(),
     }
 }

@@ -3,8 +3,11 @@
 
 use std::path::PathBuf;
 
-use biwrite_core::{Direction, Mode, SegmentId};
+use biwrite_core::lang::written_in;
+use biwrite_core::{Mode, SegmentId};
 use biwrite_engine::Snapshot;
+
+use crate::error::CommandError;
 use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::error::CommandResult;
@@ -51,6 +54,13 @@ pub(crate) async fn load(
     state: &AppState,
     path: PathBuf,
 ) -> CommandResult<SessionView> {
+    let view = open_path(state, path).await?;
+    refresh_title(window, state);
+    Ok(view)
+}
+
+/// [`load`] without the window title.
+pub(crate) async fn open_path(state: &AppState, path: PathBuf) -> CommandResult<SessionView> {
     let file = files::read_text_file(path.clone()).await?;
     // A file in the other language by the same name is its mirror.
     let mirror = match pairing::counterpart(&path) {
@@ -58,7 +68,6 @@ pub(crate) async fn load(
         None => None,
     };
     let snapshot = pairing::open(state, path, file, mirror);
-    refresh_title(window, state);
     Ok(state.session_view(snapshot))
 }
 
@@ -70,7 +79,7 @@ pub async fn save_file(
     state: State<'_, AppState>,
     text: String,
 ) -> CommandResult<Option<SavedView>> {
-    let english = saved_text(&state, text)?;
+    let own = home_text(&state, text)?;
     let current = state.file().path.clone();
     let path = match current {
         Some(path) => path,
@@ -79,9 +88,7 @@ pub async fn save_file(
             None => return Ok(None),
         },
     };
-    save_to(&window, &state, path, english, None)
-        .await
-        .map(Some)
+    save_to(&window, &state, path, own, None).await.map(Some)
 }
 
 /// Save under a new name.
@@ -92,7 +99,7 @@ pub async fn save_file_as(
     state: State<'_, AppState>,
     text: String,
 ) -> CommandResult<Option<SavedView>> {
-    let english = saved_text(&state, text)?;
+    let own = home_text(&state, text)?;
     let current = state.file().path.clone();
     let Some(path) = files::pick_save(&app, &window, current.as_deref()).await else {
         return Ok(None);
@@ -107,35 +114,46 @@ pub async fn save_file_as(
             _ => None,
         }
     };
-    save_to(&window, &state, path, english, mirror_to)
+    save_to(&window, &state, path, own, mirror_to)
         .await
         .map(Some)
 }
 
-/// What is written to the open file. Without a pair the file is always
-/// English: while editing Chinese, it is composed from the current
-/// translations (and refused if any paragraph is still pending). With a
-/// pair, each file holds its own language: the editor's text is written,
-/// and the mirror follows.
-fn saved_text(state: &AppState, editor_text: String) -> CommandResult<String> {
-    if state.file().pair.is_some() {
-        if state.engine.text() != editor_text {
-            state.engine.update(editor_text.clone());
-        }
-        return Ok(editor_text);
+/// The open file's own text, what saving writes: the editor's, or, while
+/// the other language is edited (after a swap), composed from the
+/// translations, refused while a paragraph is still pending. With a pair,
+/// the editor holds the file's own language and the mirror follows.
+pub(crate) fn home_text(state: &AppState, editor_text: String) -> CommandResult<String> {
+    // Normally a no-op: the frontend flushes edits first.
+    if state.engine.text() != editor_text {
+        state.engine.update(editor_text.clone());
     }
-    match state.engine.direction() {
-        Direction::EnZh => Ok(editor_text),
-        Direction::ZhEn => {
-            // Normally a no-op: the frontend flushes edits before saving.
-            state.engine.update(editor_text);
-            Ok(state.engine.compose_target()?)
-        }
+    let own = {
+        let fs = state.file();
+        fs.pair.is_some() || state.engine.direction() == fs.home
+    };
+    if own {
+        Ok(editor_text)
+    } else {
+        Ok(state.engine.compose_target()?)
     }
 }
 
 async fn save_to(
     window: &WebviewWindow,
+    state: &AppState,
+    path: PathBuf,
+    text: String,
+    mirror_to: Option<PathBuf>,
+) -> CommandResult<SavedView> {
+    let saved = write_document(state, path, text, mirror_to).await;
+    refresh_title(window, state);
+    saved
+}
+
+/// Write the document's own `text` to `path` (and the paired file to
+/// `mirror_to`, or where it is); [`save_to`] without the window title.
+pub(crate) async fn write_document(
     state: &AppState,
     path: PathBuf,
     text: String,
@@ -159,7 +177,6 @@ async fn save_to(
     } else {
         state.apply_doc_note();
     }
-    refresh_title(window, state);
     log::info!("saved {}", display_name(Some(&path)));
     let mirror = match mirror_to {
         Some(dest) => pairing::save_mirror_as(state, dest).await?,
@@ -184,13 +201,18 @@ pub async fn swap_languages(
     text: String,
     keep: Option<bool>,
 ) -> CommandResult<SessionView> {
+    let view = swap(&state, text, keep.unwrap_or(false));
+    refresh_title(&window, &state);
+    view
+}
+
+/// [`swap_languages`] without the window title.
+pub(crate) fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<SessionView> {
     if state.file().pair.is_some() {
-        let view = pairing::swap(&state, text)?;
-        refresh_title(&window, &state);
-        return Ok(view);
+        return pairing::swap(state, text);
     }
     // `keep`: swap now; untranslated paragraphs keep their text.
-    let swapped = if keep.unwrap_or(false) {
+    let swapped = if keep {
         state.engine.swap_keeping_untranslated(text.clone())?
     } else {
         state.engine.swap(text.clone())?
@@ -199,17 +221,90 @@ pub async fn swap_languages(
         "swapped languages: now {}",
         swapped.snapshot.direction.as_str()
     );
-    // Dirty means "the English differs from the file on disk".
-    let english = match swapped.snapshot.direction {
-        Direction::EnZh => &swapped.text,
-        Direction::ZhEn => &text,
-    };
+    // Dirty means "the file's own language differs from the file on disk".
     {
         let mut fs = state.file();
-        fs.dirty = english != fs.file.text();
+        let own = if swapped.snapshot.direction == fs.home {
+            &swapped.text
+        } else {
+            &text
+        };
+        fs.dirty = own != fs.file.text();
     }
-    refresh_title(&window, &state);
     Ok(state.session_view(swapped.snapshot))
+}
+
+/// Take the open file to be written in the other language than assumed:
+/// its own text becomes the source of the other direction (a Chinese file
+/// opened as English is translated into English from then on). While the
+/// other language is edited, the file's own text comes back first, exactly.
+/// With `only_if_needed`, this happens only when the text plainly reads as
+/// the other language, and `None` means nothing changed. Not for a pair,
+/// whose files name their languages.
+#[tauri::command]
+pub async fn retarget_language(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    text: String,
+    only_if_needed: bool,
+) -> CommandResult<Option<SessionView>> {
+    let Some(snapshot) = retarget(&state, text, only_if_needed)? else {
+        return Ok(None);
+    };
+    refresh_title(&window, &state);
+    Ok(Some(state.session_view(snapshot)))
+}
+
+/// See [`retarget_language`].
+pub(crate) fn retarget(
+    state: &AppState,
+    text: String,
+    only_if_needed: bool,
+) -> CommandResult<Option<Snapshot>> {
+    if state.file().pair.is_some() {
+        if only_if_needed {
+            return Ok(None);
+        }
+        return Err(CommandError::Settings(
+            "This document is paired with its translation, and each file keeps its own language."
+                .into(),
+        ));
+    }
+    let home = state.file().home;
+    let mode = state.engine.mode();
+    if only_if_needed {
+        let editing_own = state.engine.direction() == home;
+        if !editing_own || written_in(&text, mode) != Some(home.flipped()) {
+            return Ok(None);
+        }
+    }
+    let own = home_text(state, text)?;
+    let new_home = home.flipped();
+    let snapshot = state
+        .engine
+        .load_known(own.clone(), mode, new_home, Vec::new());
+    {
+        let mut fs = state.file();
+        fs.home = new_home;
+        fs.dirty = own != fs.file.text();
+    }
+    log::info!("the document is read as {} now", new_home.as_str());
+    Ok(Some(snapshot))
+}
+
+/// Translate what is left (see [`biwrite_engine::Engine::continue_translation`]):
+/// while the other language is edited, also the paragraphs still written in
+/// the file's language. Returns how many paragraphs were taken up.
+#[tauri::command]
+pub async fn continue_translation(state: State<'_, AppState>, text: String) -> CommandResult<usize> {
+    if state.engine.text() != text {
+        state.engine.update(text);
+    }
+    let other_language = {
+        let fs = state.file();
+        fs.pair.is_none() && state.engine.direction() != fs.home
+    };
+    Ok(state.engine.continue_translation(other_language))
 }
 
 /// New editor text after the debounce: re-segment, align, schedule work.
@@ -258,28 +353,11 @@ pub async fn set_dirty(
     Ok(())
 }
 
-/// Open the user guide bundled with the app, in `lang` ("zh" or "en"), with
-/// the system's PDF viewer.
+/// Open the user guide, in `lang` ("zh" or "en"), on GitHub in the browser
+/// (where it can be read or downloaded; the app does not carry it).
 #[tauri::command]
-pub async fn open_manual(app: AppHandle, lang: String) -> CommandResult<()> {
-    use tauri::Manager;
-    let name = if lang == "zh" {
-        "BiWrite-Manual-zh.pdf"
-    } else {
-        "BiWrite-Manual-en.pdf"
-    };
-    let path = app
-        .path()
-        .resource_dir()
-        .map_err(|e| crate::error::CommandError::Settings(e.to_string()))?
-        .join("resources/docs")
-        .join(name);
-    if !path.is_file() {
-        return Err(crate::error::CommandError::Settings(format!(
-            "the user guide is missing from this installation ({name})"
-        )));
-    }
-    files::open_url(&path.display().to_string())
+pub async fn open_manual(lang: String) -> CommandResult<()> {
+    files::open_url(files::manual_url(&lang))
 }
 
 /// Open one of BiWrite's known links (see `files::known_link`).
@@ -287,8 +365,6 @@ pub async fn open_manual(app: AppHandle, lang: String) -> CommandResult<()> {
 pub async fn open_link(name: String) -> CommandResult<()> {
     match files::known_link(&name) {
         Some(url) => files::open_url(url),
-        None => Err(crate::error::CommandError::Settings(format!(
-            "unknown link {name}"
-        ))),
+        None => Err(CommandError::Settings(format!("unknown link {name}"))),
     }
 }

@@ -25,6 +25,8 @@
     AssistAction,
     AssistRequest,
     AssistScope,
+    Direction,
+    Fill,
     IssueView,
     Mode,
     PdfBox,
@@ -101,6 +103,15 @@
   let opening = false;
   let swapping = false;
   let exporting = false;
+  /** Fills for paragraphs not known here yet (they came during a swap). */
+  let pendingFills: Fill[] = [];
+  /** A fill is being put in: not an edit that makes the file dirty. */
+  let applyingFill = false;
+
+  /** "English" or "Chinese" (in the interface language), for the source of `direction`. */
+  function langName(direction: Direction): string {
+    return direction === "zh-en" ? t("lang.chinese") : t("lang.english");
+  }
   /** Resolves when the in-flight engine update finishes. */
   let inflightDone: Promise<void> | null = null;
 
@@ -185,7 +196,7 @@
     session.noteEdit(update.changes);
     assist.map(update.changes);
     unsent = unsent.compose(update.changes);
-    if (!session.dirty) setDirty(true);
+    if (!session.dirty && !applyingFill) setDirty(true);
     highlightTick++;
     clearTimeout(timer);
     timer = setTimeout(flush, DEBOUNCE_MS);
@@ -263,9 +274,12 @@
     sync.follow();
   }
 
-  // CodeMirror's own panels follow the interface language.
+  // CodeMirror's own panels and the tray menu follow the interface language.
   $effect(() => {
     editor?.setInterfaceLanguage(language.current);
+  });
+  $effect(() => {
+    ipc.setTrayLanguage(language.current).catch(() => {});
   });
 
   // Mirror the active block back into the editor (runs after CodeMirror's update).
@@ -292,6 +306,10 @@
     savedDoc = view.dirty ? null : editor.doc;
     unsent = ChangeSet.empty(editor.doc.length);
     session.load(view);
+    // Fills that came while this view was on its way.
+    const waiting = pendingFills;
+    pendingFills = [];
+    if (waiting.length > 0) applyFills(waiting, false);
     if (rightPane) rightPane.scrollTop = 0;
     pdfMenu = null;
     editor.focus();
@@ -388,6 +406,44 @@
     void flush();
   }
 
+  /**
+   * Paragraphs left in the language of the translations by an early swap,
+   * now translated: each replaces its text on the left, unless the user
+   * changed it meanwhile. Not unsaved changes, since the file's own text
+   * stays the same. `keep`: hold fills for paragraphs not known yet.
+   */
+  function applyFills(fills: Fill[], keep = true): void {
+    if (!editor || swapping) {
+      if (keep) pendingFills = [...pendingFills, ...fills].slice(-500);
+      return;
+    }
+    const clean = !session.dirty;
+    let applied = false;
+    for (const fill of fills) {
+      const range = session.index.range(fill.id);
+      if (!range) {
+        if (keep) pendingFills = [...pendingFills, fill].slice(-500);
+        continue;
+      }
+      applyingFill = true;
+      try {
+        applied = editor.replaceIf(range.from, range.to, fill.old, fill.new) || applied;
+      } finally {
+        applyingFill = false;
+      }
+    }
+    if (applied && clean) savedDoc = editor.doc;
+  }
+
+  /** The cursor's paragraph, by position, to find it again after a reload. */
+  function cursorParagraph(): number {
+    return session.activeId === null ? -1 : session.index.indexOf(session.activeId);
+  }
+
+  function restoreCursor(at: number): void {
+    if (editor && at >= 0 && at < session.index.size) editor.focusAt(session.index.rangeAt(at).from, 120);
+  }
+
   /** Swap languages: edit the translation, read the original on the right. */
   async function swapLanguages(): Promise<void> {
     if (!editor || swapping) return;
@@ -396,6 +452,18 @@
     editor.setEditable(false);
     try {
       await settleEdits();
+      // Text plainly in the other language than taken (a Chinese document
+      // read as English): read it as such instead of swapping, no waiting.
+      if (!session.pair && !session.swapped && !swapWhenReady) {
+        const at = cursorParagraph();
+        const view = await ipc.retargetLanguage(editor.text(), true);
+        if (view) {
+          loadView(view);
+          restoreCursor(at);
+          session.flash(t("doc.retargetedAuto", { lang: langName(view.home), other: langName(view.home === "zh-en" ? "en-zh" : "zh-en") }));
+          return;
+        }
+      }
       const c = session.counts;
       const waiting = c.pending + c.translating + c.error;
       let keep = false;
@@ -411,14 +479,24 @@
       }
       swapWhenReady = false;
       // Keep the cursor on the same paragraph across the swap.
-      const at = session.activeId === null ? -1 : session.index.indexOf(session.activeId);
+      const at = cursorParagraph();
       // Skipped blocks are identical on both sides: keep expanded equations open.
       const expanded = session.expandedPositions();
       const view = await ipc.swapLanguages(editor.text(), keep);
+      swapping = false;
       loadView(view);
       session.restoreExpanded(expanded);
-      if (at >= 0 && at < session.index.size) editor.focusAt(session.index.rangeAt(at).from, 120);
-      session.flash(view.snapshot.direction === "zh-en" ? t("doc.editingZh") : t("doc.editingEn"));
+      restoreCursor(at);
+      const names = { edit: langName(view.snapshot.direction), own: langName(view.home), n: waiting };
+      if (keep && session.swapped) {
+        session.flash(
+          session.autoTranslate
+            ? count(waiting, "doc.swappedFilling.one", "doc.swappedFilling.many", names)
+            : count(waiting, "doc.swappedPaused.one", "doc.swappedPaused.many", names),
+        );
+      } else {
+        session.flash(session.swapped ? t("doc.editingOther", names) : t("doc.editingOwn", names));
+      }
     } catch (err) {
       fail(err);
     } finally {
@@ -429,6 +507,40 @@
 
   function retranslateActive(): void {
     if (session.activeId !== null) ipc.retranslateSegment(session.activeId).catch(fail);
+  }
+
+  /** Translate what is left (and, swapped, what is still in the other language). */
+  async function continueTranslation(): Promise<void> {
+    if (!editor) return;
+    await settleEdits();
+    try {
+      const n = await ipc.continueTranslation(editor.text());
+      session.flash(n > 0 ? count(n, "doc.continued.one", "doc.continued.many") : t("doc.nothingLeft"));
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** Read the document as written in the other language. */
+  async function retargetLanguage(): Promise<void> {
+    if (!editor || swapping) return;
+    swapping = true;
+    editor.setEditable(false);
+    try {
+      await settleEdits();
+      const at = cursorParagraph();
+      const view = await ipc.retargetLanguage(editor.text(), false);
+      swapping = false;
+      if (!view) return;
+      loadView(view);
+      restoreCursor(at);
+      session.flash(t("doc.retargeted", { lang: langName(view.home), other: langName(view.home === "zh-en" ? "en-zh" : "zh-en") }));
+    } catch (err) {
+      fail(err);
+    } finally {
+      swapping = false;
+      editor?.setEditable(true);
+    }
   }
 
   function toggleAuto(): void {
@@ -677,7 +789,7 @@
     if (compilable && latex.ready && !latex.builds[lang] && !latex.building[lang]) void compile(lang);
   }
 
-  async function exportChineseTex(): Promise<void> {
+  async function exportTranslatedTex(): Promise<void> {
     if (!editor) return;
     await settleEdits();
     try {
@@ -818,7 +930,7 @@
       from: o.from ?? sel.from,
       to: o.to ?? sel.to,
       instruction: o.instruction ?? assist.instruction.trim(),
-      references: [...assist.samples],
+      references: assist.samples.map((s) => s.text),
       images: assist.attachments.map((a) => a.id),
       history: o.history ?? [],
     };
@@ -843,7 +955,9 @@
     let insert = r.revision;
     if (job.target.insert) {
       to = from;
-      insert = `\n\n${r.revision.trim()}`;
+      // At the start of the document or of an empty line, no blank line first.
+      const lead = from === 0 || doc.sliceString(Math.max(0, from - 2), from) === "\n\n" ? "" : "\n\n";
+      insert = `${lead}${r.revision.trim()}`;
     } else if (doc.sliceString(from, to) !== job.target.text) {
       const at = uniqueIndex(doc.toString(), job.target.text);
       if (at < 0) {
@@ -860,9 +974,28 @@
         // The paragraph is translated again instead.
       }
     }
+    // New paragraphs come with their translation, paragraph for paragraph.
+    if (job.action === "write" && r.translation) {
+      const paragraphs = (s: string) => s.trim().split(/\n\s*\n/).map((p) => p.trim());
+      const [en, zh] = [paragraphs(r.revision), paragraphs(r.translation)];
+      if (en.length === zh.length) {
+        await Promise.all(en.map((p, i) => assistIpc.offer(p, zh[i]).catch(() => {})));
+      }
+    }
+    const changes = [{ from, to, insert }];
+    // A figure's missing packages go into the preamble, when it is here.
+    let shift = 0;
+    if (job.action === "figure" && r.preambleHere && r.missingPackages.length) {
+      const at = doc.toString().search(/^\\begin\{document\}/m);
+      if (at >= 0 && at < from) {
+        const lines = r.missingPackages.map((p) => `\\usepackage{${p}}\n`).join("");
+        changes.unshift({ from: at, to: at, insert: lines });
+        shift = lines.length;
+      }
+    }
     editor.view.dispatch({
-      changes: { from, to, insert },
-      selection: { anchor: from, head: from + insert.length },
+      changes,
+      selection: { anchor: from + shift, head: from + shift + insert.length },
       scrollIntoView: true,
       userEvent: "input.assist",
     });
@@ -959,6 +1092,7 @@
           onNotice: (message) => session.flash(message),
           onRequest: (record) => requestLog.apply(record),
           onAssist: (event) => assist.onEvent(event),
+          onFills: (fills) => applyFills(fills),
         });
         if (disposed) off();
         else unlisten = off;
@@ -1004,6 +1138,8 @@
     onmode={changeMode}
     onretranslate={retranslateActive}
     onretranslateall={() => ipc.retranslateAll().catch(fail)}
+    oncontinue={continueTranslation}
+    onretarget={retargetLanguage}
     onswap={swapLanguages}
     onglossary={() => {
       showSettings = false;
@@ -1089,7 +1225,8 @@
             onaction={pdfAction}
             onopenfile={(file, line) => openFromMenu(file, line)}
             onlang={switchPdfLang}
-            onexporttex={exportChineseTex}
+            fileLang={session.home === "zh-en" ? "zh" : "en"}
+            onexporttex={exportTranslatedTex}
             onclosemenu={() => (pdfMenu = null)}
           />
         </div>

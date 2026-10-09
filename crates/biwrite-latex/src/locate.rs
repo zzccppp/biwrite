@@ -1,7 +1,9 @@
 //! From a click in the PDF to a place in the source. SyncTeX gives a line;
 //! the words around the click (from the PDF's text layer) pick the exact
 //! spot near that line, skipping command names, comments and math that
-//! the PDF shows differently.
+//! the PDF shows differently. When SyncTeX gives something drawn over the
+//! text instead (the line-number ruler of a submission), the same words
+//! find the place anywhere in a file ([`find_words`]).
 
 /// Lines searched on each side of the SyncTeX line.
 const SPREAD: usize = 3;
@@ -131,6 +133,75 @@ fn same(a: &str, b: &str) -> bool {
     a == b || (a.len() >= 4 && b.len() >= 4 && (a.starts_with(b) || b.starts_with(a)))
 }
 
+/// The best place of the clicked words among `source`.
+struct Best {
+    at: usize,
+    score: usize,
+    /// The clicked word itself matched, and how many of its neighbours of
+    /// how many there are.
+    clicked: bool,
+    neighbours: usize,
+    around: usize,
+}
+
+impl Best {
+    /// Sure enough to override SyncTeX: the clicked word and two of its
+    /// neighbours, or all of a shorter run.
+    fn sure(&self) -> bool {
+        self.clicked && self.neighbours >= self.around.min(2)
+    }
+}
+
+fn best(words: &[Word], click: usize, source: &[Word], anchor: usize) -> Option<Best> {
+    if words.is_empty() || source.is_empty() {
+        return None;
+    }
+    // The clicked word, or the next one when the click fell between words.
+    let clicked = words
+        .iter()
+        .position(|w| w.at + w.text.len() > click)
+        .unwrap_or(words.len() - 1);
+    let first = clicked.saturating_sub(CONTEXT);
+    let last = (clicked + CONTEXT).min(words.len() - 1);
+    let mut best: Option<(Best, usize)> = None; // (match, distance)
+    for p in 0..source.len() {
+        let (mut score, mut hit, mut neighbours) = (0, false, 0);
+        for (k, word) in words.iter().enumerate().take(last + 1).skip(first) {
+            let Some(q) = (p + k).checked_sub(clicked) else {
+                continue;
+            };
+            if source.get(q).is_some_and(|s| same(&s.text, &word.text)) {
+                if k == clicked {
+                    score += 3;
+                    hit = true;
+                } else {
+                    score += 2;
+                    neighbours += 1;
+                }
+            }
+        }
+        if score == 0 {
+            continue;
+        }
+        let at = source[p].at;
+        let distance = at.abs_diff(anchor);
+        if best
+            .as_ref()
+            .is_none_or(|(b, d)| score > b.score || score == b.score && distance < *d)
+        {
+            let found = Best {
+                at,
+                score,
+                clicked: hit,
+                neighbours,
+                around: last - first,
+            };
+            best = Some((found, distance));
+        }
+    }
+    best.map(|(b, _)| b)
+}
+
 /// The byte offset in `text` of the word clicked in the PDF: `span` is the
 /// text-layer run under the click, `click` the byte offset of the click in
 /// it, and `line` the SyncTeX line (1-based). Falls back to the start of
@@ -142,43 +213,22 @@ pub fn locate(text: &str, line: u32, span: &str, click: usize) -> usize {
             .find(|c: char| !c.is_whitespace())
             .unwrap_or(0)
             .min(to.saturating_sub(line_start));
-    let words = pdf_words(span);
     let source = source_words(text, from, to);
-    if words.is_empty() || source.is_empty() {
-        return fallback;
-    }
-    // The clicked word, or the next one when the click fell between words.
-    let clicked = words
-        .iter()
-        .position(|w| w.at + w.text.len() > click)
-        .unwrap_or(words.len() - 1);
-    let mut best: Option<(usize, usize, usize)> = None; // (score, distance, offset)
-    for p in 0..source.len() {
-        let first = clicked.saturating_sub(CONTEXT);
-        let mut score = 0;
-        for (k, word) in words
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take(clicked + CONTEXT + 1 - first)
-        {
-            let Some(q) = (p + k).checked_sub(clicked) else {
-                continue;
-            };
-            if source.get(q).is_some_and(|s| same(&s.text, &word.text)) {
-                score += if k == clicked { 3 } else { 2 };
-            }
-        }
-        if score == 0 {
-            continue;
-        }
-        let at = source[p].at;
-        let distance = at.abs_diff(line_start);
-        if best.is_none_or(|(s, d, _)| score > s || score == s && distance < d) {
-            best = Some((score, distance, at));
-        }
-    }
-    best.map_or(fallback, |(_, _, at)| at)
+    best(&pdf_words(span), click, &source, line_start).map_or(fallback, |b| b.at)
+}
+
+/// Where the clicked words surely are in `text`: near `line` (1-based)
+/// when given, else anywhere. `None` when they are not there with enough
+/// of their neighbours to be sure.
+pub fn find_words(text: &str, line: Option<u32>, span: &str, click: usize) -> Option<usize> {
+    let (from, to, anchor) = match line {
+        Some(line) => window(text, line as usize),
+        None => (0, text.len(), 0),
+    };
+    let source = source_words(text, from, to);
+    best(&pdf_words(span), click, &source, anchor)
+        .filter(Best::sure)
+        .map(|b| b.at)
 }
 
 #[cfg(test)]
@@ -218,6 +268,21 @@ The repair step runs after detection.\n";
         let click = span.find("行").unwrap();
         let at = locate(source, 2, span, click);
         assert_eq!(&source[at..at + 3], "行");
+    }
+
+    #[test]
+    fn words_are_found_anywhere_only_when_sure() {
+        let span = "The repair step runs after detection.";
+        let click = span.find("step").unwrap();
+        // Not near line 1 of a longer text, but surely further down.
+        let long = format!("{}{SOURCE}", "Other words on a line.\n".repeat(10));
+        assert_eq!(find_words(&long, Some(1), span, click), None);
+        assert_eq!(find_words(&long, None, span, click), long.find("step runs"));
+        assert_eq!(find_words(&long, Some(14), span, click), long.find("step runs"));
+        // One common word alone is not enough to be sure.
+        assert_eq!(find_words(SOURCE, None, "the budget of others", 5), None);
+        // A short run counts when all of it matches.
+        assert_eq!(find_words(SOURCE, None, "row-level", 1), SOURCE.find("row-level"));
     }
 
     #[test]

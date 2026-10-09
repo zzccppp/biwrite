@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use biwrite_core::glossary::Glossary;
+use biwrite_core::lang::paragraph_written_in;
 use biwrite_core::{ComposeError, ContentHash, Direction, GlossaryEntry, Mode, SegmentId};
 use tokio::runtime::Handle;
 
@@ -54,13 +55,17 @@ impl Inner {
     }
 
     /// Release the lock and deliver queued notices (deduplicated, so a broken
-    /// cache doesn't produce one notice per segment).
+    /// cache doesn't produce one notice per segment) and fills.
     pub fn release(&self, mut st: MutexGuard<'_, State>) {
         let mut notices = std::mem::take(&mut st.notices);
         notices.dedup();
+        let fills = std::mem::take(&mut st.fills);
         drop(st);
         for notice in notices {
             self.sink.notice(&notice);
+        }
+        if !fills.is_empty() {
+            self.sink.fills(&fills);
         }
     }
 
@@ -116,6 +121,15 @@ impl Inner {
             return false;
         };
         let forced = meta.forced;
+        match meta.fill {
+            Some(fill) if fill == hash => return self.reconcile_fill(st, id, hash, content, forced),
+            // Edited since: a paragraph of the edited language like any other.
+            Some(_) => st.update(id, |m| m.fill = None),
+            None => {}
+        }
+        let Some(meta) = st.meta.get(&id) else {
+            return false;
+        };
         if meta.translated_hash == Some(hash) && !forced {
             st.cancel(id);
             st.set_status(id, SegmentStatus::Translated);
@@ -171,6 +185,46 @@ impl Inner {
             st.set_status(id, SegmentStatus::Stale);
             false
         }
+    }
+
+    /// A paragraph still in the language of the translations (left so by
+    /// an early swap). Its translation is the original it was swapped with,
+    /// exactly; its translation the other way round, from the cache or a
+    /// request, replaces it in the editor. Returns `true` if a request must
+    /// be queued.
+    fn reconcile_fill(
+        &self,
+        st: &mut State,
+        id: SegmentId,
+        hash: ContentHash,
+        content: String,
+        forced: bool,
+    ) -> bool {
+        if st.running.get(&id).is_some_and(|r| r.hash == hash) {
+            return false;
+        }
+        let seed = st
+            .meta
+            .get(&id)
+            .filter(|m| m.translated_hash != Some(hash))
+            .and_then(|m| m.seed.as_ref())
+            .filter(|(h, _)| *h == hash)
+            .map(|(_, original)| original.clone());
+        if let Some(original) = seed {
+            adopt(st, id, hash, content.clone(), original, true);
+        }
+        let toward = st.direction.flipped();
+        let key = st.cache_key_toward(toward, hash, st.glossary_fp_toward(toward, &content));
+        match self.cache.get(&key) {
+            Ok(Some(translation)) => {
+                st.usage.cache_hits += 1;
+                st.fill(id, &translation);
+                return false;
+            }
+            Ok(None) => {}
+            Err(e) => st.notices.push(e.to_string()),
+        }
+        forced || st.settings.auto_translate
     }
 }
 
@@ -386,6 +440,55 @@ impl Engine {
         self.force(&mut st, &ids, Priority::Normal);
         self.inner.pump(&mut st);
         self.emit_touched(st);
+    }
+
+    /// Translate what is left: paragraphs without an up-to-date translation
+    /// (failed, or waiting while translation is paused) and, with
+    /// `other_language`, paragraphs still written in the language of the
+    /// translations (left so by an early swap), which are translated the
+    /// other way round and replaced in the editor. Work already queued or
+    /// running goes on as it is. Returns how many paragraphs were taken up.
+    pub fn continue_translation(&self, other_language: bool) -> usize {
+        let mut st = self.inner.lock();
+        let mode = st.doc.mode();
+        let target = st.direction.flipped();
+        let text = st.doc.text();
+        let (mut fills, mut rest) = (Vec::new(), Vec::new());
+        for s in st.doc.segments() {
+            let content = s.segment.content(text);
+            if !s.kind().is_translatable()
+                || content.trim().is_empty()
+                || st.running.contains_key(&s.id)
+                || st.queue.contains(&s.id)
+            {
+                continue;
+            }
+            let Some(m) = st.meta.get(&s.id) else {
+                continue;
+            };
+            if other_language && paragraph_written_in(content, mode) == Some(target) {
+                fills.push((s.id, s.hash));
+            } else if m.translated_hash != Some(s.hash) || m.status == SegmentStatus::Error {
+                rest.push(s.id);
+            }
+        }
+        for &(id, hash) in &fills {
+            st.update(id, |m| {
+                m.fill = Some(hash);
+                m.forced = true;
+                m.error = None;
+            });
+        }
+        for &id in &rest {
+            st.update(id, |m| {
+                m.forced = true;
+                m.error = None;
+            });
+        }
+        self.inner.reconcile(&mut st, &HashSet::new());
+        self.inner.pump(&mut st);
+        self.emit_touched(st);
+        fills.len() + rest.len()
     }
 
     fn force(&self, st: &mut State, ids: &[SegmentId], priority: Priority) {

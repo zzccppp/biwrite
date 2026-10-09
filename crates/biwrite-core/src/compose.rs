@@ -106,7 +106,7 @@ where
 /// multi-line headings are joined, and in LaTeX an unescaped `%` becomes
 /// `\%` (it would comment out the rest of the line) unless it starts one of
 /// the source's own comments, which placeholder protection carried over.
-pub(crate) fn fit(t: &str, kind: SegmentKind, mode: Mode, source: &str) -> String {
+pub fn fit(t: &str, kind: SegmentKind, mode: Mode, source: &str) -> String {
     let mut out = if t.lines().any(|l| l.trim().is_empty()) {
         t.lines()
             .filter(|l| !l.trim().is_empty())

@@ -25,6 +25,10 @@
     onmode: (mode: Mode) => void;
     onretranslate: () => void;
     onretranslateall: () => void;
+    /** Translate what is left (and, swapped, what is still in the other language). */
+    oncontinue: () => void;
+    /** Read the document as written in the other language. */
+    onretarget: () => void;
     ontoggleauto: () => void;
     ontheme: () => void;
     onswap: () => void;
@@ -57,6 +61,8 @@
     onmode,
     onretranslate,
     onretranslateall,
+    oncontinue,
+    onretarget,
     ontoggleauto,
     ontheme,
     onswap,
@@ -71,8 +77,38 @@
   }: Props = $props();
 
   const zh = $derived(session.direction === "zh-en");
+  /** The file's own language and the other one, as words of the interface. */
+  const own = $derived(session.home === "zh-en" ? t("lang.chinese") : t("lang.english"));
+  const other = $derived(session.home === "zh-en" ? t("lang.english") : t("lang.chinese"));
+
+  let allOpen = $state(false);
+  let allMenu = $state<HTMLElement>();
+
+  function choose(action: () => void): void {
+    allOpen = false;
+    action();
+  }
+
+  // An open menu closes on a click elsewhere or Escape.
+  $effect(() => {
+    if (!allOpen) return;
+    const click = (e: MouseEvent) => {
+      if (allMenu && !allMenu.contains(e.target as Node)) allOpen = false;
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") allOpen = false;
+    };
+    window.addEventListener("mousedown", click, true);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      window.removeEventListener("mousedown", click, true);
+      window.removeEventListener("keydown", key, true);
+    };
+  });
 
   const modes: Mode[] = ["plain", "markdown", "latex"];
+  /** For narrow windows. */
+  const SHORT_MODES: Record<Mode, string> = { plain: "Txt", markdown: "MD", latex: "TeX" };
   const themeLabel: Record<ThemePref, MessageKey> = {
     system: "toolbar.theme.system",
     light: "toolbar.theme.light",
@@ -113,7 +149,9 @@
           class:on={session.mode === m}
           role="radio"
           aria-checked={session.mode === m}
-          onclick={() => onmode(m)}>{MODE_LABELS[m]}</button
+          title={MODE_LABELS[m]}
+          onclick={() => onmode(m)}
+          ><span class="long">{MODE_LABELS[m]}</span><span class="short">{SHORT_MODES[m]}</span></button
         >
       {/each}
     </div>
@@ -122,10 +160,14 @@
   <div class="title">
     <button
       class="swap"
-      class:zh
+      class:swapped={session.swapped}
       class:waiting={swapWaiting}
       onclick={onswap}
-      title={swapWaiting ? t("toolbar.swapWaiting") : zh ? t("toolbar.swapBack") : t("toolbar.swap")}
+      title={swapWaiting
+        ? t("toolbar.swapWaiting")
+        : session.swapped
+          ? t("toolbar.swapBack", { edit: other, own })
+          : t("toolbar.swap", { edit: other, own })}
     >
       <span class="lang" lang={zh ? "zh-CN" : "en"}>{zh ? "中" : "EN"}</span>
       {#if swapWaiting}
@@ -172,23 +214,50 @@
     <button
       class="tool secondary"
       onclick={onretranslate}
-      disabled={session.activeId === null || zh}
-      title={zh ? t("toolbar.retranslateOff") : t("toolbar.segmentTitle")}
+      disabled={session.activeId === null || session.swapped}
+      title={session.swapped ? t("toolbar.retranslateOff", { own }) : t("toolbar.segmentTitle")}
     >
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" /></svg>
       <span class="smallcaps">{t("toolbar.segment")}</span>
     </button>
-    <button
-      class="tool secondary"
-      onclick={onretranslateall}
-      disabled={zh}
-      title={zh ? t("toolbar.retranslateOff") : t("toolbar.allTitle")}
-    >
-      <svg viewBox="0 0 16 16" aria-hidden="true"
-        ><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5M6 8h4M8 6v4" /></svg
+    <div class="menu-host" bind:this={allMenu}>
+      <button
+        class="tool secondary"
+        class:on={allOpen}
+        onclick={() => (allOpen = !allOpen)}
+        aria-haspopup="menu"
+        aria-expanded={allOpen}
+        title={t("toolbar.allTitle")}
       >
-      <span class="smallcaps">{t("toolbar.all")}</span>
-    </button>
+        <svg viewBox="0 0 16 16" aria-hidden="true"
+          ><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5M6 8h4M8 6v4" /></svg
+        >
+        <span class="smallcaps">{t("toolbar.all")}</span>
+        <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5 8 10l3.5-3.5" /></svg>
+      </button>
+      {#if allOpen}
+        <div class="menu" role="menu">
+          <button role="menuitem" disabled={session.swapped} onclick={() => choose(onretranslateall)}>
+            <span class="item">{t("toolbar.retranslateAll")}</span>
+            <span class="hint">{session.swapped ? t("toolbar.retranslateOff", { own }) : t("toolbar.retranslateAllHint")}</span>
+          </button>
+          <button role="menuitem" onclick={() => choose(oncontinue)}>
+            <span class="item">{t("toolbar.continue")}</span>
+            <span class="hint"
+              >{session.swapped && !session.pair
+                ? t("toolbar.continueSwappedHint", { own, edit: other })
+                : t("toolbar.continueHint")}</span
+            >
+          </button>
+          {#if !session.pair}
+            <button role="menuitem" onclick={() => choose(onretarget)}>
+              <span class="item">{t("toolbar.retarget", { lang: other, other: own })}</span>
+              <span class="hint">{t("toolbar.retargetHint")}</span>
+            </button>
+          {/if}
+        </div>
+      {/if}
+    </div>
     <button
       class="tool"
       class:paused={!session.autoTranslate}
@@ -311,7 +380,7 @@
     border-color: var(--seal);
     color: var(--seal);
   }
-  .swap.zh {
+  .swap.swapped {
     background: var(--seal-wash);
     border-color: var(--seal);
     color: var(--seal);
@@ -466,9 +535,62 @@
   .tool.log {
     position: relative;
   }
-  .tool.assistant.on {
+  .tool.assistant.on,
+  .tool.on {
     color: var(--accent);
     background: var(--accent-wash);
+  }
+  .tool .chev {
+    width: 11px;
+    height: 11px;
+    margin-left: -2px;
+  }
+  .menu-host {
+    position: relative;
+  }
+  .menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    width: 300px;
+    padding: 4px;
+    background: var(--paper);
+    border: 1px solid var(--rule-strong);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+  }
+  .menu button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ink);
+    text-align: left;
+    cursor: pointer;
+  }
+  .menu button:hover:not(:disabled) {
+    background: var(--accent-wash);
+  }
+  .menu button:disabled {
+    cursor: default;
+  }
+  .menu button:disabled .item {
+    color: var(--faint);
+  }
+  .menu .item {
+    font-size: 13.5px;
+  }
+  .menu .hint {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--muted);
   }
   .badge.ready {
     background: var(--seal);
@@ -530,14 +652,61 @@
     background: var(--rule);
   }
 
-  /* Narrower windows: icons only, secondary actions first. */
-  @media (max-width: 1440px) {
-    .tool.secondary span {
+  .title .tool {
+    flex: none;
+    white-space: nowrap;
+  }
+  /* Narrower windows: icons only (badges stay), secondary actions first, so
+     the file name keeps its room. English labels are longer and give way
+     sooner. */
+  @media (max-width: 1600px) {
+    .title .import span.smallcaps {
       display: none;
     }
   }
-  @media (max-width: 980px) {
-    .tool span {
+  @media (max-width: 1900px) {
+    :global(:root:lang(en)) .tool.secondary span.smallcaps {
+      display: none;
+    }
+  }
+  @media (max-width: 1560px) {
+    .tool.secondary span.smallcaps {
+      display: none;
+    }
+  }
+  @media (max-width: 1400px) {
+    :global(:root:lang(en)) .tool span.smallcaps {
+      display: none;
+    }
+  }
+  @media (max-width: 1240px) {
+    .tool span.smallcaps {
+      display: none;
+    }
+  }
+  .mode .short {
+    display: none;
+  }
+  @media (max-width: 1100px) {
+    .mode .long {
+      display: none;
+    }
+    .mode .short {
+      display: inline;
+    }
+    .tool {
+      padding: 0 7px 1px;
+    }
+    .sep {
+      margin: 0 3px;
+    }
+  }
+  @media (max-width: 820px) {
+    .toolbar {
+      gap: 6px;
+      padding: 0 8px;
+    }
+    .sep {
       display: none;
     }
   }

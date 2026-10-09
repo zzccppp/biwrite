@@ -8,7 +8,7 @@
 //! keys. Reference images are read in Rust from files picked in a native
 //! dialog; the webview only names them by id.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,6 +38,8 @@ pub const EVENT_ASSIST: &str = "assist";
 const MAX_DOCUMENT_CHARS: usize = 300_000;
 /// Largest reference image.
 const MAX_IMAGE_BYTES: u64 = 8_000_000;
+/// Longest reference text from a file, in characters (a long paper's body).
+const MAX_REFERENCE_CHARS: usize = 120_000;
 /// Minimum interval between streamed updates of one job.
 const PARTIAL_EVERY: Duration = Duration::from_millis(80);
 
@@ -123,13 +125,17 @@ pub struct AssistResult {
     pub diff: Vec<DiffPart>,
     pub usage: TokenUsage,
     pub duration_ms: u64,
+    /// Packages a figure needs that the document does not load.
+    pub missing_packages: Vec<String>,
+    /// The open file holds the preamble, so the packages can be added there.
+    pub preamble_here: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AssistEvent {
     Partial { id: u64, text: String },
-    Done { id: u64, result: AssistResult },
+    Done { id: u64, result: Box<AssistResult> },
     Failed { id: u64, message: String },
 }
 
@@ -152,26 +158,26 @@ struct Resolved {
 fn resolve(text: &str, mode: Mode, action: Action, a: usize, b: usize) -> Result<Resolved, String> {
     let (a, b) = (a.min(b), a.max(b));
     if a == b {
-        return match (assist::paragraph_at(text, mode, a), action) {
-            (Some(p), Action::Figure) => Ok(Resolved {
+        return match (assist::paragraph_at(text, mode, a), action.inserts()) {
+            (Some(p), true) => Ok(Resolved {
                 range: p.end..p.end,
                 text: text[p].to_owned(),
                 whole_paragraph: false,
                 insert: true,
             }),
-            (Some(p), _) => Ok(Resolved {
+            (Some(p), false) => Ok(Resolved {
                 text: text[p.clone()].to_owned(),
                 range: p,
                 whole_paragraph: true,
                 insert: false,
             }),
-            (None, Action::Figure) => Ok(Resolved {
+            (None, true) => Ok(Resolved {
                 range: a..a,
                 text: String::new(),
                 whole_paragraph: false,
                 insert: true,
             }),
-            (None, _) => Err("put the cursor in a paragraph or select text first".into()),
+            (None, false) => Err("put the cursor in a paragraph or select text first".into()),
         };
     }
     let selected = &text[a..b];
@@ -180,7 +186,7 @@ fn resolve(text: &str, mode: Mode, action: Action, a: usize, b: usize) -> Result
     if start >= end {
         return Err("the selection is empty".into());
     }
-    if action == Action::Figure {
+    if action.inserts() {
         return Ok(Resolved {
             range: end..end,
             text: text[start..end].to_owned(),
@@ -241,6 +247,12 @@ pub async fn assist_start(
     let masked = Protector::new(mode).mask(&target.text);
     let terms = glossary::relevant(&masked, direction, &settings.glossary);
     let note = state.doc_note();
+    // What a figure can rely on in this document.
+    let packages = (request.action == Action::Figure)
+        .then(|| crate::latex_commands::document_packages(&state, text))
+        .flatten();
+    let package_list: Option<Vec<String>> =
+        packages.as_ref().map(|(p, _)| p.iter().cloned().collect());
     let images: Vec<ImageInput> = {
         let all = state.assist.images();
         request
@@ -264,6 +276,7 @@ pub async fn assist_start(
             references: &request.references,
             images: images.len(),
             history: &request.history,
+            packages: package_list.as_deref(),
         },
         &skill,
     );
@@ -297,6 +310,7 @@ pub async fn assist_start(
         protector: prompt.protector,
         model,
         chat,
+        packages,
     };
     let handle = tauri::async_runtime::spawn(run(job));
     state
@@ -316,6 +330,9 @@ struct Job {
     protector: Protector,
     model: Arc<dyn ChatModel>,
     chat: ChatRequest,
+    /// For a figure in LaTeX: the packages the document loads, and whether
+    /// the open file holds the preamble.
+    packages: Option<(BTreeSet<String>, bool)>,
 }
 
 async fn run(job: Job) {
@@ -365,14 +382,22 @@ async fn run(job: Job) {
                     ) => assist::diff(&job.original, revision),
                     _ => Vec::new(),
                 };
+                let (missing_packages, preamble_here) = match (&job.packages, &answer.revision) {
+                    (Some((loaded, here)), Some(revision)) => {
+                        (biwrite_latex::packages::missing(revision, loaded), *here)
+                    }
+                    _ => (Vec::new(), false),
+                };
                 AssistEvent::Done {
                     id: job.id,
-                    result: AssistResult {
+                    result: Box::new(AssistResult {
                         answer,
                         diff,
                         usage: out.usage,
                         duration_ms: started.elapsed().as_millis() as u64,
-                    },
+                        missing_packages,
+                        preamble_here,
+                    }),
                 }
             }
         },
@@ -416,6 +441,106 @@ pub async fn assist_offer(
 ) -> CommandResult<()> {
     state.engine.offer_translation(&source, &translation);
     Ok(())
+}
+
+/// A reference text read from a file.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceView {
+    pub name: String,
+    pub text: String,
+    /// Characters kept, and whether the file had more.
+    pub chars: usize,
+    pub truncated: bool,
+}
+
+/// The prose of a reference paper: for LaTeX, the document body (or the
+/// whole file of a section), without comments; at most `MAX_REFERENCE_CHARS`.
+pub(crate) fn reference_text(name: &str, raw: &str) -> (String, bool) {
+    let latex = name.to_ascii_lowercase().ends_with(".tex");
+    let body = if latex {
+        let start = raw
+            .find("\\begin{document}")
+            .map_or(0, |i| i + "\\begin{document}".len());
+        let end = raw.rfind("\\end{document}").filter(|e| *e >= start).unwrap_or(raw.len());
+        let mut out = String::with_capacity(end - start);
+        for line in raw[start..end].lines() {
+            // A comment starts at an unescaped %.
+            let bytes = line.as_bytes();
+            let mut cut = line.len();
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'\\' => i += 2,
+                    b'%' => {
+                        cut = i;
+                        break;
+                    }
+                    _ => i += 1,
+                }
+            }
+            let kept = &line[..cut.min(line.len())];
+            if kept.trim().is_empty() && !line.trim().is_empty() {
+                continue; // a comment line
+            }
+            out.push_str(kept.trim_end());
+            out.push('\n');
+        }
+        out
+    } else {
+        raw.to_owned()
+    };
+    // At most one blank line in a row.
+    let mut tidy = String::with_capacity(body.len());
+    let mut blank = 0;
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            blank += 1;
+            if blank > 1 {
+                continue;
+            }
+        } else {
+            blank = 0;
+        }
+        tidy.push_str(line);
+        tidy.push('\n');
+    }
+    let tidy = tidy.trim().to_owned();
+    match tidy.char_indices().nth(MAX_REFERENCE_CHARS) {
+        Some((cut, _)) => (tidy[..cut].to_owned(), true),
+        None => (tidy, false),
+    }
+}
+
+/// Pick a reference paper or text (`.tex`, `.md`, `.txt`) whose writing to
+/// imitate. `None` if cancelled.
+#[tauri::command]
+pub async fn load_reference(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> CommandResult<Option<ReferenceView>> {
+    let Some(path) = crate::files::pick_open_kind(
+        &app,
+        &window,
+        "Reference text",
+        &["tex", "md", "markdown", "txt"],
+    )
+    .await
+    else {
+        return Ok(None);
+    };
+    let file = crate::files::read_text_file(path.clone()).await?;
+    let name = crate::state::display_name(Some(&path));
+    let (text, truncated) = reference_text(&name, file.text());
+    if text.trim().is_empty() {
+        return Err(CommandError::Settings(format!("{name} has no text to imitate")));
+    }
+    Ok(Some(ReferenceView {
+        chars: text.chars().count(),
+        name,
+        text,
+        truncated,
+    }))
 }
 
 /// A reference image as the webview sees it.
@@ -616,5 +741,46 @@ mod tests {
             MAX_DOCUMENT_CHARS + "[…]\n\n[…]".chars().count()
         );
         assert_eq!(document_window(DOC, &(0..5)), DOC);
+    }
+
+    #[test]
+    fn new_text_goes_after_the_paragraph_or_at_an_empty_line() {
+        let pos = DOC.find("one").unwrap();
+        let r = resolve(DOC, Mode::Plain, Action::Write, pos, pos).unwrap();
+        assert!(r.insert && !r.whole_paragraph);
+        assert_eq!(r.text, "Second one here.");
+        assert_eq!(r.range, r.range.end..r.range.end);
+        assert_eq!(r.range.end, DOC.find("\n\nThird").unwrap());
+        // On an empty line: there, with nothing before it as the target.
+        let blank = "First.\n\n\n\nLast.";
+        let at = blank.find("\n\n\n").unwrap() + 2;
+        let r = resolve(blank, Mode::Plain, Action::Write, at, at).unwrap();
+        assert!(r.insert && r.text.is_empty() && r.range == (at..at));
+        // A selection: after it.
+        let r = resolve(DOC, Mode::Plain, Action::Write, 0, 6).unwrap();
+        assert_eq!((r.text.as_str(), r.range.start), ("First", 5));
+    }
+
+    #[test]
+    fn a_reference_paper_gives_its_prose() {
+        let paper = "\\documentclass{article}\n\\usepackage{x}\n% preamble note\n\\begin{document}\n\
+                     \\section{Introduction}\n% TODO cut this\n\
+                     Cleaning costs 50\\% of the time. % why\n\n\n\n\
+                     We present UniClean.\n\\end{document}\nafter\n";
+        let (text, truncated) = reference_text("uniclean.tex", paper);
+        assert!(!truncated);
+        assert_eq!(
+            text,
+            "\\section{Introduction}\nCleaning costs 50\\% of the time.\n\nWe present UniClean."
+        );
+        // A section file without a preamble, and plain text, as they are.
+        let (text, _) = reference_text("intro.tex", "Plain prose.\n% note\nMore.");
+        assert_eq!(text, "Plain prose.\nMore.");
+        let (text, _) = reference_text("notes.md", "# Notes\n100% sure.");
+        assert_eq!(text, "# Notes\n100% sure.");
+        // A very long paper is cut.
+        let long = "word ".repeat(MAX_REFERENCE_CHARS);
+        let (text, truncated) = reference_text("long.txt", &long);
+        assert!(truncated && text.chars().count() == MAX_REFERENCE_CHARS);
     }
 }

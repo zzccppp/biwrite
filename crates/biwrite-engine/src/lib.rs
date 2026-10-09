@@ -21,7 +21,8 @@ pub mod translator;
 pub use cache::{CacheError, CacheGroup, CacheKey, CacheStats, MemoryCache, TranslationCache};
 pub use engine::{Engine, EngineError};
 pub use events::{
-    EventSink, NullSink, SegmentLayout, SegmentState, SegmentStatus, SessionUsage, Snapshot,
+    EventSink, Fill, NullSink, SegmentLayout, SegmentState, SegmentStatus, SessionUsage,
+    Snapshot,
 };
 pub use mock::MockTranslator;
 pub use sqlite_cache::SqliteCache;

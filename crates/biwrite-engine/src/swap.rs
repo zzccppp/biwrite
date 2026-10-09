@@ -6,6 +6,9 @@
 //! The original texts become *seeds*: every segment the user leaves alone
 //! translates back to its exact original wording, so swapping back (or
 //! saving the English while editing Chinese) changes only edited paragraphs.
+//! A paragraph not translated yet when swapping early keeps its text and is
+//! *filled* in afterwards: its translation the other way round replaces it
+//! in the editor (see [`crate::Fill`]).
 
 use std::collections::{HashMap, HashSet};
 
@@ -52,8 +55,9 @@ fn compose_current(st: &State) -> Result<Composed, ComposeError> {
 }
 
 /// Like [`compose_current`], with each paragraph lacking a translation (or
-/// whose translation would change the structure) kept as it is.
-fn compose_keeping(st: &State) -> Result<Composed, ComposeError> {
+/// whose translation would change the structure) kept as it is. Also says,
+/// for each translated slot in order, whether it was kept.
+fn compose_keeping(st: &State) -> Result<(Composed, Vec<bool>), ComposeError> {
     let index: HashMap<SegmentId, usize> = st
         .doc
         .segments()
@@ -63,11 +67,12 @@ fn compose_keeping(st: &State) -> Result<Composed, ComposeError> {
         .collect();
     let mut keep: HashSet<usize> = HashSet::new();
     loop {
+        let mut kept = Vec::new();
         let composed = compose(&st.doc, |seg| {
             let pinned = index.get(&seg.id).is_some_and(|i| keep.contains(i));
-            current(&st.meta, seg)
-                .filter(|_| !pinned)
-                .or_else(|| Some(Insert::exact(seg.segment.content(st.doc.text()))))
+            let insert = current(&st.meta, seg).filter(|_| !pinned);
+            kept.push(insert.is_none());
+            insert.or_else(|| Some(Insert::exact(seg.segment.content(st.doc.text()))))
         });
         match composed {
             Err(ComposeError::Structure { index }) => {
@@ -76,10 +81,10 @@ fn compose_keeping(st: &State) -> Result<Composed, ComposeError> {
                     Some(i) => {
                         keep.insert(i);
                     }
-                    None => return composed,
+                    None => return Err(ComposeError::Structure { index }),
                 }
             }
-            other => return other,
+            other => return other.map(|c| (c, kept)),
         }
     }
 }
@@ -88,7 +93,8 @@ fn compose_keeping(st: &State) -> Result<Composed, ComposeError> {
 /// verified that the k-th translated segment of the new document holds
 /// exactly the k-th inserted text, so this is positional, not by hash:
 /// paragraphs whose translations happen to coincide keep distinct originals.
-fn install_seeds(st: &mut State, pairs: Vec<(String, String)>) {
+/// The k-th segment is to be filled in if `kept[k]`.
+fn install_seeds(st: &mut State, pairs: Vec<(String, String)>, kept: &[bool]) {
     let text = st.doc.text();
     let targets: Vec<(SegmentId, ContentHash)> = st
         .doc
@@ -98,7 +104,7 @@ fn install_seeds(st: &mut State, pairs: Vec<(String, String)>) {
         .map(|s| (s.id, s.hash))
         .collect();
     let mut by_hash: HashMap<ContentHash, Option<String>> = HashMap::new();
-    for ((id, hash), (_inserted, original)) in targets.into_iter().zip(pairs) {
+    for (k, ((id, hash), (_inserted, original))) in targets.into_iter().zip(pairs).enumerate() {
         by_hash
             .entry(hash)
             .and_modify(|known| {
@@ -109,6 +115,9 @@ fn install_seeds(st: &mut State, pairs: Vec<(String, String)>) {
             .or_insert_with(|| Some(original.clone()));
         let mut meta = SegMeta::new();
         meta.seed = Some((hash, original));
+        if kept.get(k).copied().unwrap_or(false) {
+            meta.fill = Some(hash);
+        }
         st.meta.insert(id, meta);
         st.touched.push(id);
     }
@@ -128,7 +137,9 @@ impl Engine {
 
     /// Swap now, before every paragraph is translated: paragraphs without
     /// an up-to-date translation keep their text and come back unchanged
-    /// when swapping back.
+    /// when swapping back. Meanwhile they are translated the other way
+    /// round and replaced in the editor ([`crate::Fill`] events), unless
+    /// translation is paused.
     pub fn swap_keeping_untranslated(&self, text: String) -> Result<Swapped, EngineError> {
         self.swap_with(text, true)
     }
@@ -139,9 +150,9 @@ impl Engine {
         let composed = if keep {
             compose_keeping(&st)
         } else {
-            compose_current(&st)
+            compose_current(&st).map(|c| (c, Vec::new()))
         };
-        let composed = match composed {
+        let (composed, kept) = match composed {
             Ok(c) => c,
             Err(e) => {
                 self.emit_touched(st);
@@ -156,7 +167,7 @@ impl Engine {
         st.doc = DocumentModel::new(st.doc.next_id());
         st.doc.apply(composed.text.clone(), mode);
         st.direction = st.direction.flipped();
-        install_seeds(&mut st, composed.pairs);
+        install_seeds(&mut st, composed.pairs, &kept);
         self.inner.reconcile(&mut st, &Default::default());
         self.inner.pump(&mut st);
         st.revision += 1;

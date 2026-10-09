@@ -15,6 +15,10 @@ export class Session {
   name = $state("Untitled");
   mode = $state<Mode>("plain");
   direction = $state<Direction>("en-zh");
+  /** The direction in which the editor holds the file's own language. */
+  home = $state<Direction>("en-zh");
+  /** Editing the other language than the file's (after a swap). */
+  swapped = $derived(this.direction !== this.home);
   dirty = $state(false);
   /** The paired file in the other language. */
   pair = $state<PairView | null>(null);
@@ -57,6 +61,7 @@ export class Session {
     this.name = view.name;
     this.dirty = view.dirty;
     this.pair = view.pair;
+    this.home = view.home;
     this.autoTranslate = view.autoTranslate;
     this.lineEnding = view.lineEnding;
     this.activeId = null;
