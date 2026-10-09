@@ -12,12 +12,13 @@
     slice: (from: number, to: number) => string;
     onactivate: (id: number, offsetY: number) => void;
     onretry: (id: number) => void;
+    onedit: (id: number) => void;
     onscroll: () => void;
     onresize: () => void;
     pane?: HTMLElement;
   }
 
-  let { session, blocks, preview, slice, onactivate, onretry, onscroll, onresize, pane = $bindable() }: Props =
+  let { session, blocks, preview, slice, onactivate, onretry, onedit, onscroll, onresize, pane = $bindable() }: Props =
     $props();
 
   let list: HTMLElement;
@@ -72,6 +73,7 @@
         {register}
         onactivate={activate}
         {onretry}
+        {onedit}
         ontoggle={(id) => session.toggleExpanded(id)}
       />
     {:else}

@@ -6,7 +6,7 @@ import type { ChangeDesc } from "@codemirror/state";
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { type Macros, parseMacros, preambleOf } from "./math";
 import { SegmentIndex } from "./segmentIndex";
-import type { Direction, Mode, SegmentLayout, SegmentState, SessionUsage, SessionView, Snapshot } from "./types";
+import type { Direction, Mode, PairView, SegmentLayout, SegmentState, SessionUsage, SessionView, Snapshot } from "./types";
 
 const NO_USAGE: SessionUsage = { requests: 0, inputTokens: 0, outputTokens: 0, cacheHits: 0 };
 
@@ -16,6 +16,8 @@ export class Session {
   mode = $state<Mode>("plain");
   direction = $state<Direction>("en-zh");
   dirty = $state(false);
+  /** The paired file in the other language. */
+  pair = $state<PairView | null>(null);
   autoTranslate = $state(true);
   lineEnding = $state<"lf" | "crlf" | "cr">("lf");
   usage = $state<SessionUsage>(NO_USAGE);
@@ -54,6 +56,7 @@ export class Session {
     this.path = view.path;
     this.name = view.name;
     this.dirty = view.dirty;
+    this.pair = view.pair;
     this.autoTranslate = view.autoTranslate;
     this.lineEnding = view.lineEnding;
     this.activeId = null;

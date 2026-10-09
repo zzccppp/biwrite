@@ -22,10 +22,27 @@
     onaction: (action: "polish" | "edit" | "ask") => void;
     onopenfile: (file: string, line: number) => void;
     onclosemenu: () => void;
+    /** Show the PDF of another language (built if it never was). */
+    onlang: (lang: PdfLang) => void;
+    /** Save the Chinese version as a .tex file. */
+    onexporttex: () => void;
   }
 
-  let { store, marks, menu, compilable, oncompile, onpick, onlocate, onissue, onaction, onopenfile, onclosemenu }: Props =
-    $props();
+  let {
+    store,
+    marks,
+    menu,
+    compilable,
+    oncompile,
+    onpick,
+    onlocate,
+    onissue,
+    onaction,
+    onopenfile,
+    onclosemenu,
+    onlang,
+    onexporttex,
+  }: Props = $props();
 
   const ZOOM_KEY = "biwrite.pdf.zoom";
   const mod = navigator.platform.toLowerCase().includes("mac") ? "⌘" : "Ctrl+";
@@ -301,7 +318,7 @@
           class:on={lang === l}
           role="radio"
           aria-checked={lang === l}
-          onclick={() => store.setLang(l)}>{t(l === "en" ? "pdf.lang.en" : "pdf.lang.zh")}</button
+          onclick={() => onlang(l)}>{t(l === "en" ? "pdf.lang.en" : "pdf.lang.zh")}</button
         >
       {/each}
     </div>
@@ -342,6 +359,11 @@
     <button class="icon" onclick={() => latexIpc.savePdf(lang).catch(() => {})} disabled={!doc} title={t("pdf.save")} aria-label={t("pdf.save")}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5V10M5.5 7.5 8 10l2.5-2.5M3 11v2.5h10V11" /></svg>
     </button>
+    {#if lang === "zh"}
+      <button class="icon" onclick={onexporttex} disabled={!compilable} title={t("pdf.exportTex")} aria-label={t("pdf.exportTex")}>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5.5L12 5v8.5H4zM9.5 2.5V5H12M6 9.5h4M8 7.5v4" /></svg>
+      </button>
+    {/if}
     <button class="icon" onclick={() => latexIpc.revealPdf(lang).catch(() => {})} disabled={!doc} title={t("pdf.reveal")} aria-label={t("pdf.reveal")}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z" /></svg>
     </button>

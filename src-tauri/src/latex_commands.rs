@@ -727,6 +727,56 @@ pub async fn latex_save_pdf(
     Ok(Some(dest.display().to_string()))
 }
 
+/// Save the Chinese version of the open document as a `.tex` file that
+/// compiles on its own (Chinese font support added). Paragraphs not
+/// translated yet stay in English. With a pair, the Chinese file exists
+/// already and is the one to use.
+#[tauri::command]
+pub async fn latex_export_tex(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    text: String,
+) -> CommandResult<Option<String>> {
+    if let Some(pair) = state.file().pair.as_ref() {
+        return Err(fail(format!(
+            "The Chinese version is the paired file {}.",
+            crate::state::display_name(Some(&pair.path))
+        )));
+    }
+    if state.engine.text() != text {
+        state.engine.update(text.clone());
+    }
+    let chinese = match state.engine.direction() {
+        Direction::EnZh => state.engine.compose_mirror().text,
+        Direction::ZhEn => text,
+    };
+    let path = state.file().path.clone();
+    let stem = path
+        .as_deref()
+        .and_then(Path::file_stem)
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "paper".into());
+    let standalone = latex::is_main(&chinese);
+    let body = if standalone {
+        latex::with_chinese(&chinese)
+    } else {
+        chinese
+    };
+    let dir = path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    let name = format!("{stem}_zh.tex");
+    let Some(dest) =
+        files::pick_save_kind(&app, &window, "LaTeX", &["tex"], dir.as_deref(), &name).await
+    else {
+        return Ok(None);
+    };
+    files::write_file_atomic(dest.clone(), body.into_bytes()).await?;
+    Ok(Some(dest.display().to_string()))
+}
+
 // ── SyncTeX ──────────────────────────────────────────────────────────
 
 /// UTF-16 range in the editor's text.

@@ -11,6 +11,11 @@
     project: ProjectView | null;
     onnew: () => void;
     onfile: (file: string) => void;
+    /** Pair the document with its translation in another file. */
+    onimportmirror: () => void;
+    onclosemirror: () => void;
+    /** The swap waits for the remaining translations. */
+    swapWaiting: boolean;
     onopen: () => void;
     onsave: () => void;
     onexport: () => void;
@@ -38,6 +43,9 @@
     project,
     onnew,
     onfile,
+    onimportmirror,
+    onclosemirror,
+    swapWaiting,
     onopen,
     onsave,
     onexport,
@@ -106,11 +114,16 @@
     <button
       class="swap"
       class:zh
+      class:waiting={swapWaiting}
       onclick={onswap}
-      title={zh ? t("toolbar.swapBack") : t("toolbar.swap")}
+      title={swapWaiting ? t("toolbar.swapWaiting") : zh ? t("toolbar.swapBack") : t("toolbar.swap")}
     >
       <span class="lang" lang={zh ? "zh-CN" : "en"}>{zh ? "中" : "EN"}</span>
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5h10l-2.5-2.5M13.5 10.5h-10l2.5 2.5" /></svg>
+      {#if swapWaiting}
+        <span class="spin" aria-hidden="true"></span>
+      {:else}
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5h10l-2.5-2.5M13.5 10.5h-10l2.5 2.5" /></svg>
+      {/if}
       <span class="lang" lang={zh ? "en" : "zh-CN"}>{zh ? "EN" : "中"}</span>
     </button>
     {#if project && project.files.length > 1}
@@ -130,7 +143,19 @@
         </select>
       </label>
     {:else}
-      <span class="name" class:dirty={session.dirty}>{session.name}</span>
+      <span class="name" class:dirty={session.dirty}>{session.path ? session.name : t("doc.untitled")}</span>
+    {/if}
+    {#if session.pair}
+      <span class="pair" title={t("pair.title", { name: session.pair.name, paired: session.pair.paired, units: session.pair.units })}>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5a2.5 2.5 0 0 0 3.5 0l2.5-2.5a2.5 2.5 0 0 0-3.5-3.5l-.8.8M9.5 6.5a2.5 2.5 0 0 0-3.5 0L3.5 9a2.5 2.5 0 0 0 3.5 3.5l.8-.8" /></svg>
+        <span class="pair-name">{session.pair.name}</span>
+        <button class="unpair" onclick={onclosemirror} aria-label={t("pair.close")} title={t("pair.close")}>✕</button>
+      </span>
+    {:else if session.path}
+      <button class="tool secondary import" onclick={onimportmirror} title={t("pair.importTitle")}>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5a2.5 2.5 0 0 0 3.5 0l2.5-2.5a2.5 2.5 0 0 0-3.5-3.5l-.8.8M9.5 6.5a2.5 2.5 0 0 0-3.5 0L3.5 9a2.5 2.5 0 0 0 3.5 3.5l.8-.8" /></svg>
+        <span class="smallcaps">{t("pair.import")}</span>
+      </button>
     {/if}
   </div>
 
@@ -331,6 +356,57 @@
     opacity: 0;
     cursor: pointer;
     font: inherit;
+  }
+  .swap.waiting {
+    border-style: dashed;
+  }
+  .spin {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--accent-soft);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 800ms linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .pair {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    max-width: 220px;
+    padding: 1px 4px 1px 7px;
+    border: 1px solid var(--rule-strong);
+    border-radius: 11px;
+    font-size: 12.5px;
+    color: var(--ink-2);
+    background: var(--paper);
+  }
+  .pair svg {
+    flex: none;
+    width: 12px;
+    height: 12px;
+  }
+  .pair-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .unpair {
+    border: 0;
+    background: transparent;
+    color: var(--faint);
+    font-size: 10px;
+    cursor: pointer;
+    padding: 0 2px;
+  }
+  .unpair:hover {
+    color: var(--error);
   }
   .name.dirty::before {
     content: "●";

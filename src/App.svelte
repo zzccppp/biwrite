@@ -14,8 +14,8 @@
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TranslationPane from "./lib/components/TranslationPane.svelte";
   import { SourceEditor } from "./lib/editor/editor";
-  import { count, t } from "./lib/i18n.svelte";
-  import { assistIpc, errorMessage, ipc, latexIpc, logIpc, settingsIpc, subscribe, updateIpc } from "./lib/ipc";
+  import { count, language, t } from "./lib/i18n.svelte";
+  import { assistIpc, errorMessage, ipc, latexIpc, logIpc, pairIpc, settingsIpc, subscribe, updateIpc } from "./lib/ipc";
   import { LatexStore } from "./lib/latex.svelte";
   import { RequestLogStore } from "./lib/requestLog.svelte";
   import { ScrollSync, type Side } from "./lib/scrollSync";
@@ -29,6 +29,7 @@
     Mode,
     PdfBox,
     PdfLang,
+    MirrorSaved,
     PdfMenu,
     PdfPick,
     SavedView,
@@ -61,6 +62,10 @@
   let settingsFocus = $state<string | null>(null);
   /** A newer release found at startup. */
   let updateAvailable = $state<string | null>(null);
+  /** Swap as soon as every paragraph is translated (the swap button was pressed early). */
+  let swapWhenReady = $state(false);
+  /** The paired file waits for translations before it is written. */
+  let mirrorWaiting = $state(false);
   let showGlossary = $state(false);
   let showLog = $state(false);
   let showAssist = $state(loadFlag(ASSIST_KEY));
@@ -258,6 +263,11 @@
     sync.follow();
   }
 
+  // CodeMirror's own panels follow the interface language.
+  $effect(() => {
+    editor?.setInterfaceLanguage(language.current);
+  });
+
   // Mirror the active block back into the editor (runs after CodeMirror's update).
   $effect(() => {
     const id = session.activeId;
@@ -270,6 +280,8 @@
   function loadView(view: SessionView): void {
     if (!editor) return;
     epoch++;
+    swapWhenReady = false;
+    mirrorWaiting = false;
     clearTimeout(timer);
     timer = undefined;
     resend = false;
@@ -329,7 +341,7 @@
       savedDoc = doc;
       session.path = saved.path;
       session.name = saved.name;
-      session.flash(t("doc.saved", { name: saved.name }));
+      reportMirror(saved.name, saved.mirror);
       // Rust marked the file clean; re-report if the user kept typing meanwhile.
       session.dirty = !editor.doc.eq(doc);
       if (session.dirty) setDirty(true);
@@ -386,15 +398,23 @@
       await settleEdits();
       const c = session.counts;
       const waiting = c.pending + c.translating + c.error;
+      let keep = false;
       if (waiting > 0) {
-        session.flash(t("doc.swapWaiting", { n: waiting }));
-        return;
+        // First press: swap by itself once the rest is translated. Second
+        // press: swap now, untranslated paragraphs as they are.
+        if (!swapWhenReady || session.pair) {
+          swapWhenReady = true;
+          session.flash(t(session.pair ? "doc.swapWhenReadyPair" : "doc.swapWhenReady", { n: waiting }));
+          return;
+        }
+        keep = true;
       }
+      swapWhenReady = false;
       // Keep the cursor on the same paragraph across the swap.
       const at = session.activeId === null ? -1 : session.index.indexOf(session.activeId);
       // Skipped blocks are identical on both sides: keep expanded equations open.
       const expanded = session.expandedPositions();
-      const view = await ipc.swapLanguages(editor.text());
+      const view = await ipc.swapLanguages(editor.text(), keep);
       loadView(view);
       session.restoreExpanded(expanded);
       if (at >= 0 && at < session.index.size) editor.focusAt(session.index.rangeAt(at).from, 120);
@@ -444,6 +464,91 @@
     return doc.sliceString(Math.min(from, doc.length), Math.min(to, doc.length));
   }
 
+  // Translations arrived: a waiting swap goes ahead, a waiting paired file is written.
+  $effect(() => {
+    const c = session.counts;
+    const busy = c.pending + c.translating;
+    if (busy > 0) return;
+    if (swapWhenReady) {
+      if (c.error > 0) {
+        swapWhenReady = false;
+        session.flash(t("doc.swapBlocked", { n: c.error }));
+      } else {
+        void swapLanguages();
+      }
+    }
+    if (mirrorWaiting) void writeMirror();
+  });
+
+  function reportMirror(name: string, mirror: MirrorSaved | null): void {
+    if (!mirror) {
+      session.flash(t("doc.saved", { name }));
+    } else if (mirror.pending > 0) {
+      mirrorWaiting = true;
+      // Not everything is on disk yet: closing or opening another file asks first.
+      setDirty(true);
+      session.flash(t("doc.savedMirrorWaiting", { name, mirror: mirror.name, n: mirror.pending }));
+    } else {
+      mirrorWaiting = false;
+      session.flash(
+        mirror.written
+          ? t("doc.savedBoth", { name, mirror: mirror.name, n: mirror.changed })
+          : t("doc.saved", { name }),
+      );
+    }
+    if (session.pair) session.pair = { ...session.pair, dirty: mirror ? !mirror.written && mirror.pending > 0 : false };
+  }
+
+  async function writeMirror(): Promise<void> {
+    mirrorWaiting = false;
+    try {
+      const done = await pairIpc.write();
+      if (done?.pending) {
+        mirrorWaiting = true;
+        return;
+      }
+      if (done?.written) session.flash(t("doc.mirrorWritten", { mirror: done.name, n: done.changed }));
+      refreshDirty();
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** Pair the open document with its translation in a file the user picks. */
+  async function importMirror(): Promise<void> {
+    if (!editor) return;
+    await settleEdits();
+    try {
+      const view = await pairIpc.importMirror(editor.text());
+      if (!view) return;
+      loadView(view);
+      if (view.pair) session.flash(t("pair.imported", { name: view.pair.name, paired: view.pair.paired, units: view.pair.units }));
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  async function closeMirror(): Promise<void> {
+    try {
+      await pairIpc.close();
+      session.pair = null;
+      mirrorWaiting = false;
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** Rewrite a paragraph's translation in the assistant; the paragraph follows. */
+  function editTranslation(id: number): void {
+    const range = session.index.range(id);
+    if (!editor || !range) return;
+    session.activeId = id;
+    editor.focusAt(range.from, 120);
+    assist.setAction("mirror");
+    setAssistOpen(true);
+    requestAnimationFrame(() => assistPanel?.focus());
+  }
+
   /** At startup, if allowed: is a newer release out? Quiet when offline. */
   async function checkForUpdate(): Promise<void> {
     if (!settings?.checkUpdates) return;
@@ -482,6 +587,9 @@
     if (rightTab !== "pdf") setRightTab("pdf");
   }
 
+  /** A click is being followed into another file (no second hop). */
+  let reopening = false;
+
   /** A click on the PDF: select the source behind it. */
   async function pickInPdf(pick: PdfPick): Promise<void> {
     if (!editor) return;
@@ -494,8 +602,20 @@
       } else if (hit.here && hit.range) {
         editor.select(hit.range.from, hit.range.to, false);
         pdfMenu = { ...near, here: true, paragraph: hit.paragraph, file: hit.file, line: hit.line };
+      } else if (hit.open && !session.dirty && !reopening) {
+        // Another file of the project: open it, then find the click in it.
+        reopening = true;
+        try {
+          const view = await latexIpc.open(hit.open);
+          if (view) {
+            loadView(view);
+            await pickInPdf(pick);
+          }
+        } finally {
+          reopening = false;
+        }
       } else {
-        pdfMenu = { ...near, here: false, paragraph: false, file: hit.file, line: hit.line };
+        pdfMenu = { ...near, here: false, paragraph: false, file: hit.open ?? hit.file, line: hit.line };
       }
     } catch (err) {
       fail(err);
@@ -527,6 +647,42 @@
           : lineRange(line);
         editor.select(r.from, r.to);
       }
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** "Open" in the PDF menu (unsaved changes are asked about first). */
+  async function openFromMenu(file: string, line: number): Promise<void> {
+    pdfMenu = null;
+    const pick = lastPick;
+    try {
+      const view = await latexIpc.open(file);
+      if (!view) return;
+      loadView(view);
+      if (pick) await pickInPdf(pick);
+      else if (line > 0 && editor) {
+        const r = lineRange(line);
+        editor.select(r.from, r.to);
+      }
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** Show the other PDF: built now if it never was. */
+  function switchPdfLang(lang: PdfLang): void {
+    latex.setLang(lang);
+    pdfMenu = null;
+    if (compilable && latex.ready && !latex.builds[lang] && !latex.building[lang]) void compile(lang);
+  }
+
+  async function exportChineseTex(): Promise<void> {
+    if (!editor) return;
+    await settleEdits();
+    try {
+      const path = await latexIpc.exportTex(editor.text());
+      if (path) session.flash(t("pdf.texExported", { path }));
     } catch (err) {
       fail(err);
     }
@@ -620,15 +776,23 @@
     const doc = editor.doc;
     const { from, to } = selection;
     if (to > from) {
-      return { label: t("assist.target.selection"), text: doc.sliceString(from, Math.min(to, from + 400)) };
+      return {
+        label: t("assist.target.selection"),
+        text: doc.sliceString(from, Math.min(to, from + 400)),
+        key: null,
+        translation: null,
+      };
     }
     const id = session.activeId;
     const seg = id === null ? undefined : session.layout.find((s) => s.id === id);
     const range = id === null ? null : session.index.range(id);
     if (!seg || !range || seg.kind.type === "skipped") return null;
+    const state = session.states.get(seg.id);
     return {
       label: t("assist.target.paragraph", { n: session.index.indexOf(seg.id) + 1 }),
       text: doc.sliceString(range.from, Math.min(range.to, range.from + 400)),
+      key: `${seg.id}:${session.direction}`,
+      translation: state?.status === "translated" && state.text ? state.text : null,
     };
   });
 
@@ -827,6 +991,9 @@
     {session}
     {theme}
     project={latex.project}
+    onimportmirror={importMirror}
+    onclosemirror={closeMirror}
+    swapWaiting={swapWhenReady}
     onnew={() => (showTemplates = true)}
     onfile={(file) => openProjectFile(file)}
     onopen={open}
@@ -901,6 +1068,7 @@
           bind:pane={rightPane}
           onactivate={activate}
           onretry={(id) => ipc.retranslateSegment(id).catch(fail)}
+          onedit={editTranslation}
           onscroll={() => sync.onScroll("right")}
           onresize={() => sync.schedule()}
         />
@@ -917,7 +1085,9 @@
             onlocate={locateInPdf}
             onissue={gotoIssue}
             onaction={pdfAction}
-            onopenfile={(file, line) => openProjectFile(file, line, lastPick)}
+            onopenfile={(file, line) => openFromMenu(file, line)}
+            onlang={switchPdfLang}
+            onexporttex={exportChineseTex}
             onclosemenu={() => (pdfMenu = null)}
           />
         </div>

@@ -16,6 +16,7 @@ import type {
   ExportView,
   GlossaryEntry,
   InstalledView,
+  MirrorSaved,
   KeyEntry,
   KeyStatus,
   LogSettings,
@@ -53,7 +54,8 @@ export const ipc = {
   retranslateAll: () => invoke<void>("retranslate_all"),
   setAutoTranslate: (on: boolean) => invoke<void>("set_auto_translate", { on }),
   setDirty: (dirty: boolean) => invoke<void>("set_dirty", { dirty }),
-  swapLanguages: (text: string) => invoke<SessionView>("swap_languages", { text }),
+  /** `keep`: swap now, untranslated paragraphs stay as they are. */
+  swapLanguages: (text: string, keep = false) => invoke<SessionView>("swap_languages", { text, keep }),
   exportBilingual: (text: string) => invoke<ExportView | null>("export_bilingual", { text }),
   /** Open a known link ("skill", "repo", "releases") in the browser. */
   openLink: (name: "skill" | "repo" | "releases") => invoke<void>("open_link", { name }),
@@ -88,6 +90,9 @@ export const settingsIpc = {
   setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),
   setMatchPool: (on: boolean) => invoke<SettingsView>("set_match_pool", { on }),
   setCheckUpdates: (on: boolean) => invoke<SettingsView>("set_check_updates", { on }),
+  /** Save the pool (names and keys) to a file picked in Rust. */
+  exportKeys: (id: string) => invoke<string | null>("export_api_keys", { id }),
+  importKeys: (id: string) => invoke<SettingsView | null>("import_api_keys", { id }),
   setAssistantProvider: (id: string) => invoke<SettingsView>("set_assistant_provider", { id }),
   setActive: (id: string) => invoke<SettingsView>("set_active_provider", { id }),
   test: (id: string) => invoke<string>("test_provider", { id }),
@@ -133,6 +138,8 @@ export const latexIpc = {
   pdf: (lang: PdfLang) => invoke<ArrayBuffer>("latex_pdf", { lang }),
   revealPdf: (lang: PdfLang) => invoke<void>("latex_reveal_pdf", { lang }),
   savePdf: (lang: PdfLang) => invoke<string | null>("latex_save_pdf", { lang }),
+  /** Save the Chinese version as a .tex that compiles on its own. */
+  exportTex: (text: string) => invoke<string | null>("latex_export_tex", { text }),
   inverse: (lang: PdfLang, page: number, x: number, y: number, span: string, click: number, text: string) =>
     invoke<SyncHit | null>("latex_inverse", { lang, page, x, y, span, click, text }),
   forward: (lang: PdfLang, offset: number, text: string) =>
@@ -146,6 +153,15 @@ export const latexIpc = {
   exportTemplate: () => invoke<string | null>("latex_export_template"),
   deleteTemplate: (id: string) => invoke<void>("latex_delete_template", { id }),
   revealTemplates: () => invoke<void>("latex_reveal_templates"),
+};
+
+/** The open document's pair: a file in the other language kept in step. */
+export const pairIpc = {
+  /** Pair with a file the user picks (its paragraphs become the translations). */
+  importMirror: (text: string) => invoke<SessionView | null>("import_mirror", { text }),
+  close: () => invoke<void>("close_mirror"),
+  /** Write the paired file once its translations arrived. */
+  write: () => invoke<MirrorSaved | null>("write_mirror"),
 };
 
 /** Updates from BiWrite's GitHub releases (pre-releases are branch builds). */

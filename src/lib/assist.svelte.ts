@@ -25,6 +25,7 @@ export const ACTION_LABEL = {
   edit: "assist.action.edit",
   ask: "assist.action.ask",
   figure: "assist.action.figure",
+  mirror: "assist.action.mirror",
 } as const;
 
 export const SCOPE_LABEL = {
@@ -38,6 +39,7 @@ export const PLACEHOLDER = {
   edit: "assist.placeholder.edit",
   ask: "assist.placeholder.ask",
   figure: "assist.placeholder.figure",
+  mirror: "assist.placeholder.mirror",
 } as const;
 
 const ACTION_KEY = "biwrite.assist.action";
@@ -118,7 +120,7 @@ export class AssistStore {
   jobs = $state<AssistJob[]>([]);
   attachments = $state<AttachmentView[]>([]);
   samples = $state<string[]>([]);
-  action = $state<AssistAction>(load(ACTION_KEY, ["polish", "edit", "ask", "figure"] as const, "polish"));
+  action = $state<AssistAction>(load(ACTION_KEY, ["polish", "edit", "ask", "figure", "mirror"] as const, "polish"));
   scope = $state<AssistScope>(load(SCOPE_KEY, ["target", "neighbors", "document"] as const, "neighbors"));
   instruction = $state("");
   /** Bumped when another document is loaded. */

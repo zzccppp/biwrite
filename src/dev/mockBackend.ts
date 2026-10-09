@@ -176,6 +176,7 @@ function session(): SessionView {
     autoTranslate: true,
     lineEnding: "lf",
     bom: false,
+    pair: null,
     snapshot: snapshot(),
   };
 }
@@ -369,6 +370,13 @@ const handlers: Record<string, (args: Args) => unknown> = {
     };
   },
   latex_cancel: () => null,
+  latex_export_tex: () => "/Users/me/papers/gnn-icl/paper_zh.tex",
+  import_mirror: () => ({ ...session(), pair: { path: "/Users/me/papers/gnn-icl/paper_zh.tex", name: "paper_zh.tex", paired: 21, units: 21, dirty: false } }),
+  close_mirror: () => null,
+  write_mirror: () => ({ name: "paper_zh.tex", written: true, pending: 0, changed: 1 }),
+  export_api_keys: () => "/Users/me/Desktop/AnyRouter-keys.txt",
+  import_api_keys: () => state.settings,
+  swap_languages: () => session(),
   latex_pdf: async () => (await fetch("/dev/sample.pdf")).arrayBuffer(),
   latex_reveal_pdf: () => null,
   latex_save_pdf: () => "/Users/me/papers/gnn-icl/paper.pdf",

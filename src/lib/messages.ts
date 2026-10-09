@@ -116,6 +116,7 @@ export const messages = {
   "assist.action.edit": { en: "Edit", zh: "按指令改" },
   "assist.action.ask": { en: "Ask", zh: "提问" },
   "assist.action.figure": { en: "Figure", zh: "图表" },
+  "assist.action.mirror": { en: "Via translation", zh: "按译文改" },
   "assist.scope.target": { en: "This text", zh: "仅目标" },
   "assist.scope.neighbors": { en: "With neighbours", zh: "含前后段" },
   "assist.scope.document": { en: "Whole document", zh: "全文" },
@@ -138,6 +139,14 @@ export const messages = {
   "assist.placeholder.figure": {
     en: "Which figure or table? For example: accuracy per dataset as grouped bars",
     zh: "想要什么图或表？例如：各数据集准确率的分组柱状图",
+  },
+  "assist.placeholder.mirror": {
+    en: "The paragraph's translation: rewrite it, and the paragraph follows",
+    zh: "这一段的译文：直接改写译文，原文会随之修改",
+  },
+  "assist.mirrorNeedsParagraph": {
+    en: "Put the cursor in a translated paragraph (no selection) to edit it through its translation.",
+    zh: "把光标放进一个已翻译的段落（不要选中文字），即可通过译文修改它。",
   },
   "assist.placeholder.polish": {
     en: "Optional: what to pay attention to",
@@ -333,11 +342,61 @@ export const messages = {
   "updates.saved": { en: "The installer was saved to {file}.", zh: "安装包已保存到 {file}。" },
   "updates.available": { en: "BiWrite {version} is available", zh: "可更新到 {version}" },
 
+  // ── Pairs and swapping ────────────────────────────────────────────
+  "pair.import": { en: "Pair", zh: "导入译文" },
+  "pair.importTitle": {
+    en: "Pair this file with its translation in another file (for example paper_zh.tex). Its paragraphs become the translations, and saving keeps both files in step.",
+    zh: "导入本文件在另一种语言下的版本（例如 paper_zh.tex）。其中的段落直接作为译文，保存时两个文件同步更新。",
+  },
+  "pair.title": {
+    en: "Paired with {name}: {paired} of {units} paragraphs. Saving writes changed paragraphs into it in place.",
+    zh: "已与 {name} 配对，{units} 段中有 {paired} 段对应。保存时把改动的段落原位写入该文件。",
+  },
+  "pair.close": { en: "Stop writing to the paired file", zh: "取消配对，不再写入对应文件" },
+  "pair.imported": {
+    en: "Paired with {name}: {paired} of {units} paragraphs.",
+    zh: "已与 {name} 配对，{units} 段中有 {paired} 段对应。",
+  },
+  "doc.swapWhenReady": {
+    en: "Swapping when {n} more paragraphs are translated. Click the swap button again to swap now.",
+    zh: "还有 {n} 段在翻译，译完后自动切换。再点一次切换按钮可立即切换。",
+  },
+  "doc.swapWhenReadyPair": {
+    en: "Swapping when {n} more paragraphs are translated.",
+    zh: "还有 {n} 段在翻译，译完后自动切换。",
+  },
+  "doc.swapBlocked": {
+    en: "{n} paragraphs could not be translated. Retry them, or click the swap button twice to swap with them as they are.",
+    zh: "有 {n} 段翻译失败。可以重试这些段落，或连点两次切换按钮，保留原文直接切换。",
+  },
+  "doc.savedBoth": { en: "Saved {name} and {mirror} ({n} paragraphs changed).", zh: "已保存 {name} 和 {mirror}（改动 {n} 段）。" },
+  "doc.savedMirrorWaiting": {
+    en: "Saved {name}. {mirror} is written when {n} more paragraphs are translated.",
+    zh: "已保存 {name}。{mirror} 将在剩余 {n} 段译完后写入。",
+  },
+  "doc.mirrorWritten": { en: "Saved {mirror} ({n} paragraphs changed).", zh: "已保存 {mirror}（改动 {n} 段）。" },
+  "segment.editTranslation": {
+    en: "Rewrite this translation: the source paragraph follows",
+    zh: "改写这段译文，原文随之修改",
+  },
+  "pdf.exportTex": { en: "Export Chinese .tex…", zh: "导出中文 .tex…" },
+  "pdf.texExported": { en: "Saved {path}.", zh: "已导出 {path}。" },
+  "keys.export": { en: "Export to file…", zh: "导出到文件…" },
+  "keys.import": { en: "Import from file…", zh: "从文件导入…" },
+  "keys.exported": {
+    en: "Saved to {path}. The file holds the secret keys: share it only with people you trust.",
+    zh: "已保存到 {path}。文件里是明文密钥，只发给信任的人。",
+  },
+
   // ── Toolbar ───────────────────────────────────────────────────────
   "toolbar.new": { en: "New", zh: "新建" },
   "toolbar.newTitle": {
     en: "New paper from a template, open a LaTeX folder, manage templates",
     zh: "从模板新建论文、打开 LaTeX 文件夹、管理模板",
+  },
+  "toolbar.swapWaiting": {
+    en: "Swapping as soon as every paragraph is translated. Click again to swap now: untranslated paragraphs stay as they are.",
+    zh: "所有段落译完后自动切换。再点一次立即切换，未译完的段落保持原文。",
   },
   "toolbar.files": { en: "Files of this LaTeX project", zh: "本 LaTeX 项目的文件" },
   "toolbar.main": { en: "{file}  (main)", zh: "{file}（主文件）" },
@@ -390,6 +449,7 @@ export const messages = {
 
   // ── Document ──────────────────────────────────────────────────────
   "doc.saved": { en: "Saved {name}", zh: "已保存 {name}" },
+  "doc.untitled": { en: "Untitled", zh: "未命名" },
   "doc.exported": { en: "Exported {name}", zh: "已导出 {name}" },
   "doc.exportedMissing.one": {
     en: "Exported {name}. {n} paragraph is not translated yet.",

@@ -23,6 +23,8 @@
     onactivate: (id: number, el: HTMLElement) => void;
     onretry: (id: number) => void;
     ontoggle: (id: number) => void;
+    /** Rewrite this translation and let the source paragraph follow. */
+    onedit?: (id: number) => void;
   }
 
   let {
@@ -41,6 +43,7 @@
     onactivate,
     onretry,
     ontoggle,
+    onedit,
   }: Props = $props();
 
   let el: HTMLElement;
@@ -143,6 +146,14 @@
       >
         {@html html}{#if streaming}<span class="caret" aria-hidden="true"></span>{/if}
       </div>
+      {#if onedit && status === "translated"}
+        <button
+          class="edit-tr"
+          title={t("segment.editTranslation")}
+          aria-label={t("segment.editTranslation")}
+          onclick={(e) => (e.stopPropagation(), onedit(segment.id))}>✎</button
+        >
+      {/if}
     {:else if status === "error"}
       <div class="zh empty">—</div>
     {:else}
@@ -175,6 +186,25 @@
   }
   .block:hover {
     background: var(--accent-wash);
+  }
+  .edit-tr {
+    position: absolute;
+    top: 8px;
+    right: 6px;
+    border: 0;
+    background: transparent;
+    color: var(--faint);
+    font-size: 13px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms var(--ease);
+  }
+  .block:hover .edit-tr,
+  .block.active .edit-tr {
+    opacity: 1;
+  }
+  .edit-tr:hover {
+    color: var(--accent);
   }
   .block.active {
     background: var(--seal-wash);

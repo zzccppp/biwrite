@@ -42,10 +42,34 @@ function languageFor(mode: Mode): Extension {
   }
 }
 
+/** Chinese for CodeMirror's own words (search panel, go to line). */
+const ZH_PHRASES: Record<string, string> = {
+  Find: "查找",
+  Replace: "替换",
+  next: "下一个",
+  previous: "上一个",
+  all: "全部",
+  "match case": "区分大小写",
+  regexp: "正则表达式",
+  "by word": "全词匹配",
+  replace: "替换",
+  "replace all": "全部替换",
+  close: "关闭",
+  "current match": "当前匹配",
+  "replaced $ matches": "已替换 $ 处",
+  "replaced match on line $": "已替换第 $ 行的匹配",
+  "on line": "所在行",
+  "Go to line": "跳转到行",
+  go: "跳转",
+  "Control character": "控制字符",
+};
+
 export class SourceEditor {
   readonly view: EditorView;
   private readonly language = new Compartment();
   private readonly editable = new Compartment();
+  private readonly phrases = new Compartment();
+  private uiLanguage: "en" | "zh" = "en";
   private readonly handlers: EditorHandlers;
 
   constructor(parent: HTMLElement, handlers: EditorHandlers) {
@@ -71,6 +95,7 @@ export class SourceEditor {
         placeholder(zh ? "用中文写作，右侧实时显示英文…" : "Write in English…"),
         this.language.of(languageFor(mode)),
         this.editable.of(EditorView.editable.of(true)),
+        this.phrases.of(this.phrasesFor(this.uiLanguage)),
         editorHighlighting,
         editorTheme,
         activeSegment(),
@@ -95,6 +120,17 @@ export class SourceEditor {
   /** Replace the whole document (open file, swap). Clears undo history. */
   setDocument(text: string, mode: Mode, direction: Direction): void {
     this.view.setState(this.createState(text, mode, direction));
+  }
+
+  private phrasesFor(lang: "en" | "zh"): Extension {
+    return lang === "zh" ? EditorState.phrases.of(ZH_PHRASES) : [];
+  }
+
+  /** The interface language, for CodeMirror's own panels. */
+  setInterfaceLanguage(lang: "en" | "zh"): void {
+    if (lang === this.uiLanguage) return;
+    this.uiLanguage = lang;
+    this.view.dispatch({ effects: this.phrases.reconfigure(this.phrasesFor(lang)) });
   }
 
   /** Lock the editor (e.g. while the panes are being swapped). */

@@ -23,6 +23,8 @@ mod updater;
 
 #[cfg(test)]
 mod leak_tests;
+#[cfg(test)]
+mod pair_tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -198,6 +200,7 @@ pub fn run() {
             latex_commands::latex_pdf,
             latex_commands::latex_reveal_pdf,
             latex_commands::latex_save_pdf,
+            latex_commands::latex_export_tex,
             latex_commands::latex_inverse,
             latex_commands::latex_forward,
             latex_commands::latex_locate,

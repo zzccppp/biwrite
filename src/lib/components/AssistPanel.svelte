@@ -8,7 +8,14 @@
   interface Props {
     store: AssistStore;
     /** What the next run acts on, as shown in the composer. */
-    target: { label: string; text: string } | null;
+    target: {
+      label: string;
+      text: string;
+      /** The paragraph, for the via-translation action (null for a selection). */
+      key: string | null;
+      /** The paragraph's current translation. */
+      translation: string | null;
+    } | null;
     /** The assistant has a model; otherwise the composer explains. */
     ready: boolean;
     model: string;
@@ -34,10 +41,27 @@
   }
   let addingSample = $state(false);
 
-  const actions: AssistAction[] = ["polish", "edit", "ask", "figure"];
+  const actions: AssistAction[] = ["polish", "edit", "ask", "figure", "mirror"];
+  /** The paragraph whose translation the box was last filled with. */
+  let prefilled: string | null = null;
+
+  // Via translation: the box starts with the paragraph's translation.
+  $effect(() => {
+    if (store.action !== "mirror" || !target?.key) return;
+    if (target.key !== prefilled) {
+      prefilled = target.key;
+      store.instruction = target.translation ?? "";
+    }
+  });
   const scopes: AssistScope[] = ["target", "neighbors", "document"];
   const needsInstruction = $derived(store.action !== "polish");
-  const canRun = $derived(ready && !!target && (!needsInstruction || store.instruction.trim().length > 0));
+  const mirrorReady = $derived(
+    store.action !== "mirror" ||
+      (!!target?.translation && store.instruction.trim().length > 0 && store.instruction.trim() !== target.translation.trim()),
+  );
+  const canRun = $derived(
+    ready && !!target && (!needsInstruction || store.instruction.trim().length > 0) && mirrorReady,
+  );
 
   function addSample(): void {
     const text = sampleDraft.trim();
@@ -82,11 +106,15 @@
     <textarea
       class="textarea"
       bind:this={instructionBox}
-      rows={needsInstruction ? 3 : 2}
+      rows={store.action === "mirror" ? 6 : needsInstruction ? 3 : 2}
       bind:value={store.instruction}
       placeholder={t(PLACEHOLDER[store.action])}
       onkeydown={onKeydown}
     ></textarea>
+
+    {#if store.action === "mirror" && !target?.translation}
+      <p class="hint">{t("assist.mirrorNeedsParagraph")}</p>
+    {/if}
 
     <div class="row options">
       <span class="label smallcaps">{t("assist.scope")}</span>
@@ -346,6 +374,12 @@
   }
   .clear {
     justify-self: center;
+    color: var(--muted);
+  }
+  .hint {
+    margin: 0;
+    font-size: 12.5px;
+    font-style: italic;
     color: var(--muted);
   }
 </style>

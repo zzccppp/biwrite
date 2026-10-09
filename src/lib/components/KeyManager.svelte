@@ -80,6 +80,21 @@
     await reload();
   }
 
+  /** Keys from a file picked in Rust (an exported pool, or any text with keys). */
+  async function importFile(): Promise<void> {
+    const view = await act("import", () => settingsIpc.importKeys(provider.id));
+    if (!view) return;
+    onchange(view);
+    const n = view.providers.find((p) => p.id === provider.id)?.keyCount ?? 0;
+    message = { ok: true, text: t("keys.stored", { n }) };
+    await reload();
+  }
+
+  async function exportFile(): Promise<void> {
+    const path = await act("export", () => settingsIpc.exportKeys(provider.id));
+    if (path) message = { ok: true, text: t("keys.exported", { path }) };
+  }
+
   async function test(k: KeyEntry): Promise<void> {
     const out = await act(`test-${k.fingerprint}`, () => settingsIpc.testKey(provider.id, k.fingerprint));
     if (out !== undefined) message = { ok: true, text: t("keys.testOk", { n: k.number, text: out }) };
@@ -229,6 +244,10 @@
         <button class="btn primary" onclick={() => store("replace")} disabled={!!busy || !paste.trim()}>
           {t("keys.saveFirst")}
         </button>
+      {/if}
+      <button class="btn" onclick={importFile} disabled={!!busy}>{t("keys.import")}</button>
+      {#if keys.length > 0}
+        <button class="btn" onclick={exportFile} disabled={!!busy}>{t("keys.export")}</button>
       {/if}
       <span class="spacer"></span>
       {#if keys.length > 0}

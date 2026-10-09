@@ -66,6 +66,8 @@ export interface SessionView {
   autoTranslate: boolean;
   lineEnding: "lf" | "crlf" | "cr";
   bom: boolean;
+  /** The paired file in the other language. */
+  pair: PairView | null;
   snapshot: Snapshot;
 }
 
@@ -73,6 +75,8 @@ export interface SavedView {
   path: string;
   name: string;
   suggestedMode: Mode;
+  /** What happened to the paired file. */
+  mirror: MirrorSaved | null;
 }
 
 /** Result of a bilingual export. */
@@ -289,7 +293,7 @@ export const KIND_LABELS: Record<ProviderKind, string> = {
 
 // ── Writing assistant ────────────────────────────────────────────────
 
-export type AssistAction = "polish" | "edit" | "ask" | "figure";
+export type AssistAction = "polish" | "edit" | "ask" | "figure" | "mirror";
 export type AssistScope = "target" | "neighbors" | "document";
 
 /** What a job works on, in UTF-16 offsets of the text it started with. */
@@ -443,6 +447,8 @@ export interface SyncHit {
   range: Range16 | null;
   /** The range is a whole paragraph (the PDF is in the other language). */
   paragraph: boolean;
+  /** Not in the open document: the project file to open for it. */
+  open: string | null;
 }
 
 export interface TemplateView {
@@ -514,4 +520,26 @@ export interface UpdateProgress {
   tag: string;
   received: number;
   total: number;
+}
+
+// ── Pairs ───────────────────────────────────────────────────────────
+
+/** The file in the other language the open document is paired with. */
+export interface PairView {
+  path: string;
+  name: string;
+  /** Paragraphs paired, of the open document's. */
+  paired: number;
+  units: number;
+  /** The paired file has changes not written yet. */
+  dirty: boolean;
+}
+
+/** What a save did with the paired file. */
+export interface MirrorSaved {
+  name: string;
+  written: boolean;
+  /** Paragraphs still being translated: the paired file waits for them. */
+  pending: number;
+  changed: number;
 }
