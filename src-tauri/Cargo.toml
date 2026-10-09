@@ -1,0 +1,33 @@
+[package]
+name = "biwrite"
+description = "BiWrite: bilingual EN→ZH writing editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "biwrite_lib"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+
+[dependencies]
+biwrite-core.workspace = true
+biwrite-engine.workspace = true
+biwrite-providers.workspace = true
+keyring.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tauri = { version = "2.12.2", features = [] }
+tauri-plugin-dialog = "2.8.1"
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

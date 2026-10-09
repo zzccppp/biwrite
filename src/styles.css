@@ -1,0 +1,303 @@
+/* BiWrite — "manuscript & marginalia".
+   Left: the paper you write on. Right: a printed gloss in the margin. */
+
+:root {
+  --font-ui: "Iowan Old Style", "Charter", "Palatino", "Book Antiqua", Georgia, serif;
+  --font-prose: "Iowan Old Style", "Charter", "Hoefler Text", Cambria, Georgia, serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --font-zh: "Songti SC", "STSong", "Source Han Serif SC", "Noto Serif CJK SC", "SimSun", "PingFang SC",
+    "Microsoft YaHei", serif;
+
+  --font-mono-zh: "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, "PingFang SC",
+    "Microsoft YaHei", monospace;
+  --font-zh-edit: "Iowan Old Style", "Charter", "Songti SC", "STSong", "Source Han Serif SC",
+    "Noto Serif CJK SC", "PingFang SC", "Microsoft YaHei", serif;
+
+  --font-source: var(--font-prose);
+  --source-size: 16px;
+  --source-leading: 1.72;
+  --zh-size: 15.5px;
+  --zh-leading: 1.9;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  color-scheme: light dark;
+}
+
+/* Light: warm paper, iron-gall ink, vermilion seal. */
+:root,
+:root[data-theme="light"] {
+  --paper: #f6f1e7;
+  --paper-2: #efe8da;
+  --chrome: #ece4d4;
+  --ink: #23252c;
+  --ink-2: #3c3f48;
+  --muted: #6e6a62;
+  --faint: #a59f93;
+  --rule: #d8cfbd;
+  --rule-strong: #bfb39c;
+  --accent: #2b4a8b;
+  --accent-soft: rgba(43, 74, 139, 0.35);
+  --accent-wash: rgba(43, 74, 139, 0.08);
+  --seal: #b8432f;
+  --seal-wash: rgba(184, 67, 47, 0.08);
+  --error: #a92d22;
+  --active-line: rgba(43, 74, 139, 0.045);
+  --selection: rgba(43, 74, 139, 0.18);
+  --search-match: rgba(214, 160, 40, 0.28);
+  --search-outline: rgba(180, 130, 20, 0.5);
+  --search-selected: rgba(214, 160, 40, 0.5);
+  --grain-opacity: 0.05;
+
+  --hl-heading: #1d3a78;
+  --hl-command: #2b4a8b;
+  --hl-arg: #7a4f1e;
+  --hl-number: #8a5a12;
+  --hl-comment: #8d887d;
+  --hl-meta: #9a6a3a;
+  --hl-bracket: #8a8375;
+  --hl-code: #6a4a8a;
+  --hl-link: #2b4a8b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #17181c;
+    --paper-2: #1c1d22;
+    --chrome: #121317;
+    --ink: #e5e0d6;
+    --ink-2: #cfc9bd;
+    --muted: #9b968c;
+    --faint: #625f59;
+    --rule: #2c2d33;
+    --rule-strong: #3d3e45;
+    --accent: #93acea;
+    --accent-soft: rgba(147, 172, 234, 0.4);
+    --accent-wash: rgba(147, 172, 234, 0.09);
+    --seal: #e07a62;
+    --seal-wash: rgba(224, 122, 98, 0.1);
+    --error: #f08a7a;
+    --active-line: rgba(147, 172, 234, 0.05);
+    --selection: rgba(147, 172, 234, 0.24);
+    --search-match: rgba(230, 180, 70, 0.22);
+    --search-outline: rgba(230, 180, 70, 0.45);
+    --search-selected: rgba(230, 180, 70, 0.42);
+    --grain-opacity: 0.035;
+
+    --hl-heading: #b7c8f2;
+    --hl-command: #93acea;
+    --hl-arg: #d9a56a;
+    --hl-number: #e0b36a;
+    --hl-comment: #77736b;
+    --hl-meta: #c99a6a;
+    --hl-bracket: #7d7a72;
+    --hl-code: #c3a3e0;
+    --hl-link: #93acea;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #17181c;
+  --paper-2: #1c1d22;
+  --chrome: #121317;
+  --ink: #e5e0d6;
+  --ink-2: #cfc9bd;
+  --muted: #9b968c;
+  --faint: #625f59;
+  --rule: #2c2d33;
+  --rule-strong: #3d3e45;
+  --accent: #93acea;
+  --accent-soft: rgba(147, 172, 234, 0.4);
+  --accent-wash: rgba(147, 172, 234, 0.09);
+  --seal: #e07a62;
+  --seal-wash: rgba(224, 122, 98, 0.1);
+  --error: #f08a7a;
+  --active-line: rgba(147, 172, 234, 0.05);
+  --selection: rgba(147, 172, 234, 0.24);
+  --search-match: rgba(230, 180, 70, 0.22);
+  --search-outline: rgba(230, 180, 70, 0.45);
+  --search-selected: rgba(230, 180, 70, 0.42);
+  --grain-opacity: 0.035;
+
+  --hl-heading: #b7c8f2;
+  --hl-command: #93acea;
+  --hl-arg: #d9a56a;
+  --hl-number: #e0b36a;
+  --hl-comment: #77736b;
+  --hl-meta: #c99a6a;
+  --hl-bracket: #7d7a72;
+  --hl-code: #c3a3e0;
+  --hl-link: #93acea;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* Paper grain (inline SVG turbulence; no network). */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.9 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  z-index: 100;
+}
+
+button,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+.smallcaps {
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.06em;
+}
+
+/* Thin, unobtrusive scrollbars that match the paper. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--rule);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--rule-strong);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Form controls (settings drawer) ─────────────────────────────── */
+
+.field {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+}
+.field > .label {
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.06em;
+  font-size: 13px;
+  color: var(--muted);
+}
+.field > .hint {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--faint);
+}
+.input,
+.select,
+.textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  padding: 5px 8px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.input.mono,
+.textarea.mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+.input:focus,
+.select:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 27px;
+  padding: 0 11px 1px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13.5px;
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.btn.primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--paper);
+}
+.btn.danger:hover:not(:disabled) {
+  border-color: var(--error);
+  color: var(--error);
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

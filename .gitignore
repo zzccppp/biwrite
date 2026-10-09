@@ -1,0 +1,20 @@
+# Dependencies & build output
+node_modules/
+dist/
+target/
+src-tauri/gen/schemas/
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Secrets (never commit)
+.env
+.env.*
+*.pem
+*.key
+
+# Local scratch
+temp/

@@ -1,0 +1,81 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[numbers]{natbib}
+
+% Macros used throughout the paper.
+\newcommand{\G}{\mathcal{G}}
+\newcommand{\E}{\mathbb{E}}
+
+\title{In-Context Learning in Graph Neural Networks}
+\author{Anonymous Authors}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large language models can learn new tasks from a handful of examples supplied in their prompt, a capability known as in-context learning. Whether graph neural networks admit a comparable mechanism remains unclear. We study in-context learning for node classification on graphs $\G = (V, E)$ and show that a simple prompting scheme lets a frozen model adapt to unseen label sets without any gradient updates.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+Graph neural networks (GNNs) are the standard tool for learning on relational data \cite{kipf2017gcn, velickovic2018gat}. Their success, however, rests on task-specific training: a model trained to predict one set of labels must be fine-tuned before it can predict another.
+
+In contrast, large language models perform new tasks when shown a few input-output pairs in context \cite{brown2020gpt3}. This raises a natural question: can a graph model be prompted in the same way?
+
+We answer this question affirmatively. Our contributions are threefold. First, we formalize in-context learning for graphs. Second, we propose a prompt graph construction that connects query nodes to labelled example nodes. Third, we show empirically that pretrained GNNs equipped with prompt graphs match fine-tuned baselines on four benchmarks (Section~\ref{sec:experiments}).
+
+\section{Related Work}
+\paragraph{Prompting for graphs.} Several recent works adapt prompting ideas to graph models, typically by learning soft prompt vectors that are prepended to node features. These methods still require optimization for each new task.
+
+\paragraph{Meta-learning.} Few-shot node classification has also been approached with meta-learning, where a model is trained over many sampled tasks so that it can adapt quickly. Unlike our approach, these methods update parameters at test time.
+
+\section{Method}\label{sec:method}
+Let $X \in \mathbb{R}^{n \times d}$ denote node features and $A$ the adjacency matrix. A message-passing layer computes
+\begin{equation}
+  h_v^{(\ell+1)} = \sigma\Big( W^{(\ell)} \sum_{u \in \mathcal{N}(v)} \frac{h_u^{(\ell)}}{\sqrt{d_u d_v}} \Big),
+  \label{eq:mp}
+\end{equation}
+where $\mathcal{N}(v)$ is the neighbourhood of $v$ and $\sigma$ is a nonlinearity.
+
+Given $k$ labelled examples per class, we build a prompt graph by adding one virtual node per class and connecting each example to the virtual node of its label. A query node is classified by comparing its representation with those of the virtual nodes, as in Eq.~\eqref{eq:mp}.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.8\linewidth]{figures/prompt_graph.pdf}
+  \caption{Construction of the prompt graph. Example nodes are linked to virtual label nodes; the query node attends to all of them.}
+  \label{fig:prompt}
+\end{figure}
+
+\subsection{Training Objective}
+We pretrain the model with a contrastive objective that pulls each node towards the virtual node of its class and pushes it away from the others:
+\begin{align}
+  \mathcal{L} &= -\E_{v}\left[ \log \frac{\exp(s(v, c_v)/\tau)}{\sum_{c} \exp(s(v, c)/\tau)} \right].
+\end{align}
+The temperature $\tau$ is fixed to $0.1$ in all experiments.
+
+\section{Experiments}\label{sec:experiments}
+We evaluate on Cora, CiteSeer, PubMed and ogbn-arxiv. For each dataset, we hold out a disjoint set of classes that is never seen during pretraining.
+
+\begin{table}[t]
+  \centering
+  \caption{Few-shot node classification accuracy (\%) on held-out classes.}
+  \begin{tabular}{lcccc}
+    Method & Cora & CiteSeer & PubMed & arxiv \\
+    Fine-tuning & 71.2 & 63.5 & 70.1 & 55.4 \\
+    Ours (in-context) & 70.8 & 64.1 & 69.7 & 56.0 \\
+  \end{tabular}
+  \label{tab:main}
+\end{table}
+
+Table~\ref{tab:main} shows that in-context prediction is competitive with fine-tuning while requiring no gradient steps. The gap is largest on PubMed, where only three classes exist and the prompt graph is correspondingly small.
+
+% TODO: add ablation on the number of examples per class.
+
+\section{Conclusion}
+We showed that graph neural networks can learn in context when the task is expressed as a prompt graph. Future work will study larger pretrained models and heterogeneous graphs.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\end{document}

@@ -1,0 +1,119 @@
+//! Swapping the panes (edit the other language) and composing the
+//! other-language document.
+//!
+//! Swapping builds the target-language document from the current
+//! translations ([`biwrite_core::compose`]) and loads it as the new source.
+//! The original texts become *seeds*: every segment the user leaves alone
+//! translates back to its exact original wording, so swapping back (or
+//! saving the English while editing Chinese) changes only edited paragraphs.
+
+use std::collections::HashMap;
+
+use biwrite_core::{
+    ComposeError, Composed, ContentHash, DocSegment, DocumentModel, Insert, SegmentId, compose,
+};
+
+use crate::engine::{Engine, EngineError};
+use crate::events::Snapshot;
+use crate::state::{SegMeta, State};
+
+/// Result of [`Engine::swap`].
+#[derive(Debug)]
+pub struct Swapped {
+    /// The new editor text (in the newly edited language).
+    pub text: String,
+    pub snapshot: Snapshot,
+}
+
+/// Current translation of a segment, if it is up to date. Exact originals
+/// (seeds) are spliced verbatim; machine output is shaped to fit.
+fn current(meta: &HashMap<SegmentId, SegMeta>, seg: &DocSegment) -> Option<Insert> {
+    let m = meta
+        .get(&seg.id)
+        .filter(|m| m.translated_hash == Some(seg.hash))?;
+    let text = m.translation.clone()?;
+    Some(Insert {
+        text,
+        exact: m.exact,
+    })
+}
+
+fn compose_current(st: &State) -> Result<Composed, ComposeError> {
+    compose(&st.doc, |seg| current(&st.meta, seg))
+}
+
+/// Attach each original to the segment it was spliced into. `compose`
+/// verified that the k-th translated segment of the new document holds
+/// exactly the k-th inserted text, so this is positional, not by hash:
+/// paragraphs whose translations happen to coincide keep distinct originals.
+fn install_seeds(st: &mut State, pairs: Vec<(String, String)>) {
+    let text = st.doc.text();
+    let targets: Vec<(SegmentId, ContentHash)> = st
+        .doc
+        .segments()
+        .iter()
+        .filter(|s| s.kind().is_translatable() && !s.segment.content(text).trim().is_empty())
+        .map(|s| (s.id, s.hash))
+        .collect();
+    let mut by_hash: HashMap<ContentHash, Option<String>> = HashMap::new();
+    for ((id, hash), (_inserted, original)) in targets.into_iter().zip(pairs) {
+        by_hash
+            .entry(hash)
+            .and_modify(|known| {
+                if known.as_deref() != Some(original.as_str()) {
+                    *known = None;
+                }
+            })
+            .or_insert_with(|| Some(original.clone()));
+        let mut meta = SegMeta::new();
+        meta.seed = Some((hash, original));
+        st.meta.insert(id, meta);
+        st.touched.push(id);
+    }
+    st.seeds = by_hash;
+}
+
+impl Engine {
+    /// Swap languages: after applying the editor's latest `text`, the
+    /// translations become the new editable source and the current source
+    /// becomes their (exact) translation.
+    ///
+    /// Fails with [`EngineError::NotReady`] if any paragraph lacks an
+    /// up-to-date translation, so no half-translated document is produced.
+    pub fn swap(&self, text: String) -> Result<Swapped, EngineError> {
+        let mut st = self.inner.lock();
+        self.apply_locked(&mut st, text, None);
+        let composed = match compose_current(&st) {
+            Ok(c) => c,
+            Err(e) => {
+                self.emit_touched(st);
+                return Err(e.into());
+            }
+        };
+
+        let mode = st.doc.mode();
+        st.cancel_all();
+        st.meta.clear();
+        st.touched.clear();
+        st.doc = DocumentModel::new(st.doc.next_id());
+        st.doc.apply(composed.text.clone(), mode);
+        st.direction = st.direction.flipped();
+        install_seeds(&mut st, composed.pairs);
+        self.inner.reconcile(&mut st, &Default::default());
+        self.inner.pump(&mut st);
+        st.revision += 1;
+        let snapshot = st.snapshot(true);
+        self.inner.release(st);
+        Ok(Swapped {
+            text: composed.text,
+            snapshot,
+        })
+    }
+
+    /// The document in the target language (e.g. the English file while
+    /// editing Chinese). Fails if any paragraph is not translated yet.
+    pub fn compose_target(&self) -> Result<String, EngineError> {
+        let st = self.inner.lock();
+        Ok(compose_current(&st)?.text)
+    }
+}

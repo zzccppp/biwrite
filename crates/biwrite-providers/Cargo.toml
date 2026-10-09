@@ -1,0 +1,22 @@
+[package]
+name = "biwrite-providers"
+description = "LLM translation providers for BiWrite (OpenAI-compatible, Anthropic). No Tauri dependency."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+biwrite-core.workspace = true
+biwrite-engine.workspace = true
+reqwest = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "rt", "sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+
+[lints]
+workspace = true
