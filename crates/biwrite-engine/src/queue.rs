@@ -247,7 +247,10 @@ fn prepare_job(st: &mut State, id: SegmentId) -> Option<Job> {
         request,
         translator: Arc::clone(&st.translator),
         retry: RetryPolicy {
-            max_retries: st.settings.max_retries,
+            max_retries: st
+                .translator
+                .max_retries()
+                .unwrap_or(st.settings.max_retries),
             base: st.settings.backoff_base,
             max: st.settings.backoff_max,
         },

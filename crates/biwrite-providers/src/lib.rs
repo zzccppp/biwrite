@@ -37,7 +37,7 @@ pub use config::{
     ConfigError, Effort, Preset, ProviderConfig, ProviderKind, ServiceTier, WireApi, presets,
 };
 pub use http::redact;
-pub use keys::{KeyFn, KeyStatus, tail as key_tail};
+pub use keys::{KeyFn, KeyStatus, fingerprint as key_fingerprint, tail as key_tail};
 pub use models::list_models;
 pub use observe::{
     Declared, KeyUse, NoObserver, RecordState, RequestObserver, RequestRecord, UsageDetail,

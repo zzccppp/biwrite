@@ -4,8 +4,12 @@ use serde::{Deserialize, Serialize};
 
 /// Highest temperature offered in settings (translation wants low variance).
 pub const MAX_TEMPERATURE: f32 = 0.3;
+/// Highest per-key request limit offered in settings.
+pub const MAX_KEY_CONCURRENCY: u32 = 16;
+/// Most retries a provider may ask for.
+pub const MAX_RETRIES: u32 = 20;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     /// `POST {base_url}/chat/completions` (OpenAI, DeepSeek, Qwen, Kimi, OpenRouter, …).
@@ -13,6 +17,7 @@ pub enum ProviderKind {
     /// Anthropic Messages API, `POST {base_url}/v1/messages`.
     Anthropic,
     /// Offline mock (reverses text). Needs no key.
+    #[default]
     Mock,
 }
 
@@ -102,7 +107,7 @@ impl Effort {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
     /// Stable identifier (also the keychain account name).
@@ -122,6 +127,14 @@ pub struct ProviderConfig {
     /// OpenAI-compatible only. `None` sends nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
+    /// Most requests one key may have in flight (relays often allow two).
+    /// `None`: no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_concurrency: Option<u32>,
+    /// Retries for transient errors (rate limits, 5xx, network). `None`:
+    /// the engine's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -156,6 +169,10 @@ impl ProviderConfig {
             self.wire_api = WireApi::Chat;
             self.service_tier = None;
         }
+        self.key_concurrency = self
+            .key_concurrency
+            .map(|n| n.clamp(1, MAX_KEY_CONCURRENCY));
+        self.max_retries = self.max_retries.map(|n| n.min(MAX_RETRIES));
         if self.kind == ProviderKind::Mock {
             return Ok(self);
         }
@@ -214,6 +231,8 @@ pub struct Preset {
     pub model: &'static str,
     pub effort: Effort,
     pub service_tier: Option<ServiceTier>,
+    pub key_concurrency: Option<u32>,
+    pub max_retries: Option<u32>,
 }
 
 impl Preset {
@@ -226,6 +245,8 @@ impl Preset {
             model: "",
             effort: Effort::Low,
             service_tier: None,
+            key_concurrency: None,
+            max_retries: None,
         }
     }
 
@@ -237,6 +258,8 @@ impl Preset {
 
 /// AnyRouter relays Codex traffic: GPT models are served only on the
 /// Responses API, at high effort on the priority tier (Codex "fast").
+/// Each key carries two requests at a time and the upstream rate-limits
+/// often, so requests spread over the pool and retry more.
 pub const ANYROUTER: Preset = Preset {
     name: "AnyRouter (GPT-6 Astra)",
     kind: ProviderKind::OpenaiCompatible,
@@ -245,6 +268,8 @@ pub const ANYROUTER: Preset = Preset {
     model: "gpt-6-astra",
     effort: Effort::High,
     service_tier: Some(ServiceTier::Priority),
+    key_concurrency: Some(2),
+    max_retries: Some(10),
 };
 
 pub fn presets() -> Vec<Preset> {
@@ -295,6 +320,8 @@ mod tests {
             effort: Effort::Low,
             wire_api: WireApi::Chat,
             service_tier: None,
+            key_concurrency: None,
+            max_retries: None,
         }
     }
 

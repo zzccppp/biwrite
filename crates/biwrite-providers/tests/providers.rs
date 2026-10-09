@@ -37,6 +37,8 @@ fn config(kind: ProviderKind, base: &str, model: &str) -> ProviderConfig {
         effort: Effort::Low,
         wire_api: WireApi::Chat,
         service_tier: None,
+        key_concurrency: None,
+        max_retries: None,
     }
     .validated()
     .unwrap()

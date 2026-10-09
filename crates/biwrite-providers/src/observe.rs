@@ -31,6 +31,8 @@ pub struct KeyUse {
     pub count: usize,
     /// The last four characters, enough to tell keys apart.
     pub tail: String,
+    /// Hash-based identifier that key names in the settings refer to.
+    pub fingerprint: String,
 }
 
 /// Token counts as reported by the response. `None` means not reported.

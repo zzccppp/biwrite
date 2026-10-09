@@ -109,6 +109,13 @@ pub trait Translator: Send + Sync {
         false
     }
 
+    /// Retries the queue may make for transient errors with this
+    /// translator, if it needs a number other than the engine setting
+    /// (e.g. a relay that rate-limits often). `None`: the engine setting.
+    fn max_retries(&self) -> Option<u32> {
+        None
+    }
+
     /// Translate one segment, calling `on_partial` with the output so far.
     /// The returned text is the complete output. Dropping the future cancels
     /// the request.

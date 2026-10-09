@@ -18,8 +18,9 @@ use serde_json::{Value, json};
 
 use crate::clean::ThinkFilter;
 use crate::http::{Core, Flow, describe_stream_error, invalid, read_sse, stream_error_object};
+use crate::keys::random_u64;
 use crate::observe::{Declared, Tap, UsageDetail};
-use crate::provider::{Body, Streamed, cut_off, filtered, refused};
+use crate::provider::{Body, Streamed, TRANSLATE, cut_off, filtered, refused};
 
 /// Optional body parameters, with the words that identify a complaint about
 /// them in a 400 message.
@@ -41,14 +42,22 @@ pub(crate) const DROPPABLE: &[(&str, &[&str])] = &[
     ("prompt_cache_key", &["prompt_cache_key"]),
 ];
 
-/// Stable per provider and purpose, so requests with the same instructions
-/// share the provider's prompt cache.
-fn prompt_cache_key(core: &Core, purpose: &str) -> String {
+/// Relays such as AnyRouter route a request by its `prompt_cache_key`, and
+/// a route whose upstream is rate-limited keeps failing. Translation prompts
+/// are short (no cache to gain), so every translation takes a fresh route.
+/// Assistant prompts carry long writing rules worth caching, so they keep
+/// the key's route until that key fails (see `KeyPool::report`).
+fn prompt_cache_key(core: &Core, purpose: &str, route: u64) -> String {
     let id = ContentHash::of_raw(core.config.id.as_bytes()).to_hex();
-    format!("biwrite-{purpose}-{}", &id[..16])
+    let route = if purpose == TRANSLATE {
+        random_u64()
+    } else {
+        route
+    };
+    format!("biwrite-{purpose}-{}-{:08x}", &id[..8], route as u32)
 }
 
-pub(crate) fn body(core: &Core, system: &str, user: &str, purpose: &str) -> Body {
+pub(crate) fn body(core: &Core, system: &str, user: &str, purpose: &str, route: u64) -> Body {
     let config = &core.config;
     let mut sent = Vec::new();
     let mut json = json!({
@@ -67,7 +76,7 @@ pub(crate) fn body(core: &Core, system: &str, user: &str, purpose: &str) -> Body
         sent.push("include");
     }
     if !core.is_dropped("prompt_cache_key") {
-        json["prompt_cache_key"] = json!(prompt_cache_key(core, purpose));
+        json["prompt_cache_key"] = json!(prompt_cache_key(core, purpose, route));
         sent.push("prompt_cache_key");
     }
     let effort = config

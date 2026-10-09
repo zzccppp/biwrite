@@ -144,6 +144,8 @@ mod tests {
             effort: Effort::Low,
             wire_api: WireApi::Chat,
             service_tier: None,
+            key_concurrency: None,
+            max_retries: None,
         };
         let identity = config.cache_identity();
         settings.providers.push(ProviderEntry {

@@ -58,6 +58,8 @@ fn config(server: &MockServer) -> ProviderConfig {
         effort: Effort::High,
         wire_api: WireApi::Responses,
         service_tier: Some(ServiceTier::Priority),
+        key_concurrency: None,
+        max_retries: None,
     }
     .validated()
     .unwrap()

@@ -441,6 +441,8 @@ mod tests {
             effort: Effort::Low,
             wire_api: biwrite_providers::WireApi::Chat,
             service_tier: None,
+            key_concurrency: None,
+            max_retries: None,
         }
     }
 

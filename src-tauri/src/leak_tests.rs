@@ -34,6 +34,8 @@ async fn key_never_appears_in_views_or_settings_file() {
             effort: Effort::Low,
             wire_api: WireApi::Chat,
             service_tier: None,
+            key_concurrency: None,
+            max_retries: None,
         },
         has_key: true,
         key_count: 1,

@@ -126,10 +126,10 @@ impl HttpProvider {
         }
     }
 
-    fn body(&self, system: &str, user: &str, purpose: &str) -> Body {
+    fn body(&self, system: &str, user: &str, purpose: &str, route: u64) -> Body {
         match self.wire {
             Wire::Chat => openai::body(&self.core, system, user),
-            Wire::Responses => responses::body(&self.core, system, user, purpose),
+            Wire::Responses => responses::body(&self.core, system, user, purpose, route),
             Wire::Anthropic => anthropic::body(&self.core, system, user),
         }
     }
@@ -149,7 +149,7 @@ impl HttpProvider {
 
     async fn attempt(
         &self,
-        lease: &Lease,
+        lease: &Lease<'_>,
         body: &Body,
         purpose: &str,
         tap: &mut Tap,
@@ -183,7 +183,7 @@ impl HttpProvider {
         let mut key_retries = 0;
         loop {
             let lease = self.core.keys.acquire().await?;
-            let body = self.body(system, user, purpose);
+            let body = self.body(system, user, purpose, lease.route);
             let mut tap = Tap::start(
                 &self.core.observer,
                 RequestRecord {
@@ -281,6 +281,10 @@ impl Translator for HttpProvider {
 
     fn model(&self) -> &str {
         &self.core.config.model
+    }
+
+    fn max_retries(&self) -> Option<u32> {
+        self.core.config.max_retries
     }
 
     fn translate<'a>(

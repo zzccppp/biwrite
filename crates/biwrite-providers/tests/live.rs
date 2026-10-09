@@ -42,6 +42,8 @@ async fn anyrouter_translates_with_the_preset() {
         effort: ANYROUTER.effort,
         wire_api: ANYROUTER.wire_api,
         service_tier: ANYROUTER.service_tier,
+        key_concurrency: ANYROUTER.key_concurrency,
+        max_retries: ANYROUTER.max_retries,
     }
     .validated()
     .unwrap();
@@ -104,4 +106,149 @@ async fn anyrouter_translates_with_the_preset() {
         }
     }
     assert!(last.is_none(), "no translation: {last:?}");
+}
+
+/// Keys from `BIWRITE_LIVE_ANYROUTER_KEYS`: one per line; lines that do not
+/// look like keys (account names) are skipped.
+fn pool_keys() -> Option<Vec<String>> {
+    let text = std::env::var("BIWRITE_LIVE_ANYROUTER_KEYS").ok()?;
+    let keys: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("sk-"))
+        .map(str::to_owned)
+        .collect();
+    (!keys.is_empty()).then_some(keys)
+}
+
+fn anyrouter_config(id: &str) -> ProviderConfig {
+    ProviderConfig {
+        id: id.into(),
+        name: ANYROUTER.name.into(),
+        kind: ANYROUTER.kind,
+        base_url: ANYROUTER.base_url.into(),
+        model: ANYROUTER.model.into(),
+        temperature: 0.0,
+        effort: ANYROUTER.effort,
+        wire_api: ANYROUTER.wire_api,
+        service_tier: ANYROUTER.service_tier,
+        key_concurrency: ANYROUTER.key_concurrency,
+        max_retries: ANYROUTER.max_retries,
+    }
+    .validated()
+    .unwrap()
+}
+
+/// Translate like the engine does: retry transient errors with backoff.
+async fn translate_with_retries(
+    t: &dyn Translator,
+    source: &str,
+    retries: u32,
+) -> Result<String, biwrite_engine::TranslateError> {
+    let request = TranslationRequest {
+        source: source.into(),
+        ..Default::default()
+    };
+    let mut attempt = 0;
+    loop {
+        match t.translate(&request, &|_| {}).await {
+            Ok(out) => return Ok(out.text),
+            Err(e) if e.is_retryable() && attempt < retries => {
+                let wait = e
+                    .retry_after()
+                    .unwrap_or(Duration::from_secs(1 << attempt.min(3)));
+                tokio::time::sleep(wait.min(Duration::from_secs(10))).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs BIWRITE_LIVE_ANYROUTER_KEYS and network access"]
+async fn anyrouter_each_key_answers() {
+    let Some(keys) = pool_keys() else {
+        eprintln!("BIWRITE_LIVE_ANYROUTER_KEYS is not set; skipping");
+        return;
+    };
+    for (i, key) in keys.iter().enumerate() {
+        let key = key.clone();
+        let provider = build_http(
+            &anyrouter_config(&format!("live-key-{i}")),
+            Arc::new(move || Ok(vec![key.clone()])),
+            Arc::new(DefaultPrompts),
+            Arc::new(Records::default()),
+        )
+        .unwrap();
+        let out = translate_with_retries(provider.as_ref(), "Keys rotate per request.", 6).await;
+        println!("key {}: {:?}", i + 1, out);
+        assert!(out.is_ok(), "key {} failed: {out:?}", i + 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs BIWRITE_LIVE_ANYROUTER_KEYS and network access"]
+async fn anyrouter_pool_carries_parallel_paragraphs() {
+    let Some(keys) = pool_keys() else {
+        eprintln!("BIWRITE_LIVE_ANYROUTER_KEYS is not set; skipping");
+        return;
+    };
+    let n_keys = keys.len();
+    let records = Arc::new(Records::default());
+    let provider = build_http(
+        &anyrouter_config("live-pool"),
+        Arc::new(move || Ok(keys.clone())),
+        Arc::new(DefaultPrompts),
+        records.clone(),
+    )
+    .unwrap();
+    let paragraphs: Vec<String> = (1..=24)
+        .map(|i| format!("Paragraph {i}: the pool spreads requests over every key."))
+        .collect();
+    let started = std::time::Instant::now();
+    let handles: Vec<_> = paragraphs
+        .into_iter()
+        .map(|p| {
+            let provider = provider.clone();
+            tokio::spawn(async move { translate_with_retries(provider.as_ref(), &p, 10).await })
+        })
+        .collect();
+    let mut results = Vec::new();
+    for h in handles {
+        results.push(h.await.unwrap());
+    }
+    let elapsed = started.elapsed();
+    let ok = results.iter().filter(|r| r.is_ok()).count();
+    let finished: Vec<RequestRecord> = {
+        let all = records.0.lock().unwrap();
+        all.iter()
+            .filter(|r| r.state != RecordState::InFlight)
+            .cloned()
+            .collect()
+    };
+    let mut per_key = vec![(0usize, 0usize); n_keys];
+    for r in &finished {
+        if let Some(k) = &r.key {
+            let slot = &mut per_key[k.number - 1];
+            if r.state == RecordState::Ok {
+                slot.0 += 1;
+            } else {
+                slot.1 += 1;
+            }
+        }
+    }
+    println!(
+        "{ok}/{} paragraphs translated in {:.1}s with {} requests",
+        results.len(),
+        elapsed.as_secs_f32(),
+        finished.len()
+    );
+    for (i, (good, bad)) in per_key.iter().enumerate() {
+        println!("key {}: {good} ok, {bad} failed attempts", i + 1);
+    }
+    for r in results.iter().filter_map(|r| r.as_ref().err()) {
+        println!("failed: {r}");
+    }
+    assert_eq!(ok, results.len());
 }

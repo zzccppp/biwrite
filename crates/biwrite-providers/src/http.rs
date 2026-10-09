@@ -47,7 +47,7 @@ impl Core {
         Ok(Self {
             client: client(&config.base_url)?,
             identity: config.cache_identity(),
-            keys: KeyPool::new(&config.name, keys),
+            keys: KeyPool::new(&config.name, keys, config.key_concurrency),
             config,
             prompts,
             observer,
