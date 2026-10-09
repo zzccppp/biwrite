@@ -286,3 +286,81 @@ export const KIND_LABELS: Record<ProviderKind, string> = {
   anthropic: "Anthropic",
   mock: "Mock",
 };
+
+// ── Writing assistant ────────────────────────────────────────────────
+
+export type AssistAction = "polish" | "edit" | "ask" | "figure";
+export type AssistScope = "target" | "neighbors" | "document";
+
+/** What a job works on, in UTF-16 offsets of the text it started with. */
+export interface AssistTarget {
+  from: number;
+  to: number;
+  text: string;
+  /** Exactly one paragraph's content: its approved translation can be kept. */
+  wholeParagraph: boolean;
+  /** The answer is inserted at `from` (figures). */
+  insert: boolean;
+}
+
+export interface AssistStarted {
+  id: number;
+  target: AssistTarget;
+  model: string;
+  skill: string;
+}
+
+export interface DiffPart {
+  kind: "equal" | "insert" | "delete";
+  text: string;
+}
+
+export interface AssistResult {
+  revision: string | null;
+  translation: string | null;
+  changesZh: string[];
+  changesEn: string[];
+  answer: string | null;
+  /** Protected texts (math, citations) the revision dropped. */
+  removed: string[];
+  repeated: string[];
+  translationMatches: boolean;
+  diff: DiffPart[];
+  usage: { inputTokens: number; outputTokens: number };
+  durationMs: number;
+}
+
+export type AssistEvent =
+  | { kind: "partial"; id: number; text: string }
+  | { kind: "done"; id: number; result: AssistResult }
+  | { kind: "failed"; id: number; message: string };
+
+export interface AssistRequest {
+  action: AssistAction;
+  scope: AssistScope;
+  text: string;
+  from: number;
+  to: number;
+  instruction: string;
+  references: string[];
+  images: number[];
+  history: [string, string][];
+}
+
+/** A reference image picked in Rust (the webview keeps only a preview). */
+export interface AttachmentView {
+  id: number;
+  name: string;
+  dataUrl: string;
+}
+
+export interface SkillInfo {
+  name: string;
+  source: string;
+  version: string;
+  date: string;
+  origin: "folder" | "downloaded" | "builtin";
+  folder: string | null;
+  files: number;
+  missing: string[];
+}

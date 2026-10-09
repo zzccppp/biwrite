@@ -184,6 +184,33 @@ pub fn reveal(dir: &Path) -> CommandResult<()> {
         .map_err(|e| CommandError::io(dir, e))
 }
 
+/// Links the webview may ask to open in the browser, by name. The webview
+/// never passes a URL, so it cannot make the app open anything else.
+pub fn known_link(name: &str) -> Option<&'static str> {
+    match name {
+        "skill" => Some("https://github.com/qzkinhit/research-builder"),
+        "repo" => Some("https://github.com/zzccppp/biwrite"),
+        "releases" => Some("https://github.com/zzccppp/biwrite/releases"),
+        _ => None,
+    }
+}
+
+/// Open a URL in the default browser.
+pub fn open_url(url: &str) -> CommandResult<()> {
+    let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
+        ("open", vec![url])
+    } else if cfg!(target_os = "windows") {
+        ("cmd", vec!["/C", "start", "", url])
+    } else {
+        ("xdg-open", vec![url])
+    };
+    std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| CommandError::Settings(format!("could not open {url}: {e}")))
+}
+
 /// Distinguishes temp files of saves that might overlap.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 

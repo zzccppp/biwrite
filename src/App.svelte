@@ -2,6 +2,8 @@
   import { ChangeSet, type Text } from "@codemirror/state";
   import type { ViewUpdate } from "@codemirror/view";
   import { onMount } from "svelte";
+  import { type AssistJob, AssistStore, reapplyInstruction, uniqueIndex } from "./lib/assist.svelte";
+  import AssistPanel from "./lib/components/AssistPanel.svelte";
   import GlossaryPanel from "./lib/components/GlossaryPanel.svelte";
   import LogPanel from "./lib/components/LogPanel.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
@@ -10,16 +12,27 @@
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TranslationPane from "./lib/components/TranslationPane.svelte";
   import { SourceEditor } from "./lib/editor/editor";
-  import { errorMessage, ipc, logIpc, settingsIpc, subscribe } from "./lib/ipc";
+  import { t } from "./lib/i18n.svelte";
+  import { assistIpc, errorMessage, ipc, logIpc, settingsIpc, subscribe } from "./lib/ipc";
   import { RequestLogStore } from "./lib/requestLog.svelte";
   import { ScrollSync, type Side } from "./lib/scrollSync";
   import { Session } from "./lib/session.svelte";
   import { applyTheme, loadTheme, nextTheme, type ThemePref } from "./lib/theme";
-  import type { Mode, SavedView, SessionView, SettingsView } from "./lib/types";
+  import type {
+    AssistAction,
+    AssistRequest,
+    AssistScope,
+    Mode,
+    SavedView,
+    SessionView,
+    SettingsView,
+    SkillInfo,
+  } from "./lib/types";
 
   /** Idle time after the last keystroke before the engine re-segments. */
   const DEBOUNCE_MS = 800;
   const SPLIT_KEY = "biwrite.split";
+  const ASSIST_KEY = "biwrite.assist.open";
   const isMac = navigator.platform.toLowerCase().includes("mac");
 
   const session = new Session();
@@ -37,6 +50,12 @@
   let showSettings = $state(false);
   let showGlossary = $state(false);
   let showLog = $state(false);
+  let showAssist = $state(loadFlag(ASSIST_KEY));
+  let skill = $state<SkillInfo | null>(null);
+  /** Editor selection, for the assistant's target preview. */
+  let selection = $state({ from: 0, to: 0 });
+  let assistPanel = $state<{ focus(): void }>();
+  const assist = new AssistStore();
 
   // Engine round-trip bookkeeping (not reactive).
   let savedDoc: Text | null = null;
@@ -72,6 +91,24 @@
     }
   }
 
+  function loadFlag(key: string): boolean {
+    try {
+      return localStorage.getItem(key) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function setAssistOpen(open: boolean): void {
+    showAssist = open;
+    try {
+      localStorage.setItem(ASSIST_KEY, open ? "1" : "0");
+    } catch {
+      // Not persisted; harmless.
+    }
+    requestAnimationFrame(() => sync.schedule());
+  }
+
   function setRatio(r: number): void {
     ratio = r;
     try {
@@ -93,6 +130,7 @@
 
   function onChange(update: ViewUpdate): void {
     session.noteEdit(update.changes);
+    assist.map(update.changes);
     unsent = unsent.compose(update.changes);
     if (!session.dirty) setDirty(true);
     highlightTick++;
@@ -163,6 +201,10 @@
   }
 
   function onCursor(head: number): void {
+    const main = editor?.view.state.selection.main;
+    if (main && (main.from !== selection.from || main.to !== selection.to)) {
+      selection = { from: main.from, to: main.to };
+    }
     const id = session.index.idContaining(head);
     if (id !== session.activeId) session.activeId = id;
     sync.follow();
@@ -185,6 +227,8 @@
     resend = false;
     pendingMode = null;
     editor.setDocument(view.text, view.snapshot.mode, view.snapshot.direction);
+    assist.newDocument();
+    selection = { from: 0, to: 0 };
     savedDoc = view.dirty ? null : editor.doc;
     unsent = ChangeSet.empty(editor.doc.length);
     session.load(view);
@@ -196,6 +240,7 @@
   async function refreshSettings(): Promise<void> {
     try {
       settings = await settingsIpc.get();
+      skill = await assistIpc.getSkill();
     } catch (err) {
       fail(err);
     }
@@ -362,7 +407,160 @@
     } else if (key === "l" && e.shiftKey) {
       e.preventDefault();
       if (!e.repeat) showLog = !showLog;
+    } else if (key === "j" && !e.shiftKey) {
+      e.preventDefault();
+      if (!e.repeat) setAssistOpen(!showAssist);
+    } else if (key === "p" && e.shiftKey) {
+      e.preventDefault();
+      if (!e.repeat) void runAssist({ action: "polish", instruction: "" });
+    } else if (key === "k" && !e.shiftKey) {
+      e.preventDefault();
+      assist.setAction(assist.action === "polish" ? "edit" : assist.action);
+      setAssistOpen(true);
+      requestAnimationFrame(() => assistPanel?.focus());
     }
+  }
+
+  // ── Writing assistant ────────────────────────────────────────────
+
+  /** What the next assistant run acts on: the selection or the paragraph. */
+  const composerTarget = $derived.by(() => {
+    void highlightTick;
+    if (!editor) return null;
+    const doc = editor.doc;
+    const { from, to } = selection;
+    if (to > from) {
+      return { label: t("assist.target.selection"), text: doc.sliceString(from, Math.min(to, from + 400)) };
+    }
+    const id = session.activeId;
+    const seg = id === null ? undefined : session.layout.find((s) => s.id === id);
+    const range = id === null ? null : session.index.range(id);
+    if (!seg || !range || seg.kind.type === "skipped") return null;
+    return {
+      label: t("assist.target.paragraph", { n: session.index.indexOf(seg.id) + 1 }),
+      text: doc.sliceString(range.from, Math.min(range.to, range.from + 400)),
+    };
+  });
+
+  interface RunOptions {
+    action?: AssistAction;
+    scope?: AssistScope;
+    from?: number;
+    to?: number;
+    instruction?: string;
+    history?: [string, string][];
+    reapplies?: number;
+  }
+
+  /** Start an assistant job on the selection or the paragraph at the cursor. */
+  async function runAssist(o: RunOptions = {}): Promise<void> {
+    if (!editor) return;
+    await settleEdits();
+    const sel = editor.view.state.selection.main;
+    const request: AssistRequest = {
+      action: o.action ?? assist.action,
+      scope: o.scope ?? assist.scope,
+      text: editor.text(),
+      from: o.from ?? sel.from,
+      to: o.to ?? sel.to,
+      instruction: o.instruction ?? assist.instruction.trim(),
+      references: [...assist.samples],
+      images: assist.attachments.map((a) => a.id),
+      history: o.history ?? [],
+    };
+    try {
+      await assist.start(request, o.reapplies ?? null);
+      if (o.instruction === undefined) assist.instruction = "";
+      if (!showAssist) setAssistOpen(true);
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** Apply an approved revision where its target is now. If the target text
+   * moved, it is found again; if it was edited, the model re-applies. */
+  async function acceptJob(job: AssistJob): Promise<void> {
+    const r = job.result;
+    if (!editor || !r?.revision || job.epoch !== assist.epoch) return;
+    await settleEdits();
+    const doc = editor.doc;
+    let from = Math.min(job.from, doc.length);
+    let to = Math.min(job.to, doc.length);
+    let insert = r.revision;
+    if (job.target.insert) {
+      to = from;
+      insert = `\n\n${r.revision.trim()}`;
+    } else if (doc.sliceString(from, to) !== job.target.text) {
+      const at = uniqueIndex(doc.toString(), job.target.text);
+      if (at < 0) {
+        job.conflict = true;
+        return;
+      }
+      from = at;
+      to = at + job.target.text.length;
+    }
+    if (!job.target.insert && job.target.wholeParagraph && r.translation && r.translationMatches) {
+      try {
+        await assistIpc.offer(r.revision, r.translation);
+      } catch {
+        // The paragraph is translated again instead.
+      }
+    }
+    editor.view.dispatch({
+      changes: { from, to, insert },
+      selection: { anchor: from, head: from + insert.length },
+      scrollIntoView: true,
+      userEvent: "input.assist",
+    });
+    job.state = "applied";
+    editor.focus();
+    void flush();
+  }
+
+  function againJob(job: AssistJob): void {
+    void runAssist({
+      action: job.action,
+      scope: job.scope,
+      from: job.from,
+      to: job.target.insert ? job.from : job.to,
+      instruction: job.instruction,
+      history: job.history,
+    });
+    assist.discard(job);
+  }
+
+  function reapplyJob(job: AssistJob): void {
+    if (!job.result?.revision || job.to <= job.from) return;
+    void runAssist({
+      action: "edit",
+      scope: job.scope,
+      from: job.from,
+      to: job.to,
+      instruction: reapplyInstruction(job.target.text, job.result.revision),
+      reapplies: job.id,
+    });
+    assist.discard(job);
+  }
+
+  function followUp(job: AssistJob, question: string): void {
+    void runAssist({
+      action: "ask",
+      scope: job.scope,
+      from: job.from,
+      to: job.to,
+      instruction: question,
+      history: [...job.history, [job.instruction, job.result?.answer ?? ""]],
+    });
+  }
+
+  /** Show a job's target in the editor. */
+  function focusJob(job: AssistJob): void {
+    if (!editor || job.epoch !== assist.epoch) return;
+    const doc = editor.doc;
+    const from = Math.min(job.from, doc.length);
+    const to = Math.min(job.to, doc.length);
+    editor.view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true });
+    editor.focus();
   }
 
   function drive(side: Side) {
@@ -406,6 +604,7 @@
           },
           onNotice: (message) => session.flash(message),
           onRequest: (record) => requestLog.apply(record),
+          onAssist: (event) => assist.onEvent(event),
         });
         if (disposed) off();
         else unlisten = off;
@@ -452,10 +651,15 @@
       showLog = true;
     }}
     inflight={requestLog.inFlight}
+    assistOpen={showAssist}
+    assistBusy={assist.running}
+    assistReady={assist.ready}
+    onassistant={() => setAssistOpen(!showAssist)}
     ontoggleauto={toggleAuto}
     ontheme={cycleTheme}
   />
 
+  <div class="work">
   <main class="panes" bind:this={panes} style:--split={ratio}>
     <section
       class="source"
@@ -492,6 +696,26 @@
       />
     </div>
   </main>
+  {#if showAssist}
+    <div class="dock-host">
+      <AssistPanel
+        bind:this={assistPanel}
+        store={assist}
+        target={composerTarget}
+        ready={settings?.assistantReady ?? false}
+        model={settings?.assistantLabel ?? ""}
+        skill={skill ? `${skill.name} ${skill.version}` : "research-builder"}
+        onrun={() => runAssist()}
+        onaccept={acceptJob}
+        onagain={againJob}
+        onreapply={reapplyJob}
+        onfollowup={followUp}
+        onfocus={focusJob}
+        onclose={() => setAssistOpen(false)}
+      />
+    </div>
+  {/if}
+  </div>
 
   <StatusBar {session} provider={settings?.activeLabel ?? ""} ondismisserror={dismissError} />
 </div>
@@ -539,9 +763,21 @@
     height: 100%;
     animation: settle 420ms var(--ease) both;
   }
-  .panes {
+  .work {
     display: flex;
     min-height: 0;
+  }
+  .panes {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    min-width: 0;
+  }
+  .dock-host {
+    flex: none;
+    width: clamp(320px, 30vw, 430px);
+    min-height: 0;
+    overflow: hidden;
   }
   .source {
     flex: none;

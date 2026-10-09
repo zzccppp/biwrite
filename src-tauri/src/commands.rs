@@ -210,3 +210,14 @@ pub async fn set_dirty(
     refresh_title(&window, &state);
     Ok(())
 }
+
+/// Open one of BiWrite's known links (see `files::known_link`).
+#[tauri::command]
+pub async fn open_link(name: String) -> CommandResult<()> {
+    match files::known_link(&name) {
+        Some(url) => files::open_url(url),
+        None => Err(crate::error::CommandError::Settings(format!(
+            "unknown link {name}"
+        ))),
+    }
+}

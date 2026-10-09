@@ -5,6 +5,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AssistEvent,
+  AssistRequest,
+  AssistStarted,
+  AttachmentView,
   CacheView,
   ClearedView,
   Direction,
@@ -23,6 +27,7 @@ import type {
   SessionUsage,
   SessionView,
   SettingsView,
+  SkillInfo,
   Snapshot,
 } from "./types";
 
@@ -39,6 +44,8 @@ export const ipc = {
   setDirty: (dirty: boolean) => invoke<void>("set_dirty", { dirty }),
   swapLanguages: (text: string) => invoke<SessionView>("swap_languages", { text }),
   exportBilingual: (text: string) => invoke<ExportView | null>("export_bilingual", { text }),
+  /** Open a known link ("skill", "repo", "releases") in the browser. */
+  openLink: (name: "skill" | "repo" | "releases") => invoke<void>("open_link", { name }),
 };
 
 /** Glossary commands. CSV files are picked in native dialogs on the Rust side. */
@@ -83,6 +90,21 @@ export const settingsIpc = {
   revealLogs: () => invoke<void>("reveal_logs"),
 };
 
+/** Writing assistant: background jobs, reference images, the skill. */
+export const assistIpc = {
+  start: (request: AssistRequest) => invoke<AssistStarted>("assist_start", { request }),
+  cancel: (id: number) => invoke<void>("assist_cancel", { id }),
+  /** Hand the engine an approved translation before the edit is applied. */
+  offer: (source: string, translation: string) => invoke<void>("assist_offer", { source, translation }),
+  attachImage: () => invoke<AttachmentView | null>("attach_image"),
+  dropAttachment: (id: number) => invoke<void>("drop_attachment", { id }),
+  getSkill: () => invoke<SkillInfo>("get_skill"),
+  updateSkill: () => invoke<SkillInfo>("update_skill"),
+  chooseSkillFolder: () => invoke<SkillInfo | null>("choose_skill_folder"),
+  resetSkillFolder: () => invoke<SkillInfo>("reset_skill_folder"),
+  revealSkill: () => invoke<void>("reveal_skill"),
+};
+
 /** Request log (metadata of model requests, no text, no keys). */
 export const logIpc = {
   get: () => invoke<LogView>("get_request_log"),
@@ -96,6 +118,7 @@ export interface EngineEvents {
   onUsage(usage: SessionUsage): void;
   onNotice(message: string): void;
   onRequest(record: RequestRecord): void;
+  onAssist(event: AssistEvent): void;
 }
 
 export async function subscribe(handlers: EngineEvents): Promise<UnlistenFn> {
@@ -104,6 +127,7 @@ export async function subscribe(handlers: EngineEvents): Promise<UnlistenFn> {
     listen<SessionUsage>("usage", (e) => handlers.onUsage(e.payload)),
     listen<string>("notice", (e) => handlers.onNotice(e.payload)),
     listen<RequestRecord>("request-log", (e) => handlers.onRequest(e.payload)),
+    listen<AssistEvent>("assist", (e) => handlers.onAssist(e.payload)),
   ]);
   return () => unlisten.forEach((fn) => fn());
 }

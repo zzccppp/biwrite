@@ -120,6 +120,7 @@ pub fn run() {
             commands::set_auto_translate,
             commands::set_dirty,
             commands::swap_languages,
+            commands::open_link,
             settings_commands::get_settings,
             settings_commands::save_provider,
             settings_commands::delete_provider,

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Session } from "../session.svelte";
   import type { ThemePref } from "../theme";
+  import { t } from "../i18n.svelte";
   import { MODE_LABELS, type Mode } from "../types";
 
   interface Props {
@@ -20,6 +21,11 @@
     onlog: () => void;
     /** Model requests in flight (badge on the Log button). */
     inflight: number;
+    onassistant: () => void;
+    assistOpen: boolean;
+    /** Assistant jobs running and waiting for a decision. */
+    assistBusy: number;
+    assistReady: number;
   }
 
   let {
@@ -38,6 +44,10 @@
     onsettings,
     onlog,
     inflight,
+    onassistant,
+    assistOpen,
+    assistBusy,
+    assistReady,
   }: Props = $props();
 
   const zh = $derived(session.direction === "zh-en");
@@ -132,6 +142,24 @@
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3l8 5-8 5z" /></svg>
         <span class="smallcaps">Resume</span>
       {/if}
+    </button>
+
+    <span class="sep" aria-hidden="true"></span>
+
+    <button
+      class="tool assistant"
+      class:on={assistOpen}
+      onclick={onassistant}
+      aria-pressed={assistOpen}
+      title={t("toolbar.assistantTitle")}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true"
+        ><path d="M3 12.5 9.8 5.7M8.6 4.5l1.2-1.2 2.9 2.9-1.2 1.2zM3 12.5l-.5 1 1-.5M11.5 10.5l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z" /></svg
+      >
+      <span class="smallcaps">{t("toolbar.assistant")}</span>
+      {#if assistReady > 0}<span class="badge ready">{assistReady}</span>{:else if assistBusy > 0}<span class="badge"
+          >{assistBusy}</span
+        >{/if}
     </button>
 
     <span class="sep" aria-hidden="true"></span>
@@ -287,6 +315,13 @@
   }
   .tool.log {
     position: relative;
+  }
+  .tool.assistant.on {
+    color: var(--accent);
+    background: var(--accent-wash);
+  }
+  .badge.ready {
+    background: var(--seal);
   }
   .badge {
     min-width: 15px;

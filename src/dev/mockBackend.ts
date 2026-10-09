@@ -223,7 +223,111 @@ function seedRecords(): void {
   ];
 }
 
+let nextJob = 1;
+
+/** Paragraph (blank-line separated) around `pos`, as [from, to). */
+function paragraphAround(text: string, pos: number): [number, number] {
+  const start = text.lastIndexOf("\n\n", Math.max(0, pos - 1));
+  const from = start < 0 ? 0 : start + 2;
+  const end = text.indexOf("\n\n", pos);
+  return [from, end < 0 ? text.length : end];
+}
+
+/** Word diff by common prefix and suffix (enough for the mock). */
+function roughDiff(a: string, b: string): { kind: string; text: string }[] {
+  const wa = a.split(/(\s+)/);
+  const wb = b.split(/(\s+)/);
+  let p = 0;
+  while (p < wa.length && p < wb.length && wa[p] === wb[p]) p++;
+  let q = 0;
+  while (q < wa.length - p && q < wb.length - p && wa[wa.length - 1 - q] === wb[wb.length - 1 - q]) q++;
+  const parts = [
+    { kind: "equal", text: wa.slice(0, p).join("") },
+    { kind: "delete", text: wa.slice(p, wa.length - q).join("") },
+    { kind: "insert", text: wb.slice(p, wb.length - q).join("") },
+    { kind: "equal", text: wa.slice(wa.length - q).join("") },
+  ];
+  return parts.filter((x) => x.text);
+}
+
+const POLISHED: Record<string, { revision: string; translation: string; zh: string[]; en: string[] }> = {
+  default: {
+    revision: "This note asks whether the same idea transfers to graph neural networks. A graph lets the model use message passing, which the results below show to matter.",
+    translation: "本文探讨同样的思路能否迁移到图神经网络。图结构使模型能够利用消息传递，下文结果表明这一点很重要。",
+    zh: ["首句直接陈述研究问题，删去“收集开放问题”的铺垫。", "将“seems important”改为可核验的说法，指向后文结果。"],
+    en: ["The first sentence states the question instead of announcing a collection of questions.", "Replaced “seems important” with a checkable statement that points to the results."],
+  },
+};
+
+function emitLater(delay: number, payload: unknown): void {
+  setTimeout(() => void emit("assist", clone(payload)), delay);
+}
+
 const handlers: Record<string, (args: Args) => unknown> = {
+  assist_start: (a) => {
+    const req = a.request as { action: string; text: string; from: number; to: number; instruction: string };
+    const id = nextJob++;
+    let [from, to] = req.from === req.to ? paragraphAround(req.text, req.from) : [req.from, req.to];
+    const insert = req.action === "figure";
+    if (insert) from = to;
+    const original = insert ? req.text.slice(...paragraphAround(req.text, req.from)) : req.text.slice(from, to);
+    const p = POLISHED.default;
+    const revision =
+      req.action === "figure"
+        ? "\\begin{figure}[t]\n  \\centering\n  \\begin{tikzpicture}\n    % grouped bars\n  \\end{tikzpicture}\n  \\caption{Accuracy per dataset.}\n  \\label{fig:accuracy}\n\\end{figure}"
+        : req.action === "ask"
+          ? null
+          : p.revision;
+    const chunks = ["<revision>\nThis note asks", "<revision>\nThis note asks whether the same idea transfers", "<revision>\nThis note asks whether the same idea transfers to graph neural networks."];
+    chunks.forEach((c, i) => emitLater(300 + i * 350, { kind: "partial", id, text: c.replace("<revision>\n", "") }));
+    emitLater(1600, {
+      kind: "done",
+      id,
+      result: {
+        revision,
+        translation: req.action === "figure" ? "各数据集上的准确率。" : req.action === "ask" ? null : p.translation,
+        changesZh: req.action === "ask" ? [] : p.zh,
+        changesEn: req.action === "ask" ? [] : p.en,
+        answer:
+          req.action === "ask"
+            ? "第二句的“seems important”没有给出依据。建议改为指向结果的陈述，例如写明消息传递带来的准确率提升，并引用对应的表。"
+            : null,
+        removed: [],
+        repeated: [],
+        translationMatches: true,
+        diff: revision && req.action !== "figure" ? roughDiff(original, revision) : [],
+        usage: { inputTokens: 5210, outputTokens: 412 },
+        durationMs: 9400,
+      },
+    });
+    return {
+      id,
+      target: { from, to, text: original, wholeParagraph: req.from === req.to, insert },
+      model: "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+      skill: "research-builder d227e92",
+    };
+  },
+  assist_cancel: () => null,
+  assist_offer: () => null,
+  attach_image: () => ({
+    id: Date.now() % 100000,
+    name: "reference-figure.png",
+    dataUrl:
+      "data:image/svg+xml;utf8," +
+      encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23b8432f'/><rect x='8' y='14' width='6' height='20' fill='white'/><rect x='17' y='8' width='6' height='26' fill='white'/><rect x='26' y='18' width='6' height='16' fill='white'/></svg>"),
+  }),
+  drop_attachment: () => null,
+  get_skill: () => ({
+    name: "research-builder",
+    source: "https://github.com/qzkinhit/research-builder",
+    version: "d227e92",
+    date: "2026-10-09",
+    origin: "builtin",
+    folder: null,
+    files: 16,
+    missing: [],
+  }),
+  open_link: () => null,
   get_session: () => session(),
   update_document: (a) => {
     state.text = String(a.text);
