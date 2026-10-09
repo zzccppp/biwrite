@@ -12,7 +12,9 @@
 # Neither installer is signed by a trusted certificate yet. On Windows,
 # SmartScreen asks for confirmation. On macOS, the app is only ad-hoc signed
 # (tauri.conf.json) and not notarized, so Gatekeeper blocks the first launch:
-# right-click → Open, or `xattr -dr com.apple.quarantine /Applications/BiWrite.app`.
+# System Settings → Privacy & Security → Open Anyway (right-click → Open no
+# longer bypasses it since macOS 15), or `xattr -dr com.apple.quarantine
+# /Applications/BiWrite.app`.
 # MSI/WiX is intentionally not built (it needs Windows-only tooling and the
 # VBSCRIPT optional feature); NSIS is the Windows installer we ship.
 name: Build installers
@@ -134,7 +136,7 @@ jobs:
           The installers are not signed with a trusted certificate yet:
 
           - **Windows:** if SmartScreen says "Windows protected your PC", choose *More info* → *Run anyway*.
-          - **macOS:** drag BiWrite into Applications. The first time, right-click the app and choose *Open*, or run `xattr -dr com.apple.quarantine /Applications/BiWrite.app`.
+          - **macOS:** drag BiWrite into Applications, open it once and close the warning. Then open *System Settings* → *Privacy & Security*, click *Open Anyway* under *Security* near the bottom, confirm and enter your password. In Terminal, `xattr -dr com.apple.quarantine /Applications/BiWrite.app` does the same.
 
           NOTES
           # A tag with a suffix (v0.2.0-beta.1) is published as a pre-release.
