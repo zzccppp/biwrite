@@ -391,3 +391,62 @@ async fn anyrouter_polishes_with_the_research_builder_rules() {
     );
     assert!(answer.translation.is_some());
 }
+
+/// The author rewrites a paragraph's Chinese; the English follows.
+#[tokio::test]
+#[ignore = "live: needs BIWRITE_LIVE_ANYROUTER_KEYS"]
+async fn anyrouter_revises_english_from_edited_chinese() {
+    use biwrite_core::assist::{self, Action};
+    let Some(keys) = pool_keys() else {
+        eprintln!("BIWRITE_LIVE_ANYROUTER_KEYS is not set; skipping");
+        return;
+    };
+    let provider = build_http(
+        &anyrouter_config("live-mirror"),
+        Arc::new(move || Ok(keys.clone())),
+        Arc::new(DefaultPrompts),
+        Arc::new(Records::default()),
+    )
+    .unwrap();
+    let target = "We evaluate the method on four public datasets and report the mean accuracy over five runs \\cite{smith2020}.";
+    let new_chinese = "我们在六个公开数据集上评测该方法，并报告十次运行的平均准确率 \\cite{smith2020}。";
+    let prompt = assist::build(
+        &assist::Request {
+            action: Action::Mirror,
+            mode: biwrite_core::Mode::Latex,
+            target,
+            instruction: new_chinese,
+            ..Default::default()
+        },
+        &bundled_skill(),
+    );
+    let request = biwrite_providers::ChatRequest {
+        purpose: "mirror".into(),
+        system: prompt.system,
+        user: prompt.user,
+        images: Vec::new(),
+    };
+    let mut out = None;
+    for attempt in 0..8u32 {
+        match biwrite_providers::ChatModel::complete(provider.as_ref(), &request, &|_| {}).await {
+            Ok(o) => {
+                out = Some(o);
+                break;
+            }
+            Err(e) if e.is_retryable() => {
+                println!("attempt {attempt}: {e}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    let answer = assist::parse(Action::Mirror, &out.expect("an answer").text, &prompt.protector).unwrap();
+    let revision = answer.revision.unwrap();
+    println!("revision: {revision}");
+    println!("changes_zh: {:?}", answer.changes_zh);
+    assert!(revision.contains("\\cite{smith2020}"));
+    let lower = revision.to_lowercase();
+    assert!(lower.contains("six"), "{revision}");
+    assert!(lower.contains("ten"), "{revision}");
+    assert!(!lower.contains("four"), "{revision}");
+}
