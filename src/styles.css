@@ -180,6 +180,13 @@ select {
   font-variant-caps: all-small-caps;
   letter-spacing: 0.06em;
 }
+/* Small caps would shrink Chinese labels along with the Latin ones. */
+:root:lang(zh-CN) .smallcaps,
+:root:lang(zh-CN) .btn,
+:root:lang(zh-CN) .label {
+  font-variant-caps: normal;
+  letter-spacing: 0.02em;
+}
 
 /* Thin, unobtrusive scrollbars that match the paper. */
 ::-webkit-scrollbar {

@@ -33,6 +33,8 @@ class Language {
 }
 
 export const language = new Language();
+// The page's language from the start (CSS and fonts follow it).
+document.documentElement.lang = language.current === "zh" ? "zh-CN" : "en";
 
 /** The message in the current language, with `{name}` placeholders filled. */
 export function t(key: MessageKey, vars?: Record<string, string | number>): string {

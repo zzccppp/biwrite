@@ -16,6 +16,10 @@ crates/biwrite-core/     Pure logic. No Tauri, no async, no IO.
   glossary.rs / csv.rs   Glossary matching per segment; CSV import/export
   bilingual.rs           Bilingual Markdown export
   lang.rs                Direction (en-zh / zh-en), CJK-aware tokens
+  pair.rs                Pair a document with its hand-made mirror (alignment),
+                         patch changed paragraphs back into the mirror
+  assist.rs              Writing assistant prompts, answer parsing, diffs,
+                         paragraph and sentence at a position
   hash.rs                blake3 of normalized text = segment key
   textfile.rs            Byte-exact file round-trip (BOM, line endings)
   utf16.rs               Byte offsets → CodeMirror (UTF-16) positions
@@ -30,6 +34,9 @@ crates/biwrite-engine/   Translation engine. tokio, no Tauri.
   mock.rs                Mock translator (reverses text, 0.5–2 s)
   tests/                 Acceptance, queue and sample-paper tests (virtual time)
 crates/biwrite-providers/  LLM providers. reqwest + SSE, no Tauri.
+  responses.rs           OpenAI Responses API (streaming, AnyRouter needs)
+  keys.rs                Key pools: per-key limit, cooldown, failover
+  observe.rs             Request records for the log (no text, no keys)
   openai.rs              OpenAI-compatible chat completions (streaming)
   anthropic.rs           Anthropic Messages API (streaming, raw HTTP)
   http.rs                Client, lazy key, error mapping, redaction, SSE loop
@@ -37,6 +44,10 @@ crates/biwrite-providers/  LLM providers. reqwest + SSE, no Tauri.
   prompt.rs              System prompt files + tagged user message
   config.rs / models.rs  Provider config, validation, presets; model listing
   tests/                 Against a scripted local HTTP server
+crates/biwrite-latex/    LaTeX without Tauri: project root and engine, TeX
+                         toolchain, latexmk builds (process group killed on
+                         timeout), log parsing, SyncTeX, click location,
+                         templates, the Chinese mirror as a document
 src-tauri/               Tauri 2 shell: commands, events, dialogs, file IO,
                          keychain (secrets.rs), settings.json (settings.rs),
                          glossary and export commands (glossary_commands.rs)
@@ -417,6 +428,37 @@ mixed line endings). Otherwise it restores the BOM and the dominant line ending.
 Saves are atomic: a temp file in the same directory, fsync, rename. Symlinks
 resolve to their target and permissions are preserved.
 
+## Version 0.2
+
+* **LaTeX** (`biwrite-latex`, `src-tauri/src/latex_commands.rs`,
+  `latex_sync.rs`). The English PDF is built from the files on disk with
+  latexmk (`-f`, so a document with errors still gets its PDF). The Chinese
+  PDF is the composed translation (`Engine::compose_mirror`, paragraphs not
+  translated yet stay English) with `ctex` added on the `\begin{document}`
+  line, so its lines are the composed text's lines, built into
+  `.biwrite/zh/`. SyncTeX runs through the `synctex` tool. A PDF line maps
+  to the editor through a line diff in the same language and paragraph by
+  paragraph across languages. A click's words pick the spot near the
+  SyncTeX line (`locate.rs`).
+* **Pairs** (`biwrite-core::pair`, `src-tauri/src/pairing.rs`). Opening a
+  file looks for its counterpart by name (`_zh`, `sections_en` and
+  `sections_zh`, …). Paragraphs align with a dynamic program over kind and
+  shared anchors plus a pass for moved floats. `Engine::load_known` seeds
+  the mirror's paragraphs as exact translations. Saving patches only
+  changed paragraphs into the mirror, and swapping edits the mirror.
+* **Assistant** (`biwrite-core::assist`, `src-tauri/src/assist_commands.rs`,
+  `skills.rs`). Prompts carry the research-builder skill's files for the
+  task. Jobs stream in the background as events, the frontend keeps each
+  job's target mapped through later edits and applies a revision where its
+  text is now.
+* **Key pools and the request log** (`biwrite-providers::keys`,
+  `observe`, `src-tauri/src/request_log.rs`). Keys stay in the keychain
+  (primary account plus `#pool`), records hold metadata only.
+* **Updates** (`src-tauri/src/updater.rs`). GitHub releases, SHA-256 checked
+  downloads, an in-place bundle swap on macOS and the installer on Windows.
+* **Interface language** (`src/lib/messages.ts`, `i18n.svelte.ts`). Every
+  string has English and Chinese, and `t()` follows the reactive language.
+
 ## Milestones
 
 | | Scope | Status |
@@ -425,7 +467,8 @@ resolve to their target and permissions are preserved.
 | M2 | LaTeX segmenter, SQLite cache, tests on a sample paper; language swap | done |
 | M3 | OpenAI-compatible + Anthropic providers, keychain, SSE streaming, settings UI | done |
 | M4 | Placeholder protection, glossary, revise prompts, scroll-sync polish, KaTeX math on the right, bilingual Markdown export | done |
-| M5 | macOS then Windows packaging | |
+| M5 | macOS then Windows packaging | done |
+| 0.2 | LaTeX PDF with SyncTeX and templates, pairs with a hand-made translation, writing assistant on research-builder, key pools, request log, updates, Chinese interface | done |
 
 Revise prompting (M4 tuning): a glossary-only change (same source, new
 entries) sends just `<previous_translation>` with "revise it minimally so it

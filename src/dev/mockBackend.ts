@@ -6,6 +6,7 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import PAPER from "../../samples/paper.tex?raw";
+import PAPER_ZH from "../../dev/sample-zh.json";
 import type {
   BuildView,
   KeyEntry,
@@ -130,14 +131,16 @@ const state = {
   records: [] as RequestRecord[],
 };
 
-/** Plain-mode segmentation: paragraphs separated by blank lines. */
+/** Paragraphs separated by blank lines (LaTeX blocks get a rough kind). */
 function layout(text: string): SegmentLayout[] {
   const out: SegmentLayout[] = [];
   const re = /[^\n]+(?:\n[^\n]+)*/g;
+  const body = text.indexOf("\\begin{document}");
   let m: RegExpExecArray | null;
   let id = 1;
   while ((m = re.exec(text))) {
-    out.push({ id: id++, kind: { type: "paragraph" }, from: m.index, to: m.index + m[0].length });
+    const kind = LATEX ? latexKind(m[0], body >= 0 && m.index < body) : ({ type: "paragraph" } as const);
+    out.push({ id: id++, kind, from: m.index, to: m.index + m[0].length });
   }
   return out;
 }
@@ -146,16 +149,38 @@ function fakeChinese(source: string): string {
   return `（译文）${source.slice(0, 40)}……`;
 }
 
+/** Real translations of the sample paper (dev/sample-zh.json), in the order they occur. */
+function sampleChinese(source: string): string | null {
+  const found = Object.entries(PAPER_ZH as Record<string, string>)
+    .map(([en, zh]) => ({ at: source.indexOf(en), zh }))
+    .filter((x) => x.at >= 0)
+    .sort((a, b) => a.at - b.at);
+  return found.length ? found.map((x) => x.zh).join("\n") : null;
+}
+
+/** What a LaTeX block is, roughly like the real segmenter. */
+function latexKind(block: string, inPreamble: boolean): SegmentLayout["kind"] {
+  if (inPreamble || /^\\(documentclass|usepackage|newcommand|title|author)/.test(block)) return { type: "skipped", reason: "preamble" };
+  if (/^\\begin\{(equation|align)/.test(block)) return { type: "skipped", reason: "math" };
+  if (/^\\begin\{table/.test(block)) return { type: "skipped", reason: "table" };
+  if (/^\\(maketitle|bibliography|end\{document)/.test(block)) return { type: "skipped", reason: "markup" };
+  return { type: "paragraph" };
+}
+
 function snapshot(full = true): Snapshot {
   const segs = layout(state.text);
-  const states: SegmentState[] = segs.map((s) => ({
-    id: s.id,
-    version: state.version++,
-    status: "translated",
-    text: fakeChinese(state.text.slice(s.from, s.to)),
-    partial: false,
-    error: null,
-  }));
+  const states: SegmentState[] = segs.map((s) => {
+    const source = state.text.slice(s.from, s.to);
+    const skipped = s.kind.type === "skipped";
+    return {
+      id: s.id,
+      version: state.version++,
+      status: skipped ? "skipped" : "translated",
+      text: skipped ? null : ((LATEX ? sampleChinese(source) : null) ?? fakeChinese(source)),
+      partial: false,
+      error: null,
+    };
+  });
   return {
     revision: state.revision++,
     mode: LATEX ? "latex" : "plain",
@@ -377,7 +402,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   export_api_keys: () => "/Users/me/Desktop/AnyRouter-keys.txt",
   import_api_keys: () => state.settings,
   swap_languages: () => session(),
-  latex_pdf: async () => (await fetch("/dev/sample.pdf")).arrayBuffer(),
+  latex_pdf: async (a) => (await fetch(a.lang === "zh" ? "/dev/sample-zh.pdf" : "/dev/sample.pdf")).arrayBuffer(),
   latex_reveal_pdf: () => null,
   latex_save_pdf: () => "/Users/me/papers/gnn-icl/paper.pdf",
   latex_inverse: (a) => {
