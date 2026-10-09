@@ -1,8 +1,11 @@
 //! Mock translator for development: returns the reversed source after a
-//! random delay, streaming it in a few chunks.
+//! random delay, streaming it in a few chunks. Placeholders (`⟦n⟧`) are kept
+//! whole, so protected math and citations survive like with a real model.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
+
+use biwrite_core::protect::placeholder_at;
 
 use crate::random::random_between;
 use crate::translator::{
@@ -84,7 +87,7 @@ impl Translator for MockTranslator {
             let _guard = InFlight(&self.in_flight);
 
             let total = random_between(self.min_delay, self.max_delay);
-            let reversed: String = request.source.chars().rev().collect();
+            let reversed = reverse(&request.source);
             let chunks = split_chunks(&reversed, STREAM_CHUNKS);
             let step = total / u32::try_from(chunks.len().max(1)).unwrap_or(1);
             if chunks.is_empty() {
@@ -105,6 +108,19 @@ impl Translator for MockTranslator {
             })
         })
     }
+}
+
+/// Reverse the characters, keeping each placeholder as one unit.
+pub fn reverse(text: &str) -> String {
+    let mut units = Vec::new();
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        let len = placeholder_at(rest).map_or(c.len_utf8(), |(len, _)| len);
+        units.push(&rest[..len]);
+        rest = &rest[len..];
+    }
+    units.reverse();
+    units.concat()
 }
 
 /// Split into at most `n` pieces on char boundaries.
@@ -142,6 +158,12 @@ mod tests {
         assert!(split_chunks(text, 6).len() <= 6);
         assert!(split_chunks("", 6).is_empty());
         assert_eq!(split_chunks("ab", 6), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn placeholders_stay_whole() {
+        assert_eq!(reverse("ab ⟦12⟧ c⟦0⟧"), "⟦0⟧c ⟦12⟧ ba");
+        assert_eq!(reverse("⟦ x"), "x ⟦");
     }
 
     #[tokio::test(start_paused = true)]

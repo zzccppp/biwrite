@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use biwrite_core::{ContentHash, SegmentId, similarity};
+use biwrite_core::{ContentHash, Protector, SegmentId, glossary, similarity};
 use tokio::time::Instant;
 
 use crate::cache::CacheKey;
@@ -12,9 +12,7 @@ use crate::engine::Inner;
 use crate::events::SegmentStatus;
 use crate::random::random_between;
 use crate::state::{Running, SegError, State};
-use crate::translator::{
-    Revision, TranslateError, TranslationOutput, TranslationRequest, Translator,
-};
+use crate::translator::{Revision, TokenUsage, TranslateError, TranslationRequest, Translator};
 
 /// A dispatched translation request.
 pub(crate) struct Job {
@@ -22,6 +20,10 @@ pub(crate) struct Job {
     generation: u64,
     hash: ContentHash,
     key: CacheKey,
+    /// The segment's text as written; `request.source` is its masked form.
+    source: String,
+    /// Restores the placeholders in the model's output.
+    protector: Protector,
     request: TranslationRequest,
     translator: Arc<dyn Translator>,
     retry: RetryPolicy,
@@ -62,13 +64,14 @@ impl Inner {
             let Some(job) = prepare_job(st, id) else {
                 continue;
             };
-            let (generation, hash) = (job.generation, job.hash);
+            let (generation, hash, glossary_fp) = (job.generation, job.hash, job.key.glossary);
             let handle = self.runtime.spawn(run_job(Arc::clone(self), job));
             st.running.insert(
                 id,
                 Running {
                     generation,
                     hash,
+                    glossary_fp,
                     abort: handle.abort_handle(),
                 },
             );
@@ -92,12 +95,19 @@ impl Inner {
         self.sink.segment_states(&states);
     }
 
-    fn finish_job(
-        self: &Arc<Self>,
-        job: Job,
-        result: Result<TranslationOutput, TranslateError>,
-        attempts: u64,
-    ) {
+    /// Count one finished provider request as soon as it returns, so its
+    /// usage is kept even if the job is cancelled during a retry.
+    fn count_request(&self, usage: TokenUsage) {
+        let mut st = self.lock();
+        st.usage.requests += 1;
+        st.usage.input_tokens += usage.input_tokens;
+        st.usage.output_tokens += usage.output_tokens;
+        let usage = st.usage;
+        drop(st);
+        self.sink.usage(&usage);
+    }
+
+    fn finish_job(self: &Arc<Self>, job: Job, result: Result<String, TranslateError>) {
         let mut st = self.lock();
         if st
             .running
@@ -106,11 +116,6 @@ impl Inner {
         {
             st.running.remove(&job.id);
         }
-        st.usage.requests += attempts;
-        if let Ok(out) = &result {
-            st.usage.input_tokens += out.usage.input_tokens;
-            st.usage.output_tokens += out.usage.output_tokens;
-        }
         let current = st
             .meta
             .get(&job.id)
@@ -118,21 +123,23 @@ impl Inner {
             && st.doc.get(job.id).is_some_and(|s| s.hash == job.hash);
 
         match result {
-            Ok(mut out) => {
-                out.text = out.text.trim().to_owned();
+            Ok(text) => {
+                let text = text.trim().to_owned();
                 // A finished translation is valid for its source even if the
                 // segment has moved on (e.g. the user will undo).
-                if let Err(e) = self.cache.put(&job.key, &out.text) {
+                if let Err(e) = self.cache.put(&job.key, &text) {
                     st.notices.push(e.to_string());
                 }
                 if current {
                     let placeholder = job.translator.is_placeholder();
+                    let glossary_fp = job.key.glossary;
                     st.update(job.id, |m| {
                         m.exact = false;
                         m.placeholder = placeholder;
-                        m.translation = Some(out.text);
+                        m.glossary_fp = glossary_fp;
+                        m.translation = Some(text);
                         m.translated_hash = Some(job.hash);
-                        m.translated_source = Some(job.request.source);
+                        m.translated_source = Some(job.source);
                         m.status = SegmentStatus::Translated;
                         m.partial = None;
                         m.error = None;
@@ -189,25 +196,36 @@ fn prepare_job(st: &mut State, id: SegmentId) -> Option<Job> {
     let hash = seg.hash;
 
     let meta = st.meta.get(&id)?;
-    let revision = match (&meta.translation, &meta.translated_source) {
+    // Revise mode needs a real previous translation of similar text. Mock
+    // output is only a stand-in, and an unchanged source with a current
+    // translation means an explicit retranslate: start fresh.
+    let previous = match (&meta.translation, &meta.translated_source) {
         (Some(old_translation), Some(old_source))
             if meta.translated_hash != Some(hash)
+                && !meta.placeholder
                 && !old_translation.is_empty()
                 && similarity(old_source, &source) > st.settings.revise_threshold =>
         {
-            Some(Revision {
-                old_source: old_source.clone(),
-                old_translation: old_translation.clone(),
-            })
+            Some((old_source.clone(), old_translation.clone()))
         }
         _ => None,
     };
+    // Old and new text share one numbering, so unchanged math keeps its
+    // placeholder in all three texts.
+    let mut protector = Protector::new(st.doc.mode());
+    let masked = protector.mask(&source);
+    let revision = previous.map(|(old_source, old_translation)| Revision {
+        old_source: protector.mask_context(&old_source),
+        old_translation: protector.mask_known(&old_translation),
+    });
+    let glossary = st.glossary_for_masked(&masked);
+    let key = st.cache_key(hash, glossary::fingerprint(&glossary));
     let request = TranslationRequest {
         direction: st.direction,
-        source,
+        source: masked,
         context_before,
         context_after,
-        glossary: Vec::new(),
+        glossary,
         doc_note: st.settings.doc_note.clone(),
         revision,
     };
@@ -223,7 +241,9 @@ fn prepare_job(st: &mut State, id: SegmentId) -> Option<Job> {
         id,
         generation,
         hash,
-        key: st.cache_key(hash),
+        key,
+        source,
+        protector,
         request,
         translator: Arc::clone(&st.translator),
         retry: RetryPolicy {
@@ -259,33 +279,53 @@ async fn run_job(inner: Arc<Inner>, job: Job) {
             due.then(|| b.text.clone())
         };
         if let Some(partial) = due {
-            inner.publish_partial(job.id, job.generation, Some(partial));
+            let shown = job.protector.restore_partial(&partial);
+            inner.publish_partial(job.id, job.generation, Some(shown));
         }
     };
+    let discard_partial = || {
+        buffer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .text
+            .clear();
+        inner.publish_partial(job.id, job.generation, None);
+    };
 
-    let mut attempt: u32 = 0;
+    let mut retries: u32 = 0;
+    let mut placeholder_retried = false;
     let result = loop {
-        match job.translator.translate(&job.request, &on_partial).await {
-            Ok(out) => break Ok(out),
-            Err(e) if e.is_retryable() && attempt < job.retry.max_retries => {
-                let delay = backoff_delay(attempt, e.retry_after(), job.retry);
+        let attempt = job.translator.translate(&job.request, &on_partial).await;
+        let usage = attempt.as_ref().map(|out| out.usage).unwrap_or_default();
+        inner.count_request(usage);
+        match attempt {
+            Ok(out) => {
+                match job.protector.restore(&out.text) {
+                    Ok(text) => break Ok(text),
+                    // Models occasionally drop or mangle a placeholder; one
+                    // immediate retry usually fixes it.
+                    Err(e) if !placeholder_retried => {
+                        placeholder_retried = true;
+                        inner.sink.notice(&format!("{e}; retrying"));
+                        discard_partial();
+                    }
+                    Err(e) => break Err(TranslateError::InvalidResponse(e.to_string())),
+                }
+            }
+            Err(e) if e.is_retryable() && retries < job.retry.max_retries => {
+                let delay = backoff_delay(retries, e.retry_after(), job.retry);
                 inner
                     .sink
                     .notice(&format!("{e}; retrying in {:.1}s", delay.as_secs_f32()));
-                buffer
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .text
-                    .clear();
                 // Don't leave the failed attempt's half output on screen.
-                inner.publish_partial(job.id, job.generation, None);
+                discard_partial();
                 tokio::time::sleep(delay).await;
-                attempt += 1;
+                retries += 1;
             }
             Err(e) => break Err(e),
         }
     };
-    inner.finish_job(job, result, u64::from(attempt) + 1);
+    inner.finish_job(job, result);
 }
 
 #[cfg(test)]

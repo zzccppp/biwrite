@@ -8,12 +8,14 @@
     theme: ThemePref;
     onopen: () => void;
     onsave: () => void;
+    onexport: () => void;
     onmode: (mode: Mode) => void;
     onretranslate: () => void;
     onretranslateall: () => void;
     ontoggleauto: () => void;
     ontheme: () => void;
     onswap: () => void;
+    onglossary: () => void;
     onsettings: () => void;
   }
 
@@ -22,12 +24,14 @@
     theme,
     onopen,
     onsave,
+    onexport,
     onmode,
     onretranslate,
     onretranslateall,
     ontoggleauto,
     ontheme,
     onswap,
+    onglossary,
     onsettings,
   }: Props = $props();
 
@@ -47,6 +51,10 @@
     <button class="tool" onclick={onsave} title="Save ({mod}S) · Save As ({mod}⇧S)">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5v3h5v-3M5 13.5v-4h6v4" /></svg>
       <span class="smallcaps">Save</span>
+    </button>
+    <button class="tool secondary" onclick={onexport} title="Export bilingual Markdown: each paragraph in English, then Chinese">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2.5M5.5 5 8 2.5 10.5 5M3 9v4.5h10V9" /></svg>
+      <span class="smallcaps">Export</span>
     </button>
 
     <span class="sep" aria-hidden="true"></span>
@@ -82,7 +90,7 @@
 
   <div class="group">
     <button
-      class="tool"
+      class="tool secondary"
       onclick={onretranslate}
       disabled={session.activeId === null || zh}
       title={zh
@@ -93,7 +101,7 @@
       <span class="smallcaps">Segment</span>
     </button>
     <button
-      class="tool"
+      class="tool secondary"
       onclick={onretranslateall}
       disabled={zh}
       title={zh
@@ -123,6 +131,12 @@
 
     <span class="sep" aria-hidden="true"></span>
 
+    <button class="tool secondary" onclick={onglossary} title="Glossary: preferred translations of terms">
+      <svg viewBox="0 0 16 16" aria-hidden="true"
+        ><path d="M3 2.8h7.5a1.5 1.5 0 0 1 1.5 1.5v9H4.5A1.5 1.5 0 0 1 3 11.8zM3 11.8a1.5 1.5 0 0 1 1.5-1.5H12M6 5.5h3.5" /></svg
+      >
+      <span class="smallcaps">Glossary</span>
+    </button>
     <button class="tool" onclick={onsettings} title="Settings ({mod},)">
       <svg viewBox="0 0 16 16" aria-hidden="true"
         ><circle cx="8" cy="8" r="2.2" /><path
@@ -131,7 +145,7 @@
       >
       <span class="smallcaps">Settings</span>
     </button>
-    <button class="tool" onclick={ontheme} title="Theme: {themeLabel[theme]}">
+    <button class="tool secondary" onclick={ontheme} title="Theme: {themeLabel[theme]}">
       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" /><path d="M8 3a5 5 0 0 0 0 10z" class="fill" /></svg>
       <span class="smallcaps">{themeLabel[theme]}</span>
     </button>
@@ -141,7 +155,8 @@
 <style>
   .toolbar {
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    /* The button groups never shrink; the file name gives way (ellipsis). */
+    grid-template-columns: minmax(max-content, 1fr) minmax(96px, auto) minmax(max-content, 1fr);
     align-items: center;
     gap: 12px;
     height: 44px;
@@ -299,6 +314,12 @@
     background: var(--rule);
   }
 
+  /* Narrower windows: icons only, secondary actions first. */
+  @media (max-width: 1240px) {
+    .tool.secondary span {
+      display: none;
+    }
+  }
   @media (max-width: 980px) {
     .tool span {
       display: none;

@@ -61,6 +61,70 @@ pub async fn pick_save<R: Runtime>(
     rx.await.ok().flatten().and_then(|p| p.into_path().ok())
 }
 
+/// Native "Open" dialog for one kind of file (CSV, ...). `None` if cancelled.
+pub async fn pick_open_kind<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+    label: &str,
+    extensions: &[&str],
+) -> Option<PathBuf> {
+    let (tx, rx) = oneshot::channel();
+    app.dialog()
+        .file()
+        .set_parent(window)
+        .add_filter(label, extensions)
+        .pick_file(move |path| {
+            let _ = tx.send(path);
+        });
+    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+}
+
+/// Native "Save" dialog for an exported file, suggesting `file_name` in
+/// `dir`. `None` if cancelled.
+pub async fn pick_save_kind<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+    label: &str,
+    extensions: &[&str],
+    dir: Option<&Path>,
+    file_name: &str,
+) -> Option<PathBuf> {
+    let (tx, rx) = oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_parent(window)
+        .add_filter(label, extensions)
+        .set_file_name(file_name);
+    if let Some(dir) = dir {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
+    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+}
+
+/// Read a small file whole (blocking IO off the async runtime), refusing
+/// anything over `max_bytes`.
+pub async fn read_small_file(path: PathBuf, max_bytes: u64) -> CommandResult<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        let len = fs::metadata(&path)
+            .map_err(|e| CommandError::io(&path, e))?
+            .len();
+        if len > max_bytes {
+            return Err(CommandError::Settings(format!(
+                "{}: the file is too large ({} MB)",
+                path.display(),
+                len / 1_000_000
+            )));
+        }
+        fs::read(&path).map_err(|e| CommandError::io(&path, e))
+    })
+    .await
+    .map_err(|e| CommandError::Task(e.to_string()))?
+}
+
 /// Ask whether unsaved changes may be discarded.
 pub fn ask_discard<R: Runtime>(
     app: &AppHandle<R>,

@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use biwrite_core::Direction;
+use biwrite_core::{Direction, GlossaryEntry};
 use biwrite_providers::prompt::{default_prompt, prompt_file_name};
 use biwrite_providers::{Effort, Preset, ProviderConfig, ProviderKind, presets};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,8 @@ pub struct AppSettings {
     pub concurrency: usize,
     /// Document note per file path.
     pub doc_notes: BTreeMap<String, String>,
+    /// Preferred renderings of terms, for every document.
+    pub glossary: Vec<GlossaryEntry>,
 }
 
 impl Default for AppSettings {
@@ -40,6 +42,7 @@ impl Default for AppSettings {
             active_provider: MOCK_ID.to_owned(),
             concurrency: DEFAULT_CONCURRENCY,
             doc_notes: BTreeMap::new(),
+            glossary: Vec::new(),
         }
     }
 }
@@ -238,8 +241,15 @@ mod tests {
         s.providers.push(deepseek());
         s.active_provider = "p-1".into();
         s.doc_notes.insert("/a/paper.tex".into(), "ML paper".into());
+        s.glossary = vec![
+            GlossaryEntry::new("GNN", None),
+            GlossaryEntry::new("prompt", Some("提示")),
+        ];
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
+        // Files from before the glossary existed still load.
+        std::fs::write(&path, r#"{"activeProvider":"mock","concurrency":2}"#).unwrap();
+        assert!(load(&path).glossary.is_empty());
 
         // Missing mock and dangling active provider are repaired.
         std::fs::write(

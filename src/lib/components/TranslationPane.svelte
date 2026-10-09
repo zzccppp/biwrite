@@ -7,6 +7,8 @@
     session: Session;
     blocks: Map<number, HTMLElement>;
     preview: (from: number, to: number) => string;
+    /** Full source text of a range (for typesetting a collapsed equation). */
+    slice: (from: number, to: number) => string;
     onactivate: (id: number, offsetY: number) => void;
     onretry: (id: number) => void;
     onscroll: () => void;
@@ -14,7 +16,8 @@
     pane?: HTMLElement;
   }
 
-  let { session, blocks, preview, onactivate, onretry, onscroll, onresize, pane = $bindable() }: Props = $props();
+  let { session, blocks, preview, slice, onactivate, onretry, onscroll, onresize, pane = $bindable() }: Props =
+    $props();
 
   let list: HTMLElement;
 
@@ -38,8 +41,11 @@
   }
 
   onMount(() => {
+    // Content height (reflow, expanded equations) and viewport size (window
+    // resize, splitter drag) both move the blocks.
     const observer = new ResizeObserver(() => onresize());
     observer.observe(list);
+    if (pane) observer.observe(pane);
     return () => observer.disconnect();
   });
 </script>
@@ -55,9 +61,14 @@
         edited={session.localStale.has(segment.id)}
         preview={segment.kind.type === "skipped" ? preview(segment.from, segment.to) : ""}
         lang={session.direction === "zh-en" ? "en" : "zh"}
+        mode={session.mode}
+        macros={session.macros}
+        expanded={session.expanded.has(segment.id)}
+        source={session.expanded.has(segment.id) ? slice(segment.from, segment.to) : ""}
         {register}
         onactivate={activate}
         {onretry}
+        ontoggle={(id) => session.toggleExpanded(id)}
       />
     {:else}
       <div class="empty">

@@ -9,9 +9,10 @@
     settings: SettingsView;
     onchange: (view: SettingsView) => void;
     onclose: () => void;
+    onglossary: () => void;
   }
 
-  let { settings, onchange, onclose }: Props = $props();
+  let { settings, onchange, onclose, onglossary }: Props = $props();
 
   let selectedId = $state<string | null>(null);
   let draftNew = $state<ProviderView | null>(null);
@@ -168,6 +169,14 @@
     </section>
 
     <section>
+      <h3 class="smallcaps">Glossary</h3>
+      <div class="row glossary">
+        <p class="explain grow">Preferred Chinese for your terms, or keep them in English. Used for every document.</p>
+        <button class="btn" onclick={onglossary}>Edit glossary…</button>
+      </div>
+    </section>
+
+    <section>
       <h3 class="smallcaps">System prompt</h3>
       <PromptEditor />
     </section>
@@ -280,6 +289,13 @@
   }
   .add {
     margin-bottom: 12px;
+  }
+  .glossary {
+    margin-bottom: 10px;
+  }
+  .explain.grow {
+    flex: 1;
+    margin: 0;
   }
   .explain {
     margin: 0 0 12px;

@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use biwrite_core::Direction;
+pub use biwrite_core::GlossaryEntry;
 use serde::Serialize;
 
 /// Boxed future so `Translator` stays object-safe (`Arc<dyn Translator>`).
@@ -14,14 +15,6 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// the previous partial, so a provider can also restart it, e.g. after a
 /// server-side model fallback).
 pub type PartialFn<'a> = &'a (dyn Fn(&str) + Send + Sync);
-
-/// A glossary entry relevant to the segment being translated.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GlossaryEntry {
-    pub term: String,
-    /// Chinese rendering; `None` means "keep in English".
-    pub translation: Option<String>,
-}
 
 /// Previous source and translation for revise mode: the model is asked to
 /// revise `old_translation` minimally so wording stays stable across edits.
@@ -42,6 +35,7 @@ pub struct TranslationRequest {
     pub context_before: Option<String>,
     /// Source of the next segment, for context only (not translated).
     pub context_after: Option<String>,
+    /// Glossary entries the source mentions (for zh→en, `中文 → English`).
     pub glossary: Vec<GlossaryEntry>,
     /// Document-level note, e.g. "ML paper on in-context learning".
     pub doc_note: Option<String>,

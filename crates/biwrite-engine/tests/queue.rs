@@ -4,7 +4,9 @@ mod common;
 
 use std::time::Duration;
 
-use common::{all_translated, harness, join, loaded, paragraphs, reverse, settle, state_of};
+use common::{
+    Scripted, all_translated, harness, join, loaded, paragraphs, reverse, settle, state_of,
+};
 
 use biwrite_core::{Mode, SegmentId};
 use biwrite_engine::{
@@ -166,6 +168,36 @@ async fn revise_mode_for_small_edits_only() {
         .update("Completely different sentence about other things.".into());
     settle(&h.engine).await;
     assert!(h.translator.requests().pop().unwrap().revision.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn stand_in_output_is_not_revised() {
+    let h = harness(EngineSettings::default());
+    h.translator.set_stand_in(true);
+    let base = "The model learns graph structure from context examples at inference time.";
+    loaded(&h, base).await;
+    h.engine.update(base.replace("learns", "infers"));
+    settle(&h.engine).await;
+    assert!(h.translator.requests().pop().unwrap().revision.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn switching_from_the_mock_translates_from_scratch() {
+    let h = harness(EngineSettings::default());
+    h.translator.set_stand_in(true);
+    loaded(&h, "The model learns graph structure.\n\nSecond paragraph.").await;
+
+    let real = Scripted::other_provider(Duration::from_millis(300));
+    h.engine.set_translator(real.clone());
+    settle(&h.engine).await;
+    let requests = real.requests();
+    assert_eq!(requests.len(), 2);
+    // The mock's reversed text is never offered as a translation to revise.
+    assert!(
+        requests.iter().all(|r| r.revision.is_none()),
+        "{requests:?}"
+    );
+    assert!(all_translated(&h.engine));
 }
 
 #[tokio::test(start_paused = true)]

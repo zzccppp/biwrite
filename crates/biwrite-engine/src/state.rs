@@ -4,8 +4,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
+use biwrite_core::glossary::{self, Glossary};
 use biwrite_core::utf16::byte_to_utf16;
-use biwrite_core::{ContentHash, Direction, DocumentModel, SegmentId};
+use biwrite_core::{ContentHash, Direction, DocumentModel, GlossaryEntry, Protector, SegmentId};
 use tokio::task::AbortHandle;
 
 use crate::cache::CacheKey;
@@ -19,8 +20,6 @@ pub struct EngineSettings {
     pub concurrency: usize,
     /// Translate changed segments automatically (toolbar "pause" turns it off).
     pub auto_translate: bool,
-    /// Bumped whenever the glossary changes; part of the cache key.
-    pub glossary_version: u64,
     pub doc_note: Option<String>,
     /// Use revise mode when old and new source are more similar than this.
     pub revise_threshold: f32,
@@ -37,7 +36,6 @@ impl Default for EngineSettings {
         Self {
             concurrency: 4,
             auto_translate: true,
-            glossary_version: 0,
             doc_note: None,
             revise_threshold: 0.6,
             max_retries: 5,
@@ -75,6 +73,8 @@ pub(crate) struct SegMeta {
     pub exact: bool,
     /// `translation` came from a placeholder translator (the mock).
     pub placeholder: bool,
+    /// Fingerprint of the glossary entries `translation` was made with.
+    pub glossary_fp: u64,
 }
 
 impl SegMeta {
@@ -92,6 +92,7 @@ impl SegMeta {
             seed: None,
             exact: false,
             placeholder: false,
+            glossary_fp: 0,
         }
     }
 
@@ -136,6 +137,8 @@ pub(crate) enum Priority {
 pub(crate) struct Running {
     pub generation: u64,
     pub hash: ContentHash,
+    /// Fingerprint of the glossary entries sent with the request.
+    pub glossary_fp: u64,
     pub abort: AbortHandle,
 }
 
@@ -153,6 +156,7 @@ pub(crate) struct State {
     pub running: HashMap<SegmentId, Running>,
     pub translator: Arc<dyn Translator>,
     pub settings: EngineSettings,
+    pub glossary: Glossary,
     pub usage: SessionUsage,
     /// Segments whose state changed during the current operation.
     pub touched: Vec<SegmentId>,
@@ -173,20 +177,37 @@ impl State {
             running: HashMap::new(),
             translator,
             settings,
+            glossary: Glossary::default(),
             usage: SessionUsage::default(),
             touched: Vec::new(),
             notices: Vec::new(),
         }
     }
 
-    pub fn cache_key(&self, hash: ContentHash) -> CacheKey {
+    pub fn cache_key(&self, hash: ContentHash, glossary_fp: u64) -> CacheKey {
         CacheKey {
             hash,
             direction: self.direction,
             provider: self.translator.provider().to_owned(),
             model: self.translator.model().to_owned(),
-            glossary_version: self.settings.glossary_version,
+            glossary: glossary_fp,
         }
+    }
+
+    /// Glossary entries to send with `masked` (a segment's text with
+    /// protected spans masked, so terms inside citation keys or math don't
+    /// count).
+    pub fn glossary_for_masked(&self, masked: &str) -> Vec<GlossaryEntry> {
+        self.glossary.relevant(masked, self.direction)
+    }
+
+    /// Fingerprint of the entries a segment with this text gets.
+    pub fn glossary_fp(&self, content: &str) -> u64 {
+        if self.glossary.is_empty() {
+            return 0;
+        }
+        let masked = Protector::new(self.doc.mode()).mask(content);
+        glossary::fingerprint(&self.glossary_for_masked(&masked))
     }
 
     /// Mutate a segment's meta, bump its version and mark it for emission.

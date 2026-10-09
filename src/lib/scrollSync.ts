@@ -1,6 +1,8 @@
 // Segment-anchored scroll sync: the segment at the top edge of one pane is
 // aligned with its counterpart at the top edge of the other, proportionally
 // within the segment. Whichever pane the user is interacting with drives.
+// While the user types, the active (cursor) block is also kept in view on
+// the right, scrolling as little as possible.
 
 import type { EditorView } from "@codemirror/view";
 import type { SegmentIndex } from "./segmentIndex";
@@ -11,13 +13,19 @@ export interface ScrollSyncDeps {
   editor(): EditorView | null;
   right(): HTMLElement | null;
   block(id: number): HTMLElement | undefined;
+  /** Segment under the editor cursor. */
+  active(): number | null;
   index: SegmentIndex;
 }
 
 const clamp01 = (x: number) => (Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : 0);
+/** Space kept around the active block when revealing it. */
+const REVEAL_MARGIN = 24;
 
 export class ScrollSync {
   driver: Side = "left";
+  /** Keep the active block visible (typing); a user scroll turns it off. */
+  private following = false;
   private deps: ScrollSyncDeps;
   private frame = 0;
   /** Scroll events caused by our own writes, per pane. */
@@ -34,6 +42,17 @@ export class ScrollSync {
       return;
     }
     if (side === this.driver) this.schedule();
+  }
+
+  /** The cursor moved or the user typed: show the active block again. */
+  follow(): void {
+    this.following = true;
+    this.schedule();
+  }
+
+  /** The user scrolled by hand (wheel, scrollbar): alignment alone rules. */
+  unfollow(): void {
+    this.following = false;
   }
 
   /** Re-align after content changes (streamed text, reflow). */
@@ -69,7 +88,31 @@ export class ScrollSync {
     const bottom = view.lineBlockAt(to).bottom;
     const frac = clamp01((y - top) / (bottom - top));
     const box = this.blockBox(right, el);
-    this.write(right, "right", box.top + frac * box.height - this.lead(right));
+    this.write(right, "right", this.reveal(view, right, box.top + frac * box.height - this.lead(right)));
+  }
+
+  /**
+   * Adjust an aligned scroll target so the active block is in view, if the
+   * user is typing and the block's segment is visible in the editor. A block
+   * taller than the pane is kept covering it.
+   */
+  private reveal(view: EditorView, right: HTMLElement, target: number): number {
+    const id = this.deps.active();
+    if (!this.following || id === null) return target;
+    const range = this.deps.index.range(id);
+    const el = this.deps.block(id);
+    if (!range || !el) return target;
+    const top = this.editorTop(view);
+    const bottom = top + view.scrollDOM.clientHeight;
+    if (view.lineBlockAt(range.to).bottom <= top || view.lineBlockAt(range.from).top >= bottom) return target;
+
+    const box = this.blockBox(right, el);
+    const margin = Math.min(REVEAL_MARGIN, right.clientHeight / 8);
+    const showTop = box.top - margin; // highest scrollTop showing the block's top
+    const showBottom = box.top + box.height + margin - right.clientHeight; // lowest showing its bottom
+    return showBottom <= showTop
+      ? Math.min(Math.max(target, showBottom), showTop)
+      : Math.min(Math.max(target, showTop), showBottom);
   }
 
   /** Block position in the right pane's scroll coordinates. */

@@ -10,7 +10,8 @@
 use std::collections::HashMap;
 
 use biwrite_core::{
-    ComposeError, Composed, ContentHash, DocSegment, DocumentModel, Insert, SegmentId, compose,
+    Bilingual, ComposeError, Composed, ContentHash, DocSegment, DocumentModel, Insert, SegmentId,
+    bilingual_markdown, compose,
 };
 
 use crate::engine::{Engine, EngineError};
@@ -115,5 +116,12 @@ impl Engine {
     pub fn compose_target(&self) -> Result<String, EngineError> {
         let st = self.inner.lock();
         Ok(compose_current(&st)?.text)
+    }
+
+    /// Bilingual Markdown: each paragraph in English, then in Chinese.
+    /// Paragraphs without an up-to-date translation get a note instead.
+    pub fn bilingual_markdown(&self) -> Bilingual {
+        let st = self.inner.lock();
+        bilingual_markdown(&st.doc, st.direction, |seg| current(&st.meta, seg))
     }
 }

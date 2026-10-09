@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Direction,
+  ExportView,
+  GlossaryEntry,
   Mode,
   PromptView,
   ProviderConfig,
@@ -29,6 +31,15 @@ export const ipc = {
   setAutoTranslate: (on: boolean) => invoke<void>("set_auto_translate", { on }),
   setDirty: (dirty: boolean) => invoke<void>("set_dirty", { dirty }),
   swapLanguages: (text: string) => invoke<SessionView>("swap_languages", { text }),
+  exportBilingual: (text: string) => invoke<ExportView | null>("export_bilingual", { text }),
+};
+
+/** Glossary commands. CSV files are picked in native dialogs on the Rust side. */
+export const glossaryIpc = {
+  get: () => invoke<GlossaryEntry[]>("get_glossary"),
+  save: (entries: GlossaryEntry[]) => invoke<GlossaryEntry[]>("save_glossary", { entries }),
+  importCsv: () => invoke<GlossaryEntry[] | null>("import_glossary"),
+  exportCsv: () => invoke<string | null>("export_glossary"),
 };
 
 /** Settings commands. API keys only ever travel *to* Rust (write-only). */

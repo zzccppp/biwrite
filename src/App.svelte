@@ -2,6 +2,7 @@
   import { ChangeSet, type Text } from "@codemirror/state";
   import type { ViewUpdate } from "@codemirror/view";
   import { onMount } from "svelte";
+  import GlossaryPanel from "./lib/components/GlossaryPanel.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import Splitter from "./lib/components/Splitter.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
@@ -31,6 +32,7 @@
   let highlightTick = $state(0);
   let settings = $state<SettingsView | null>(null);
   let showSettings = $state(false);
+  let showGlossary = $state(false);
 
   // Engine round-trip bookkeeping (not reactive).
   let savedDoc: Text | null = null;
@@ -45,6 +47,7 @@
   let saving = false;
   let opening = false;
   let swapping = false;
+  let exporting = false;
   /** Resolves when the in-flight engine update finishes. */
   let inflightDone: Promise<void> | null = null;
 
@@ -52,6 +55,7 @@
     editor: () => editor?.view ?? null,
     right: () => rightPane ?? null,
     block: (id) => blocks.get(id),
+    active: () => session.activeId,
     index: session.index,
   });
 
@@ -114,6 +118,7 @@
       const snap = mode ? await ipc.setMode(mode, text) : await ipc.updateDocument(text);
       if (sentEpoch !== epoch) return; // another file was opened meanwhile
       session.applySnapshot(snap, unsent);
+      session.notePreamble(text);
       highlightTick++;
       sync.schedule();
     } catch (err) {
@@ -156,6 +161,7 @@
   function onCursor(head: number): void {
     const id = session.index.idContaining(head);
     if (id !== session.activeId) session.activeId = id;
+    sync.follow();
   }
 
   // Mirror the active block back into the editor (runs after CodeMirror's update).
@@ -234,6 +240,26 @@
     }
   }
 
+  /** Bilingual Markdown export (English first, whichever side is edited). */
+  async function exportBilingual(): Promise<void> {
+    if (!editor || exporting) return;
+    exporting = true;
+    await settleEdits();
+    try {
+      const done = await ipc.exportBilingual(editor.text());
+      if (!done) return;
+      session.flash(
+        done.missing > 0
+          ? `Exported ${done.name} — ${done.missing} paragraph${done.missing === 1 ? " is" : "s are"} not translated yet.`
+          : `Exported ${done.name}`,
+      );
+    } catch (err) {
+      fail(err);
+    } finally {
+      exporting = false;
+    }
+  }
+
   // ── Toolbar actions ──────────────────────────────────────────────
 
   function changeMode(mode: Mode): void {
@@ -261,8 +287,11 @@
       }
       // Keep the cursor on the same paragraph across the swap.
       const at = session.activeId === null ? -1 : session.index.indexOf(session.activeId);
+      // Skipped blocks are identical on both sides: keep expanded equations open.
+      const expanded = session.expandedPositions();
       const view = await ipc.swapLanguages(editor.text());
       loadView(view);
+      session.restoreExpanded(expanded);
       if (at >= 0 && at < session.index.size) editor.focusAt(session.index.rangeAt(at).from, 120);
       session.flash(
         view.snapshot.direction === "zh-en"
@@ -308,12 +337,18 @@
     return slice.split("\n").find((l) => l.trim()) ?? "";
   }
 
+  function slice(from: number, to: number): string {
+    if (!editor) return "";
+    const doc = editor.doc;
+    return doc.sliceString(Math.min(from, doc.length), Math.min(to, doc.length));
+  }
+
   function onKeydown(e: KeyboardEvent): void {
     if (!(isMac ? e.metaKey : e.ctrlKey) || e.altKey) return;
     const key = e.key.toLowerCase();
     if (key === ",") {
       e.preventDefault();
-      showSettings = !showSettings;
+      if (!showGlossary) showSettings = !showSettings;
     } else if (key === "s") {
       e.preventDefault();
       if (!e.repeat) void save(e.shiftKey);
@@ -329,6 +364,14 @@
     };
   }
 
+  /** Wheel, scrollbar or keyboard scrolling: stop pulling the active block into view. */
+  function scrollManually(side: Side) {
+    return () => {
+      sync.driver = side;
+      sync.unfollow();
+    };
+  }
+
   onMount(() => {
     editor = new SourceEditor(editorHost, {
       onChange,
@@ -338,6 +381,9 @@
     const scroller = editor.view.scrollDOM;
     const onEditorScroll = () => sync.onScroll("left");
     scroller.addEventListener("scroll", onEditorScroll, { passive: true });
+    // Window resize or splitter drag changes what each pane shows.
+    const resized = new ResizeObserver(() => sync.schedule());
+    resized.observe(scroller);
 
     let unlisten: (() => void) | undefined;
     let disposed = false;
@@ -366,6 +412,7 @@
       unlisten?.();
       clearTimeout(timer);
       scroller.removeEventListener("scroll", onEditorScroll);
+      resized.disconnect();
       editor?.destroy();
       editor = null;
     };
@@ -380,10 +427,15 @@
     {theme}
     onopen={open}
     onsave={() => save(false)}
+    onexport={exportBilingual}
     onmode={changeMode}
     onretranslate={retranslateActive}
     onretranslateall={() => ipc.retranslateAll().catch(fail)}
     onswap={swapLanguages}
+    onglossary={() => {
+      showSettings = false;
+      showGlossary = true;
+    }}
     onsettings={() => {
       showSettings = true;
     }}
@@ -398,9 +450,9 @@
       data-lang={session.direction === "zh-en" ? "zh" : "en"}
       aria-label="English source"
       onpointerenter={drive("left")}
-      onwheelcapture={drive("left")}
+      onwheelcapture={scrollManually("left")}
       onkeydowncapture={drive("left")}
-      onpointerdowncapture={drive("left")}
+      onpointerdowncapture={scrollManually("left")}
     >
       <div class="editor-host" bind:this={editorHost}></div>
     </section>
@@ -411,13 +463,14 @@
       class="target"
       role="presentation"
       onpointerenter={drive("right")}
-      onwheelcapture={drive("right")}
-      onkeydowncapture={drive("right")}
+      onwheelcapture={scrollManually("right")}
+      onkeydowncapture={scrollManually("right")}
     >
       <TranslationPane
         {session}
         {blocks}
         {preview}
+        {slice}
         bind:pane={rightPane}
         onactivate={activate}
         onretry={(id) => ipc.retranslateSegment(id).catch(fail)}
@@ -438,6 +491,19 @@
     }}
     onclose={() => {
       showSettings = false;
+      editor?.focus();
+    }}
+    onglossary={() => {
+      showSettings = false;
+      showGlossary = true;
+    }}
+  />
+{/if}
+
+{#if showGlossary}
+  <GlossaryPanel
+    onclose={() => {
+      showGlossary = false;
       editor?.focus();
     }}
   />

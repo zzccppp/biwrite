@@ -71,8 +71,9 @@ impl SqliteCache {
     }
 }
 
+/// The `glossary_version` column holds the glossary fingerprint (63 bits).
 fn glossary_version(key: &CacheKey) -> i64 {
-    i64::try_from(key.glossary_version).unwrap_or(i64::MAX)
+    i64::try_from(key.glossary).unwrap_or(i64::MAX)
 }
 
 impl TranslationCache for SqliteCache {
@@ -135,7 +136,7 @@ mod tests {
             direction: Direction::EnZh,
             provider: "p".into(),
             model: "m".into(),
-            glossary_version: 0,
+            glossary: 0,
         }
     }
 
@@ -169,7 +170,7 @@ mod tests {
                 ..base.clone()
             },
             CacheKey {
-                glossary_version: 1,
+                glossary: 1,
                 ..base.clone()
             },
             key("b"),

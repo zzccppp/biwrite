@@ -1,5 +1,7 @@
 <script lang="ts">
-  import type { SegmentLayout, SegmentState } from "../types";
+  import "katex/dist/katex.min.css";
+  import { type Macros, renderToHtml } from "../math";
+  import type { Mode, SegmentLayout, SegmentState } from "../types";
   import { SKIP_LABELS } from "../types";
 
   interface Props {
@@ -11,12 +13,35 @@
     preview: string;
     /** Language of the text shown in this pane. */
     lang: "zh" | "en";
+    /** Document mode: decides which math delimiters are recognised. */
+    mode: Mode;
+    macros: Macros;
+    /** A collapsed math block shown typeset; `source` is its LaTeX. */
+    expanded: boolean;
+    source: string;
     register: (node: HTMLElement, id: number) => { update(id: number): void; destroy(): void };
     onactivate: (id: number, el: HTMLElement) => void;
     onretry: (id: number) => void;
+    ontoggle: (id: number) => void;
   }
 
-  let { segment, state, number, active, edited, preview, lang, register, onactivate, onretry }: Props = $props();
+  let {
+    segment,
+    state,
+    number,
+    active,
+    edited,
+    preview,
+    lang,
+    mode,
+    macros,
+    expanded,
+    source,
+    register,
+    onactivate,
+    onretry,
+    ontoggle,
+  }: Props = $props();
 
   let el: HTMLElement;
 
@@ -27,6 +52,10 @@
   const text = $derived(state?.text?.trim() ?? "");
   const dim = $derived(pending || status === "error" || (status === "translating" && !streaming));
   const headingLevel = $derived(kind.type === "heading" ? Math.min(kind.level, 4) : 0);
+  // Escaped prose plus KaTeX output (trust: false): the only HTML ever injected.
+  const html = $derived(text ? renderToHtml(text, mode, macros) : "");
+  const isMath = $derived(kind.type === "skipped" && kind.reason === "math");
+  const mathHtml = $derived(isMath && expanded && source ? renderToHtml(source.trim(), mode, macros) : "");
 
   const statusLabel: Record<string, string> = {
     translated: "translated",
@@ -46,6 +75,8 @@
   }
 
   function onkeydown(e: KeyboardEvent): void {
+    // Keys on the buttons inside belong to them.
+    if (e.target !== el) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       onactivate(segment.id, el);
@@ -72,9 +103,22 @@
 
   {#if kind.type === "skipped"}
     <div class="skip">
+      {#if isMath}
+        <button
+          class="toggle"
+          class:open={expanded}
+          aria-expanded={expanded}
+          aria-label={expanded ? "Collapse equation" : "Show equation"}
+          title={expanded ? "Collapse" : "Show the equation"}
+          onclick={(e) => (e.stopPropagation(), ontoggle(segment.id))}>▸</button
+        >
+      {/if}
       <span class="skip-label smallcaps">{SKIP_LABELS[kind.reason]}</span>
       <span class="skip-preview">{preview}</span>
     </div>
+    {#if mathHtml}
+      <div class="math-block">{@html mathHtml}</div>
+    {/if}
   {:else}
     {#if text}
       <div
@@ -84,7 +128,7 @@
         class:caption={kind.type === "caption"}
         lang={lang === "en" ? "en" : "zh-CN"}
       >
-        {text}{#if streaming}<span class="caret" aria-hidden="true"></span>{/if}
+        {@html html}{#if streaming}<span class="caret" aria-hidden="true"></span>{/if}
       </div>
     {:else if status === "error"}
       <div class="zh empty">—</div>
@@ -312,6 +356,67 @@
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
+  }
+  .toggle {
+    flex: none;
+    align-self: center;
+    width: 16px;
+    height: 16px;
+    margin: 0 -4px 0 -4px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--seal);
+    font-size: 10px;
+    line-height: 16px;
+    cursor: pointer;
+    transition: transform 160ms var(--ease);
+  }
+  .toggle:hover,
+  .toggle:focus-visible {
+    background: var(--seal-wash);
+  }
+  .toggle.open {
+    transform: rotate(90deg);
+  }
+  .math-block {
+    margin: 6px 0 2px;
+    padding: 2px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    color: var(--ink);
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+    animation: ink-in 280ms var(--ease);
+  }
+  .math-block :global(.katex-display) {
+    margin: 0.5em 0;
+  }
+
+  /* Typeset math inside translations. */
+  .zh :global(.katex) {
+    font-size: 1.08em;
+  }
+  .zh.en :global(.katex) {
+    font-size: 1.12em;
+  }
+  .zh :global(.katex-display) {
+    margin: 0.4em 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: normal;
+  }
+  .zh :global(.math-error),
+  .math-block :global(.math-error) {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--error);
+    background: var(--seal-wash);
+    border-radius: 3px;
+    padding: 0 3px;
+    white-space: pre-wrap;
   }
 
   @keyframes ink-in {

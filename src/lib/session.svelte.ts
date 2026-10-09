@@ -4,6 +4,7 @@
 
 import type { ChangeDesc } from "@codemirror/state";
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
+import { type Macros, parseMacros, preambleOf } from "./math";
 import { SegmentIndex } from "./segmentIndex";
 import type { Direction, Mode, SegmentLayout, SegmentState, SessionUsage, SessionView, Snapshot } from "./types";
 
@@ -28,6 +29,11 @@ export class Session {
   error = $state<string | null>(null);
   /** Positions in the current editor document (not reactive). */
   readonly index = new SegmentIndex();
+  /** Math macros from the LaTeX preamble, for rendering on the right. */
+  macros = $state.raw<Macros>({});
+  /** Collapsed math blocks the user expanded on the right. */
+  readonly expanded = new SvelteSet<number>();
+  private preamble = "";
 
   counts = $derived.by(() => {
     const c = { translated: 0, pending: 0, translating: 0, error: 0, skipped: 0 };
@@ -52,7 +58,33 @@ export class Session {
     this.lineEnding = view.lineEnding;
     this.activeId = null;
     this.localStale.clear();
+    this.expanded.clear();
     this.applySnapshot(view.snapshot);
+    this.notePreamble(view.text);
+  }
+
+  /** Re-read the macros if the preamble of `text` (the editor document) changed. */
+  notePreamble(text: string): void {
+    const preamble = this.mode === "latex" ? preambleOf(text) : "";
+    if (preamble === this.preamble) return;
+    this.preamble = preamble;
+    this.macros = parseMacros(preamble);
+  }
+
+  toggleExpanded(id: number): void {
+    if (!this.expanded.delete(id)) this.expanded.add(id);
+  }
+
+  /** Positions of the expanded blocks, to carry them across a swap. */
+  expandedPositions(): number[] {
+    return this.layout.flatMap((s, i) => (this.expanded.has(s.id) ? [i] : []));
+  }
+
+  restoreExpanded(positions: number[]): void {
+    for (const i of positions) {
+      const seg = this.layout[i];
+      if (seg?.kind.type === "skipped") this.expanded.add(seg.id);
+    }
   }
 
   /**
@@ -81,6 +113,9 @@ export class Session {
       });
     }
     if (this.activeId !== null && !alive.has(this.activeId)) this.activeId = null;
+    for (const id of [...this.expanded]) {
+      if (!alive.has(id)) this.expanded.delete(id);
+    }
   }
 
   /** Apply streamed states, dropping any older than what we already have. */

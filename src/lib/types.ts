@@ -75,6 +75,19 @@ export interface SavedView {
   suggestedMode: Mode;
 }
 
+/** Result of a bilingual export. */
+export interface ExportView {
+  name: string;
+  /** Paragraphs exported without a translation. */
+  missing: number;
+}
+
+/** A glossary term; `translation: null` means "keep in English". */
+export interface GlossaryEntry {
+  term: string;
+  translation: string | null;
+}
+
 export const MODE_LABELS: Record<Mode, string> = {
   plain: "Plain",
   markdown: "Markdown",

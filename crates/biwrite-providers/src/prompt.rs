@@ -99,8 +99,16 @@ pub fn build(req: &TranslationRequest, system: String) -> Messages {
     if let Some(after) = req.context_after.as_deref() {
         block(&mut user, "context_after", after);
     }
+    // The same source with a previous translation means the glossary
+    // changed: there's no edit to describe.
+    let glossary_only = req
+        .revision
+        .as_ref()
+        .is_some_and(|rev| rev.old_source == req.source);
     if let Some(rev) = &req.revision {
-        block(&mut user, "previous_source", &rev.old_source);
+        if !glossary_only {
+            block(&mut user, "previous_source", &rev.old_source);
+        }
         block(&mut user, "previous_translation", &rev.old_translation);
     }
     block(&mut user, "source", &req.source);
@@ -110,11 +118,16 @@ pub fn build(req: &TranslationRequest, system: String) -> Messages {
     if req.context_before.is_some() || req.context_after.is_some() {
         user.push_str(" The context blocks are the neighbouring paragraphs, for reference only: do not translate them.");
     }
-    if req.revision.is_some() {
-        user.push_str(" <previous_translation> is the translation of <previous_source>; the author has since edited that text into <source>. Revise the previous translation minimally so it matches <source>: keep unchanged parts word for word and change only what the edit requires.");
+    if glossary_only {
+        user.push_str(" <previous_translation> is an earlier translation of <source>, made before the glossary changed. Revise it minimally so it follows the glossary: keep everything else word for word.");
+    } else if req.revision.is_some() {
+        user.push_str(" <previous_translation> is the translation of <previous_source>; the author has since edited that text into <source>. Revise the previous translation minimally so it matches <source>: keep unchanged parts word for word and change only what the edit requires. If the edit only changes whitespace or punctuation, return the previous translation with just that change.");
     }
     if !req.glossary.is_empty() {
         user.push_str(" Use the glossary renderings.");
+    }
+    if req.source.contains('⟦') {
+        user.push_str(" Each ⟦n⟧ stands for protected text such as math or a citation: copy every one into the translation unchanged, exactly as often as it appears in <source>.");
     }
     user.push_str(" Reply with the translation only, without tags, labels or commentary.");
     Messages { system, user }
@@ -178,6 +191,42 @@ mod tests {
         assert!(m.user.contains("into English."));
         assert!(m.user.contains("Revise the previous translation minimally"));
         assert!(m.user.contains("do not translate them"));
+    }
+
+    #[test]
+    fn glossary_only_revision_omits_the_identical_source() {
+        let req = TranslationRequest {
+            source: "GNNs are strong.".into(),
+            glossary: vec![GlossaryEntry::new("GNN", None)],
+            revision: Some(Revision {
+                old_source: "GNNs are strong.".into(),
+                old_translation: "图神经网络很强。".into(),
+            }),
+            ..Default::default()
+        };
+        let m = build(&req, "SYS".into());
+        assert!(!m.user.contains("<previous_source>"));
+        assert!(m.user.contains("<previous_translation>\n图神经网络很强。"));
+        assert!(m.user.contains("made before the glossary changed"));
+        assert!(!m.user.contains("edited that text"));
+    }
+
+    #[test]
+    fn placeholders_get_an_instruction() {
+        let plain = TranslationRequest {
+            source: "No math.".into(),
+            ..Default::default()
+        };
+        assert!(!build(&plain, "S".into()).user.contains("⟦n⟧"));
+        let masked = TranslationRequest {
+            source: "Let ⟦0⟧ be given ⟦1⟧.".into(),
+            ..Default::default()
+        };
+        assert!(
+            build(&masked, "S".into())
+                .user
+                .contains("copy every one into the translation unchanged")
+        );
     }
 
     #[test]

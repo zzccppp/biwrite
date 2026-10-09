@@ -3,6 +3,7 @@
 mod commands;
 mod error;
 mod files;
+mod glossary_commands;
 mod provider_state;
 mod secrets;
 mod settings;
@@ -46,6 +47,7 @@ pub fn run() {
                 },
                 tauri::async_runtime::handle().inner().clone(),
             );
+            engine.set_glossary(settings.glossary.clone());
             let state = AppState::new(engine, settings, paths, secrets);
             if let Some(path) = std::env::args_os().nth(1).map(std::path::PathBuf::from) {
                 // `biwrite paper.tex`: open a file from the command line.
@@ -87,6 +89,11 @@ pub fn run() {
             settings_commands::get_prompt,
             settings_commands::save_prompt,
             settings_commands::reveal_prompts,
+            glossary_commands::get_glossary,
+            glossary_commands::save_glossary,
+            glossary_commands::import_glossary,
+            glossary_commands::export_glossary,
+            glossary_commands::export_bilingual,
         ])
         .build(tauri::generate_context!());
 

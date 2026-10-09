@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::document::{DocSegment, DocumentModel};
 use crate::mode::Mode;
+use crate::protect::{SpanKind, spans};
 use crate::segment::{SegmentKind, segment};
 
 /// A translation to splice into a segment's content slot.
@@ -79,7 +80,7 @@ where
                 if ins.exact {
                     ins.text
                 } else {
-                    fit(&ins.text, s.kind, doc.mode())
+                    fit(&ins.text, s.kind, doc.mode(), content)
                 }
             })
             .filter(|t| !t.trim().is_empty());
@@ -103,8 +104,9 @@ where
 /// Shape machine output so it fits the slot, changing only what must change:
 /// whitespace-only lines are dropped (they would split the paragraph),
 /// multi-line headings are joined, and in LaTeX an unescaped `%` becomes
-/// `\%` (it would comment out the rest of the line).
-fn fit(t: &str, kind: SegmentKind, mode: Mode) -> String {
+/// `\%` (it would comment out the rest of the line) unless it starts one of
+/// the source's own comments, which placeholder protection carried over.
+pub(crate) fn fit(t: &str, kind: SegmentKind, mode: Mode, source: &str) -> String {
     let mut out = if t.lines().any(|l| l.trim().is_empty()) {
         t.lines()
             .filter(|l| !l.trim().is_empty())
@@ -117,28 +119,43 @@ fn fit(t: &str, kind: SegmentKind, mode: Mode) -> String {
         out = out.lines().map(str::trim).collect::<Vec<_>>().join(" ");
     }
     if mode == Mode::Latex {
-        out = escape_percent(&out);
+        let comments: Vec<&str> = spans(source, Mode::Latex)
+            .into_iter()
+            .filter(|s| s.kind == SpanKind::Comment)
+            .map(|s| &source[s.range])
+            .collect();
+        out = escape_percent(&out, &comments);
     }
     out
 }
 
-/// `%` → `\%` unless already escaped.
-fn escape_percent(s: &str) -> String {
+/// Escape each `%` that would start a comment the source doesn't have.
+/// Escaped `\%` and `%` inside protected spans (`\url{…%20…}`, `\verb|…|`,
+/// math) are left alone, and so are the source's own comments (each as
+/// often as the source has it).
+fn escape_percent(s: &str, comments: &[&str]) -> String {
+    let mut allowed: Vec<&str> = comments.to_vec();
     let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                out.push(c);
-                if let Some(next) = chars.next() {
-                    out.push(next);
-                }
+    let mut rest = s;
+    'scan: loop {
+        for span in spans(rest, Mode::Latex) {
+            if span.kind != SpanKind::Comment {
+                continue;
             }
-            '%' => out.push_str("\\%"),
-            _ => out.push(c),
+            let comment = &rest[span.range.clone()];
+            if let Some(i) = allowed.iter().position(|c| *c == comment) {
+                allowed.swap_remove(i);
+                continue;
+            }
+            out.push_str(&rest[..span.range.start]);
+            out.push_str("\\%");
+            // The rest of that line is text now: scan it again.
+            rest = &rest[span.range.start + 1..];
+            continue 'scan;
         }
+        out.push_str(rest);
+        return out;
     }
-    out
 }
 
 /// The composed text must segment into the same kinds, with each translated
@@ -301,5 +318,48 @@ mod tests {
         md.apply("一段。".to_owned(), Mode::Markdown);
         let out = compose(&md, |_| Some(Insert::machine("95% done"))).unwrap();
         assert_eq!(out.text, "95% done");
+    }
+
+    #[test]
+    fn percent_inside_protected_text_is_kept() {
+        let mut d = DocumentModel::new(1);
+        d.apply("一段。".to_owned(), Mode::Latex);
+        let out = compose(&d, |_| {
+            Some(Insert::machine(
+                "See \\url{https://x.org/a%20b} and \\verb|50%| at $p=5%$ now, 5% up.",
+            ))
+        })
+        .unwrap();
+        assert_eq!(
+            out.text,
+            "See \\url{https://x.org/a%20b} and \\verb|50%| at $p=5%$ now, 5\\% up."
+        );
+    }
+
+    #[test]
+    fn a_bare_source_comment_exempts_only_itself() {
+        let mut d = DocumentModel::new(1);
+        d.apply("第一行。%\n第二行。".to_owned(), Mode::Latex);
+        let out = compose(&d, |_| Some(Insert::machine("Line one.%\nUp 5%"))).unwrap();
+        assert_eq!(out.text, "Line one.%\nUp 5\\%");
+    }
+
+    #[test]
+    fn source_comments_survive_composing() {
+        let mut d = DocumentModel::new(1);
+        d.apply(
+            "一段 % keep me
+第二行 5%。"
+                .to_owned(),
+            Mode::Latex,
+        );
+        let out = compose(&d, |_| {
+            Some(Insert::machine(
+                "One % keep me
+line 5%. % not mine",
+            ))
+        })
+        .unwrap();
+        assert_eq!(out.text, "One % keep me\nline 5\\%. \\% not mine");
     }
 }

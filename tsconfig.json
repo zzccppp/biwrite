@@ -16,5 +16,7 @@
     "moduleDetection": "force",
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte"]
+  "include": ["src/**/*.ts", "src/**/*.svelte"],
+  // Node runs the tests directly (type stripping, `.ts` imports, node: modules).
+  "exclude": ["src/**/*.test.ts"]
 }

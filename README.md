@@ -5,10 +5,12 @@ Write on the left (plain text, Markdown or LaTeX). The right pane shows a
 read-only Chinese translation, one block per paragraph, kept in sync. Only
 changed paragraphs are retranslated.
 
-> **Status: M3.** Real LLM providers (OpenAI-compatible: OpenAI, DeepSeek,
-> Qwen, Kimi, OpenRouter, local; and Anthropic) with streaming, keys in the
-> system keychain, and a settings drawer. The offline **mock** provider
-> (reverses text) stays available for trying things out. See
+> **Status: M4.** Real LLM providers (OpenAI-compatible: OpenAI, DeepSeek,
+> Qwen, Kimi, OpenRouter, local; and Anthropic) with streaming and keys in
+> the system keychain. Math, citations and references are protected from
+> the model, a glossary steers terminology, math is typeset on the right,
+> and the document exports as bilingual Markdown. The offline **mock**
+> provider (reverses text) stays available for trying things out. See
 > [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Requirements
@@ -54,6 +56,15 @@ npx tauri build --debug --no-bundle
 Changing provider or prompt doesn't invalidate cached translations; use
 *Retranslate all* to refresh them.
 
+### Glossary
+
+**Glossary** (toolbar, or Settings → *Edit glossary…*) holds your preferred
+Chinese for terms, or *Keep EN* to leave a term in English. Import a CSV
+with the columns `term,translation` (UTF-8; in Excel use *CSV UTF-8*; an
+empty translation or `KEEP` means keep in English), review it, then *Save*.
+Only paragraphs that mention a changed term are translated again, and each
+request carries only the terms its paragraph mentions.
+
 ### Things to try
 
 * Type in a paragraph: its block dims ("edited"). 800 ms after you stop typing,
@@ -66,14 +77,23 @@ Changing provider or prompt doesn't invalidate cached translations; use
   aligned. Scroll either pane and the other follows, anchored on segments.
 * Open `samples/paper.tex`: the preamble, math, tables, comments and
   `\maketitle`-style lines are collapsed (not translated); captions are.
+  Inline math on the right is typeset (with the paper's `\newcommand`
+  macros); click ▸ on a collapsed equation to see it rendered.
+* Math, `\cite`, `\ref`, `\label`, URLs and `%` comments reach the model as
+  `⟦0⟧`, `⟦1⟧`, … and come back byte for byte. If a model drops one, BiWrite
+  retries once, then shows an error on that paragraph instead of a damaged
+  translation.
+* **Export** (toolbar): bilingual Markdown, each paragraph in English followed
+  by its Chinese, next to the document as `<name>.bilingual.md`.
 * **`EN ⇄ 中`** (toolbar centre): swap languages. You now edit the Chinese and
   the English follows on the right. Only paragraphs you change get new English
   (revised from your original); everything else keeps your exact wording. Save
   still writes the English file. Swap back to continue in English. A swap
   needs every paragraph translated first.
-* Toolbar: Open (`⌘O`), Save (`⌘S`, `⌘⇧S` = Save As), mode (Plain / Markdown /
-  LaTeX, auto-detected from the extension), retranslate segment / all,
-  pause auto-translate, theme (auto / light / dark).
+* Toolbar: Open (`⌘O`), Save (`⌘S`, `⌘⇧S` = Save As), Export, mode (Plain /
+  Markdown / LaTeX, auto-detected from the extension), retranslate segment /
+  all, pause auto-translate, Glossary, Settings, theme (auto / light / dark).
+  In narrower windows the secondary buttons show icons only.
 
 The translation cache persists in
 `~/Library/Application Support/app.biwrite.desktop/cache.sqlite3`. Delete it to
@@ -85,5 +105,6 @@ start fresh.
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 npm run check                   # svelte-check, fails on warnings
+npm test                        # frontend unit tests (node --test, math.ts)
 npm run build                   # frontend bundle
 ```

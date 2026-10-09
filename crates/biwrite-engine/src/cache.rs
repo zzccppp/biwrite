@@ -1,5 +1,5 @@
 //! Translation cache keyed by (content hash, direction, provider, model,
-//! glossary version).
+//! glossary fingerprint).
 //!
 //! The cache is shared across files: an identical paragraph in another
 //! document is never translated twice. [`crate::SqliteCache`] persists it;
@@ -16,7 +16,10 @@ pub struct CacheKey {
     pub direction: Direction,
     pub provider: String,
     pub model: String,
-    pub glossary_version: u64,
+    /// [`biwrite_core::glossary::fingerprint`] of the glossary entries sent
+    /// with the request (0: none), so glossary edits only invalidate the
+    /// paragraphs that mention the edited terms.
+    pub glossary: u64,
 }
 
 #[derive(Debug, thiserror::Error)]

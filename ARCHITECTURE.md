@@ -12,6 +12,9 @@ crates/biwrite-core/     Pure logic. No Tauri, no async, no IO.
   segment/               Source → segments (plain, Markdown, LaTeX)
   document.rs            Stable segment IDs across edits (LCS alignment)
   compose.rs             Build the other-language document (language swap)
+  protect/               Placeholder protection: mask math, \cite, … as ⟦n⟧
+  glossary.rs / csv.rs   Glossary matching per segment; CSV import/export
+  bilingual.rs           Bilingual Markdown export
   lang.rs                Direction (en-zh / zh-en), CJK-aware tokens
   hash.rs                blake3 of normalized text = segment key
   textfile.rs            Byte-exact file round-trip (BOM, line endings)
@@ -35,8 +38,10 @@ crates/biwrite-providers/  LLM providers. reqwest + SSE, no Tauri.
   config.rs / models.rs  Provider config, validation, presets; model listing
   tests/                 Against a scripted local HTTP server
 src-tauri/               Tauri 2 shell: commands, events, dialogs, file IO,
-                         keychain (secrets.rs), settings.json (settings.rs)
-src/                     Svelte 5 + CodeMirror 6 frontend
+                         keychain (secrets.rs), settings.json (settings.rs),
+                         glossary and export commands (glossary_commands.rs)
+src/                     Svelte 5 + CodeMirror 6 frontend; lib/math.ts renders
+                         math on the right with KaTeX
 ```
 
 The workspace `Cargo.toml` is at the repo root; `cargo test --workspace` and
@@ -75,9 +80,11 @@ CodeMirror edit ──(800 ms debounce, single-flight)──▶ update_document(
   hash). A segment is up to date iff `translated_hash == hash`. This makes
   undo free: the old hash is either still current or in the cache.
 * **Queue.** It holds segment IDs, not requests. The request is built at
-  dispatch time from the current text, with prev/next context, the document
-  note, and, when the old and new source are more than 0.6 similar, a revise
-  basis (old source + old translation). Up to `concurrency` jobs run at once.
+  dispatch time from the current text, with protected spans masked (see
+  *Placeholder protection*), prev/next context, the document note, the
+  glossary entries the paragraph mentions, and, when the old and new source
+  are more than 0.6 similar, a revise basis (old source + old translation;
+  not when the old translation came from the mock). Up to `concurrency` jobs run at once.
   Every dispatch or cancellation bumps the segment's generation. A result is
   applied only if the generation and hash still match, so stale results are
   discarded but still cached. Edits abort in-flight requests for that segment
@@ -103,15 +110,109 @@ Run-in `\paragraph{X} text` stays a paragraph so no prose is hidden. Invariants
 `content ⊆ range`. `segment/latex_tests.rs` pins the full segmentation of
 `samples/paper.tex` (35 segments, 22 translatable).
 
+## Placeholder protection
+
+Text the model must reproduce exactly is replaced by numbered placeholders
+before a request and put back afterwards (`core/protect/`).
+
+| Mode | Protected |
+|---|---|
+| LaTeX | `$…$`, `\(…\)`, `$$…$$`, `\[…\]`; `\cite…`/`\ref`/`\eqref`/`\cref`/`\autoref`/`\pageref`/`\label`/`\url` (with `*` and up to two `[…]` arguments); the URL of `\href{url}`; `\verb|…|`; an unescaped `%` comment to the end of the line |
+| Markdown | inline code (any backtick run), `$…$` (Pandoc rules, so "$5 and $10" stays text), `$$…$$`, autolinks `<https://…>`, link destinations `(…)` after `]` |
+| Plain | nothing |
+
+In every mode, text already shaped like `⟦n⟧` is protected too, so it can't be
+confused with a placeholder. Escapes (`\$`, `\%`, `\\`) are text; math
+never spans a blank line, so an unmatched `$` stays text.
+
+* Identical spans share a number. `restore` requires every placeholder back
+  exactly as often as it was sent, with no unknown numbers. It tolerates
+  spaces inside the brackets (`⟦ 0 ⟧`).
+* A restored `%` comment that the model put mid-line gets a line break after
+  it, so the following text isn't commented out. In LaTeX, a `%` the model
+  wrote itself always means a percent sign (comments only come back through
+  placeholders), so `restore` escapes it as `\%`. The right pane shows LaTeX
+  prose escapes (`\%`, `\&`, `\$`, …) as plain characters.
+* **Revise mode:** the new source is masked first. The previous source is
+  masked with the same numbering, and the previous translation with
+  `mask_known`, which scans it with the same rules and masks spans whose
+  text is already known (so `\%` is never taken for a comment). Only the new
+  source's spans are expected back.
+* **Streaming:** partials are shown restored; a trailing incomplete `⟦1` is
+  hidden.
+* **Failure:** a mismatch is retried once immediately (no backoff; usage of
+  both attempts is counted). A second mismatch is a non-retryable
+  `InvalidResponse` ("the model changed protected text: missing ⟦3⟧
+  `\cite{x}`"), which is sticky until the text changes or the user retries.
+* Context paragraphs are sent unmasked; the request's `source` is masked and
+  `SegMeta.translated_source` keeps the raw text. The mock reverses text
+  with placeholders kept whole.
+* Composing (swap/save while editing Chinese) still escapes a stray `%` as
+  `\%` (translations cached before M4 may have one), but never inside
+  protected spans (`\url{…%20…}`, `\verb|…%…|`, math) and never for the
+  source paragraph's own comments, each as often as the source has it.
+
+## Glossary
+
+Entries `{ term, translation | null }` (null = keep in English) live in
+`settings.json` and apply to every document. The settings drawer links to a
+glossary sheet (also on the toolbar) with filter, add/remove, keep-English,
+CSV import (merged into the table, reviewed, then saved) and CSV export.
+
+* **Matching (`glossary::relevant`):** run on the masked source, so terms
+  inside citation keys or math don't count.
+  * EN→ZH matches the term case-insensitively as a whole word (ASCII
+    letters or digits on neither side), plurals `-s`/`-es`/`-y→-ies`
+    included. CJK next to the term is a boundary.
+  * ZH→EN matches the Chinese rendering and sends it as `中文 → term`;
+    keep-English entries match their English term.
+  * At most 30 entries per request, in order of first mention.
+  * `Glossary` indexes entries by their first two words (English) and first
+    four characters (Chinese rendering), so a paragraph only checks entries
+    that can occur in it. It is built outside the engine lock. At the
+    10,000-entry cap, matching 500 paragraphs takes about 10 ms (English)
+    and 100 ms (Chinese, all renderings sharing a prefix) in release builds.
+* **Cache key:** the `glossary` part is a 63-bit fingerprint of exactly the
+  entries sent with the request (0 = none), not a global version. Editing
+  the glossary only invalidates paragraphs that mention a changed term, and
+  removing a term brings the earlier cached translation back.
+* **`Engine::set_glossary`:** segments whose translation was made with
+  different entries (`SegMeta.glossary_fp`) lose `translated_hash` and are
+  redone (respecting pause), as a minimal revision of the old translation.
+  In-flight requests with outdated entries are cancelled and requeued. The
+  user's own text from a swap (`exact`) is never retranslated.
+* **CSV:** RFC 4180 (quotes, `""`, commas and line breaks in quotes), header
+  `term,translation` optional, UTF-8 with or without BOM; non-UTF-8 files
+  (e.g. GBK from Excel) get a "save as CSV UTF-8" error. An empty
+  translation or `KEEP` means keep in English. Export writes a BOM and CRLF
+  so Excel opens it correctly. Duplicate terms (case-insensitive) merge;
+  the later entry wins. At most 10,000 entries and 2 MB per CSV; parsing runs
+  off the async runtime. Saving persists first, then updates memory and the
+  engine under the settings lock, so they can't disagree. The sheet renders
+  at most 300 rows at a time (the filter finds the rest) and locks the rows
+  while a save or import is running.
+
+## Bilingual export
+
+*Export* writes Markdown: every translatable segment's source, a blank line,
+then its translation in the same markup (`# 引言`, `\section{引言}`), with
+machine output shaped as for a swap. Skipped blocks are copied verbatim.
+Paragraphs without an up-to-date translation get *（尚未翻译）* (or *(not
+translated yet)*), and the status bar says how many. English always comes
+first, so exporting before and after a swap gives the same file. The path is
+chosen in a native Save dialog (default `<name>.bilingual.md` next to the
+document).
+
 ## Cache
 
 SQLite at `<app data>/cache.sqlite3` (macOS:
 `~/Library/Application Support/app.biwrite.desktop/`), WAL mode, with a 250 ms
 busy timeout because lookups run under the engine lock. Key:
-`(hash, direction, provider, model, glossary_version)`, shared across files and
-sessions. Direction is part of the key because the same text can be a source
-in either direction. If the database can't be opened the app falls back to an
-in-memory cache.
+`(hash, direction, provider, model, glossary fingerprint)`, shared across files
+and sessions. (The SQL column is still called `glossary_version`; old rows
+have 0, which is "no glossary entries".) Direction is part of the key because
+the same text can be a source in either direction. If the database can't be
+opened the app falls back to an in-memory cache.
 
 ## Language swap
 
@@ -132,7 +233,8 @@ The toolbar's `EN ⇄ 中` button swaps which language is edited.
    and seeds are spliced back *verbatim* (`Insert::exact`). An edited paragraph
    is translated in revise mode: old Chinese + original English + new Chinese.
    Machine output is shaped minimally by `fit`: blank lines dropped, headings
-   joined, and in LaTeX an unescaped `%` becomes `\%`.
+   joined, and in LaTeX an unescaped `%` becomes `\%` unless it starts one
+   of the source's own (protected) comments.
 3. The file is always English. While editing Chinese, Save writes
    `compose_target()`, the English composed from the right pane. Swapping back
    without edits restores the original byte for byte (tested on both samples).
@@ -196,7 +298,10 @@ line, `$$…$$ text` on one line (the line is skipped as math), and
   as a retryable `Network` error.
 * **Switching translator:** in-flight work is re-run with the new
   translator. Output from the placeholder mock is redone when a real
-  provider is selected. Real translations are kept across real providers.
+  provider is selected, from scratch (it is never sent as a translation to
+  revise). Real translations are kept across real providers.
+* **Usage:** every provider request is counted as soon as it returns, so a
+  rejected answer still counts if its retry is then cancelled.
 
 ### Keys and settings
 
@@ -232,7 +337,20 @@ line, `$$…$$ text` on one line (the line is skipped as math), and
 * `ScrollSync` aligns the segment at the reading line (top edge plus content
   padding) of the driving pane with its counterpart, proportionally within the
   segment. The pane under the pointer or keyboard drives, and our own scroll
-  writes are ignored.
+  writes are ignored. Panes re-align on resize (ResizeObserver on the editor
+  scroller, the right pane and its content). While the user types or moves
+  the cursor, the active block is also kept visible on the right with the
+  smallest extra scroll; a wheel or scrollbar scroll turns that off until the
+  cursor moves again.
+* **Math rendering** (`lib/math.ts`): translated paragraphs, headings and
+  captions are split into prose and math (LaTeX: `$…$`, `\(…\)`, `$$…$$`,
+  `\[…\]` and display environments; Markdown: `$…$` with Pandoc rules and
+  `$$…$$`; Plain: none) and math is typeset with KaTeX (bundled, fonts are
+  local assets). Macros come from the preamble's `\newcommand`, `\def` and
+  `\DeclareMathOperator`, re-parsed only when the preamble changes.
+  `\label` is stripped; numbered environments render unnumbered. A KaTeX
+  error falls back to the escaped source. Collapsed math blocks have a ▸
+  toggle that typesets the equation; the expanded state survives a swap.
 * Clicking a block moves the cursor to the segment start and scrolls the editor
   so the segment sits at the same height as the clicked block.
 
@@ -241,8 +359,13 @@ line, `$$…$$ text` on one line (the line is skipped as math), and
 * All file IO and (from M3) network calls and API keys live in Rust. File
   paths are chosen in native dialogs on the Rust side; the webview cannot name
   a path to read or write.
-* IPC payloads carry document text, segment layout and states, usage counters
-  and file names only (`events.rs`, `commands.rs`).
+* IPC payloads carry document text, segment layout and states, usage counters,
+  file names and glossary entries only (`events.rs`, `commands.rs`,
+  `glossary_commands.rs`). Glossary CSVs and exports are also picked in Rust
+  dialogs; CSV reads are capped at 2 MB.
+* `{@html}` only ever receives HTML-escaped prose and KaTeX output rendered
+  with `trust: false` (no `\href`, `\url`, `\includegraphics` or HTML
+  extensions).
 * Capability: `core:default` only. CSP restricts scripts to `'self'`.
 
 ## File round-trip
@@ -261,11 +384,11 @@ resolve to their target and permissions are preserved.
 | M1 | Scaffold, open/save, panes, mock translator, full diff/queue/UI flow | done |
 | M2 | LaTeX segmenter, SQLite cache, tests on a sample paper; language swap | done |
 | M3 | OpenAI-compatible + Anthropic providers, keychain, SSE streaming, settings UI | done |
-| M4 | Placeholder protection, glossary, revise prompts, scroll-sync polish | |
+| M4 | Placeholder protection, glossary, revise prompts, scroll-sync polish, KaTeX math on the right, bilingual Markdown export | done |
 | M5 | macOS then Windows packaging | |
 
-Notes for later milestones:
-* M4 fills `TranslationRequest.glossary` (the prompt already renders it) and
-  adds placeholder protection (⟦n⟧). That also protects swap safety:
-  `compose` already refuses translations that would change LaTeX structure.
-* Revise-mode prompting is in place (M3). M4 tunes it.
+Revise prompting (M4 tuning): a glossary-only change (same source, new
+entries) sends just `<previous_translation>` with "revise it minimally so it
+follows the glossary"; an edit that only changes whitespace or punctuation
+asks for the previous translation with just that change; a source with
+placeholders gets an instruction to copy every `⟦n⟧` exactly.

@@ -4,7 +4,8 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use biwrite_core::{ComposeError, ContentHash, Direction, Mode, SegmentId};
+use biwrite_core::glossary::Glossary;
+use biwrite_core::{ComposeError, ContentHash, Direction, GlossaryEntry, Mode, SegmentId};
 use tokio::runtime::Handle;
 
 use crate::cache::TranslationCache;
@@ -138,12 +139,16 @@ impl Inner {
                 adopt(st, id, hash, content, original, true);
                 return false;
             }
-            match self.cache.get(&st.cache_key(hash)) {
+            let glossary_fp = st.glossary_fp(&content);
+            match self.cache.get(&st.cache_key(hash, glossary_fp)) {
                 Ok(Some(translation)) => {
                     st.usage.cache_hits += 1;
                     let placeholder = st.translator.is_placeholder();
                     adopt(st, id, hash, content, translation, false);
-                    st.update(id, |m| m.placeholder = placeholder);
+                    st.update(id, |m| {
+                        m.placeholder = placeholder;
+                        m.glossary_fp = glossary_fp;
+                    });
                     return false;
                 }
                 Ok(None) => {}
@@ -368,6 +373,38 @@ impl Engine {
         self.inner.lock().settings.doc_note = note.filter(|n| !n.trim().is_empty());
     }
 
+    /// Replace the glossary. Paragraphs whose relevant entries changed are
+    /// translated again (from the cache if possible, respecting pause);
+    /// everything else, and the user's own text from a swap, is kept.
+    pub fn set_glossary(&self, entries: Vec<GlossaryEntry>) {
+        // Index outside the lock: typing shouldn't wait for it.
+        let glossary = Glossary::new(entries);
+        let mut st = self.inner.lock();
+        st.glossary = glossary;
+        let text = st.doc.text();
+        let current: Vec<(SegmentId, ContentHash, u64)> = st
+            .doc
+            .segments()
+            .iter()
+            .filter(|s| s.kind().is_translatable())
+            .map(|s| (s.id, s.hash, st.glossary_fp(s.segment.content(text))))
+            .collect();
+        for (id, hash, fp) in current {
+            if st.running.get(&id).is_some_and(|r| r.glossary_fp != fp) {
+                st.cancel(id);
+            }
+            let outdated = st.meta.get(&id).is_some_and(|m| {
+                m.translated_hash == Some(hash) && !m.exact && m.glossary_fp != fp
+            });
+            if outdated {
+                st.update(id, |m| m.translated_hash = None);
+            }
+        }
+        self.inner.reconcile(&mut st, &HashSet::new());
+        self.inner.pump(&mut st);
+        self.emit_touched(st);
+    }
+
     /// Swap the translator. Queued and in-flight work is (re)done with it,
     /// failed segments are retried, and mock output is replaced when a real
     /// translator arrives. Other existing translations are kept.
@@ -391,9 +428,10 @@ impl Engine {
         for id in redo {
             st.update(id, |m| {
                 m.error = None;
+                // `placeholder` stays set until real output replaces it, so
+                // the stand-in text is never sent as a basis for revision.
                 if real && m.placeholder {
                     m.translated_hash = None;
-                    m.placeholder = false;
                 }
             });
         }

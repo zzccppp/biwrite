@@ -9,7 +9,10 @@ use biwrite_core::{Direction, Mode};
 use biwrite_engine::{
     Engine, EngineError, EngineSettings, MemoryCache, NullSink, SegmentStatus, SqliteCache,
 };
-use common::{Scripted, all_translated, harness, reverse, settle, state_of};
+use common::{
+    Scripted, all_translated, engine_with, harness, masked, reverse, reversed_translation, settle,
+    state_of,
+};
 
 const PAPER: &str = include_str!("../../../samples/paper.tex");
 /// Translatable segments in the sample paper (see the core segmenter test).
@@ -122,7 +125,11 @@ async fn swap_round_trip_is_exact_and_free() {
 async fn editing_chinese_revises_only_that_paragraph() {
     let h = paper_loaded().await;
     let intro_en = "In contrast, large language models perform new tasks when shown a few input-output pairs in context \\cite{brown2020gpt3}. This raises a natural question: can a graph model be prompted in the same way?";
-    let intro_zh = reverse(intro_en);
+    let intro_zh = reversed_translation(intro_en, Mode::Latex);
+    assert!(
+        intro_zh.contains("\\cite{brown2020gpt3}"),
+        "citation kept whole"
+    );
     let swapped = h.engine.swap(PAPER.to_owned()).unwrap();
     settle(&h.engine).await;
     assert!(swapped.text.contains(&intro_zh));
@@ -137,14 +144,19 @@ async fn editing_chinese_revises_only_that_paragraph() {
     // Revise mode: old Chinese + the original English + new Chinese.
     let req = h.translator.requests().pop().unwrap();
     assert_eq!(req.direction, Direction::ZhEn);
-    assert_eq!(req.source, edited_zh);
+    // The citation is the same placeholder in all three texts.
+    assert_eq!(req.source, masked(&edited_zh, Mode::Latex));
+    assert!(req.source.contains("⟦0⟧"));
     let rev = req.revision.expect("small edit uses revise mode");
-    assert_eq!(rev.old_source, intro_zh);
-    assert_eq!(rev.old_translation, intro_en);
+    assert_eq!(rev.old_source, masked(&intro_zh, Mode::Latex));
+    assert_eq!(rev.old_translation, masked(intro_en, Mode::Latex));
 
     // The English file changes in that paragraph only.
     let english = h.engine.compose_target().unwrap();
-    assert_eq!(english, PAPER.replacen(intro_en, &reverse(&edited_zh), 1));
+    assert_eq!(
+        english,
+        PAPER.replacen(intro_en, &reversed_translation(&edited_zh, Mode::Latex), 1)
+    );
 
     // Swapping back shows the user's own Chinese for that paragraph, free.
     let back = h.engine.swap(zh_text).unwrap();
@@ -244,16 +256,6 @@ async fn cache_keys_include_direction() {
     assert_eq!(translator.calls(), 2);
 }
 
-fn engine_with(translator: Arc<Scripted>) -> Engine {
-    Engine::new(
-        translator,
-        Arc::new(MemoryCache::default()),
-        Arc::new(NullSink),
-        EngineSettings::default(),
-        tokio::runtime::Handle::current(),
-    )
-}
-
 #[tokio::test(start_paused = true)]
 async fn identical_translations_keep_distinct_originals() {
     // "Methods" and "Method" (and two wrappings of one sentence) translate
@@ -297,7 +299,7 @@ async fn originals_are_restored_verbatim() {
 
 #[tokio::test(start_paused = true)]
 async fn percent_from_the_model_cannot_break_the_english_file() {
-    let text = "\\section{结果}\n准确率为95%。\n";
+    let text = "\\section{结果}\n准确率为95\\%。\n";
     let translator = Scripted::mapping(std::time::Duration::from_millis(100), |s| {
         if s == "结果" {
             "Results".into()
@@ -315,4 +317,35 @@ async fn percent_from_the_model_cannot_break_the_english_file() {
         engine.compose_target().unwrap(),
         "\\section{Results}\nAccuracy is 95\\%.\n"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn bilingual_export_is_the_same_from_either_side() {
+    let h = harness(EngineSettings::default());
+    h.engine.load(PAPER.to_owned(), Mode::Latex);
+    let pending = h.engine.bilingual_markdown();
+    assert_eq!(pending.missing, TRANSLATABLE as usize);
+    assert_eq!(
+        pending.text.matches("*（尚未翻译）*").count(),
+        pending.missing
+    );
+    settle(&h.engine).await;
+
+    let english_side = h.engine.bilingual_markdown().text;
+    assert!(!english_side.contains("尚未翻译"));
+    // Each paragraph is followed by its translation.
+    let intro = PAPER
+        .lines()
+        .find(|l| l.starts_with("We answer this question"))
+        .unwrap();
+    let pair = format!(
+        "{intro}\n\n{}\n\n",
+        reversed_translation(intro, Mode::Latex)
+    );
+    assert!(english_side.contains(&pair));
+
+    let swapped = h.engine.swap(PAPER.to_owned()).unwrap();
+    settle(&h.engine).await;
+    assert_eq!(h.engine.bilingual_markdown().text, english_side);
+    assert!(!swapped.text.is_empty());
 }
