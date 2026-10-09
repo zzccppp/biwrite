@@ -90,9 +90,13 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-{#snippet pair(requested: string | null, declared: string | null)}
-  {@const c = compare(requested, declared)}
-  <span class="pair" data-cmp={c}>
+{#snippet pair(r: RequestRecord, requested: string | null, declared: string | null)}
+  {@const c = r.state === "in_flight" && declared === null ? (requested === null ? "absent" : "match") : compare(requested, declared)}
+  <span
+    class="pair"
+    data-cmp={c}
+    title={c === "absent" ? "" : `asked for ${requested ?? "(not sent)"} · declared ${declared ?? "(not returned)"}`}
+  >
     {#if c === "absent"}
       <span class="faint">—</span>
     {:else}
@@ -138,8 +142,10 @@
   <header>
     <h2 id="log-title" class="smallcaps">Requests</h2>
     <span class="count">
-      {stats.total} recorded{#if stats.inFlight} · <span class="busy">{stats.inFlight} in flight</span>{/if}{#if stats.differs}
-        · <span class="seal">{stats.differs} differ</span>{/if}{#if stats.errors} · <span class="err">{stats.errors} failed</span>{/if}
+      <span>{stats.total} recorded</span>
+      {#if stats.inFlight}<span class="dot">·</span><span class="busy">{stats.inFlight} in flight</span>{/if}
+      {#if stats.differs}<span class="dot">·</span><span class="seal">{stats.differs} differ</span>{/if}
+      {#if stats.errors}<span class="dot">·</span><span class="err">{stats.errors} failed</span>{/if}
     </span>
     <button class="close" onclick={onclose} aria-label="Close the request log">✕</button>
   </header>
@@ -200,12 +206,12 @@
         >
           <span class="mono faint">{formatClock(r.startedAt)}</span>
           <span class="smallcaps purpose">{r.purpose}</span>
-          <span class="provider">
-            {r.provider}{#if r.key && r.key.count > 1}<span class="faint mono"> #{r.key.number}</span>{/if}
+          <span class="provider" title={r.key ? `${r.provider} · key #${r.key.number} of ${r.key.count} (…${r.key.tail})` : r.provider}>
+            {#if r.key && r.key.count > 1}<span class="keyno mono">#{r.key.number}</span>{/if}{r.provider}
           </span>
-          {@render pair(r.request.model, r.response.model)}
-          {@render pair(r.request.effort, r.response.effort)}
-          {@render pair(r.request.serviceTier, r.response.serviceTier)}
+          {@render pair(r, r.request.model, r.response.model)}
+          {@render pair(r, r.request.effort, r.response.effort)}
+          {@render pair(r, r.request.serviceTier, r.response.serviceTier)}
           <span class="status">
             {#if r.state === "in_flight"}
               <span class="spinner" aria-hidden="true"></span>
@@ -291,9 +297,19 @@
   }
   .count {
     flex: 1;
+    display: flex;
+    gap: 6px;
     font-size: 13px;
     font-style: italic;
     color: var(--muted);
+  }
+  .count .dot {
+    color: var(--faint);
+    font-style: normal;
+  }
+  .keyno {
+    margin-right: 5px;
+    color: var(--accent);
   }
   .close {
     border: 0;
@@ -370,7 +386,7 @@
   .head,
   .line {
     display: grid;
-    grid-template-columns: 68px 74px minmax(110px, 1.1fr) minmax(130px, 1.4fr) minmax(90px, 0.9fr) minmax(110px, 1fr) 118px 64px 120px;
+    grid-template-columns: 66px 86px minmax(110px, 1.1fr) minmax(130px, 1.4fr) minmax(90px, 0.9fr) minmax(110px, 1fr) 112px 62px 126px;
     gap: 10px;
     align-items: baseline;
   }

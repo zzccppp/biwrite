@@ -155,7 +155,7 @@
       <span class="smallcaps">{themeLabel[theme]}</span>
     </button>
     <button
-      class="tool log"
+      class="tool secondary log"
       onclick={onlog}
       title="Request log: model, reasoning effort and service tier of every request, as sent and as declared ({mod}⇧L)"
     >
@@ -346,7 +346,7 @@
   }
 
   /* Narrower windows: icons only, secondary actions first. */
-  @media (max-width: 1240px) {
+  @media (max-width: 1440px) {
     .tool.secondary span {
       display: none;
     }
