@@ -6,6 +6,7 @@
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type {
+  KeyEntry,
   LogSettings,
   ProviderView,
   RequestRecord,
@@ -17,6 +18,16 @@ import type {
 } from "../lib/types";
 
 type Args = Record<string, unknown>;
+
+/** Six relay accounts with made-up key tails (never real key material). */
+const POOL: (Omit<KeyEntry, "name">)[] = [
+  { number: 1, fingerprint: "a1b2c3d4e5f6", tail: "Xa7Q", state: "ready", inFlight: 2, detail: null },
+  { number: 2, fingerprint: "b2c3d4e5f6a1", tail: "M3kd", state: "ready", inFlight: 1, detail: null },
+  { number: 3, fingerprint: "c3d4e5f6a1b2", tail: "p0Rz", state: "cooling", inFlight: 0, detail: null },
+  { number: 4, fingerprint: "d4e5f6a1b2c3", tail: "Ve2t", state: "ready", inFlight: 2, detail: null },
+  { number: 5, fingerprint: "e5f6a1b2c3d4", tail: "q8Lw", state: "ready", inFlight: 1, detail: null },
+  { number: 6, fingerprint: "f6a1b2c3d4e5", tail: "Hn5s", state: "ready", inFlight: 0, detail: null },
+];
 
 function clone<T>(value: T): T {
   return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
@@ -45,6 +56,7 @@ const state = {
         effort: "default",
         hasKey: false,
         keyCount: 0,
+        keyNames: {},
         builtin: true,
         needsKey: false,
       },
@@ -58,8 +70,11 @@ const state = {
         model: "gpt-6-astra",
         temperature: 0,
         effort: "high",
+        keyConcurrency: 2,
+        maxRetries: 10,
         hasKey: true,
-        keyCount: 3,
+        keyCount: 6,
+        keyNames: {},
         builtin: false,
         needsKey: true,
       },
@@ -77,6 +92,8 @@ const state = {
         model: "gpt-6-astra",
         effort: "high",
         serviceTier: "priority",
+        keyConcurrency: 2,
+        maxRetries: 10,
       },
       {
         name: "DeepSeek",
@@ -86,13 +103,19 @@ const state = {
         model: "deepseek-chat",
         effort: "low",
         serviceTier: null,
+        keyConcurrency: null,
+        maxRetries: null,
       },
     ],
     promptDir: "/Users/me/Library/Application Support/app.biwrite.desktop/prompts",
     assistantProvider: "",
     assistantLabel: "AnyRouter (GPT-6 Astra) · gpt-6-astra",
     assistantReady: true,
+    logDir: "/Users/me/Library/Logs/app.biwrite.desktop",
     requestLog: { enabled: true, persist: true } as LogSettings,
+    batchSize: 3,
+    matchPool: true,
+    effectiveConcurrency: 12,
   } as SettingsView,
   records: [] as RequestRecord[],
 };
@@ -157,7 +180,7 @@ export function fakeRecord(over: Partial<RequestRecord> = {}): RequestRecord {
     provider: "AnyRouter (GPT-6 Astra)",
     wire: "responses",
     endpoint: "anyrouter.top/v1/responses",
-    key: { number: ((id - 1) % 3) + 1, count: 3, tail: ["H5aK", "q9Zt", "77Lm"][(id - 1) % 3] },
+    key: { number: ((id - 1) % 6) + 1, count: 6, tail: POOL[(id - 1) % 6].tail, fingerprint: POOL[(id - 1) % 6].fingerprint },
     request: { model: "gpt-6-astra", effort: "high", serviceTier: "priority" },
     response: { model: "gpt-6-astra", effort: "high", serviceTier: "default" },
     httpStatus: 200,
@@ -191,7 +214,7 @@ function seedRecords(): void {
       provider: "DeepSeek",
       wire: "chat",
       endpoint: "api.deepseek.com/v1/chat/completions",
-      key: { number: 1, count: 1, tail: "9f3c" },
+      key: { number: 1, count: 1, tail: "9f3c", fingerprint: "d41d8cd98f00" },
       request: { model: "deepseek-chat", effort: null, serviceTier: null },
       response: { model: "deepseek-chat", effort: null, serviceTier: null },
       usage: { inputTokens: 210, cachedTokens: 128, outputTokens: 64, reasoningTokens: null },
@@ -219,11 +242,29 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.settings.assistantProvider = String(a.id);
     return state.settings;
   },
-  key_status: () => [
-    { number: 1, tail: "H5aK", state: "ready", detail: null },
-    { number: 2, tail: "q9Zt", state: "rejected", detail: "request rejected (HTTP 401): invalid api key — check the API key" },
-    { number: 3, tail: "77Lm", state: "cooling", detail: null },
-  ],
+  key_status: () => POOL.map((k) => ({ ...k, detail: k.detail })),
+  list_api_keys: () => POOL.map((k) => ({ ...k, name: state.settings.providers[1].keyNames[k.fingerprint] ?? "" })),
+  rename_api_key: (a) => {
+    state.settings.providers[1].keyNames[String(a.fingerprint)] = String(a.name);
+    return state.settings;
+  },
+  test_api_key: () => "图神经网络可以从上下文中的少量示例学习新任务。",
+  set_batch_size: (a) => {
+    state.settings.batchSize = Number(a.size);
+    return state.settings;
+  },
+  set_match_pool: (a) => {
+    state.settings.matchPool = Boolean(a.on);
+    state.settings.effectiveConcurrency = state.settings.matchPool ? 12 : state.settings.concurrency;
+    return state.settings;
+  },
+  save_provider: (a) => {
+    const p = a.provider as ProviderView;
+    const i = state.settings.providers.findIndex((x) => x.id === p.id);
+    if (i >= 0) state.settings.providers[i] = { ...state.settings.providers[i], ...p };
+    return state.settings;
+  },
+  get_cache: () => ({ entries: 1284, bytes: 2_310_000, location: "/Users/me/Library/Application Support/app.biwrite.desktop/cache.sqlite3", groups: [] }),
   get_prompt: (a) => ({
     text: a.direction === "en-zh" ? "You translate academic English into Chinese…" : "You translate the author's Chinese…",
     isDefault: true,
@@ -244,6 +285,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
 
 /** Install the stand-in backend. Unknown commands fail like a missing Rust command. */
 export function installMockBackend(): void {
+  const names = ["qzkinharbin", "qzkinhit", "qzkinjsj", "qzkinlss", "qzkinmdc", "qzkinxj"];
+  POOL.forEach((k, i) => (state.settings.providers[1].keyNames[k.fingerprint] = names[i]));
   seedRecords();
   mockWindows("main");
   mockIPC(

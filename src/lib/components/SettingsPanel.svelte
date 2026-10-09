@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { language, t } from "../i18n.svelte";
   import { errorMessage, settingsIpc } from "../ipc";
   import type { Preset, ProviderView, SettingsView } from "../types";
   import { KIND_LABELS } from "../types";
@@ -52,8 +53,11 @@
       effort: preset.effort,
       wireApi: preset.wireApi,
       serviceTier: preset.serviceTier,
+      keyConcurrency: preset.keyConcurrency,
+      maxRetries: preset.maxRetries,
       hasKey: false,
       keyCount: 0,
+      keyNames: {},
       builtin: false,
       needsKey: true,
     };
@@ -66,6 +70,10 @@
   }
 
   const assistantChoices = $derived(settings.providers.filter((p) => !p.builtin));
+  /** The active provider, if its keys carry a per-key limit. */
+  const pooled = $derived(
+    settings.providers.find((p) => p.id === settings.activeProvider && p.keyConcurrency && p.keyCount > 0) ?? null,
+  );
 
   function onPreset(e: Event): void {
     const select = e.currentTarget as HTMLSelectElement;
@@ -98,6 +106,30 @@
   </header>
 
   <div class="body">
+    <section>
+      <h3 class="smallcaps">{t("settings.language")}</h3>
+      <div class="row">
+        <div class="langs" role="radiogroup" aria-label={t("settings.language")}>
+          <button
+            class="lang smallcaps"
+            class:on={language.current === "en"}
+            role="radio"
+            aria-checked={language.current === "en"}
+            onclick={() => language.set("en")}>English</button
+          >
+          <button
+            class="lang"
+            class:on={language.current === "zh"}
+            role="radio"
+            aria-checked={language.current === "zh"}
+            lang="zh-CN"
+            onclick={() => language.set("zh")}>中文</button
+          >
+        </div>
+        <p class="explain grow">{t("settings.languageHint")}</p>
+      </div>
+    </section>
+
     <section>
       <h3 class="smallcaps">Translation provider</h3>
       <ul class="providers" role="radiogroup" aria-label="Active provider">
@@ -190,16 +222,43 @@
         ></textarea>
         <span class="hint">Sent with every paragraph of this file.</span>
       </label>
+    </section>
+
+    <section>
+      <h3 class="smallcaps">{t("settings.pacing")}</h3>
       <label class="field">
-        <span class="label">Parallel requests · {settings.concurrency}</span>
+        <span class="label">{t("settings.batch", { n: settings.batchSize })}</span>
         <input
           type="range"
           min="1"
           max="8"
           step="1"
+          value={settings.batchSize}
+          onchange={(e) => run(() => settingsIpc.setBatchSize(Number(e.currentTarget.value)))}
+        />
+        <span class="hint">{t("settings.batchHint")}</span>
+      </label>
+      <label class="field">
+        <span class="label">{t("settings.parallel", { n: settings.effectiveConcurrency })}</span>
+        <input
+          type="range"
+          min="1"
+          max="32"
+          step="1"
           value={settings.concurrency}
+          disabled={pooled !== null && settings.matchPool}
           onchange={(e) => run(() => settingsIpc.setConcurrency(Number(e.currentTarget.value)))}
         />
+        {#if pooled}
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={settings.matchPool}
+              onchange={(e) => run(() => settingsIpc.setMatchPool(e.currentTarget.checked))}
+            />
+            <span>{t("settings.matchPool", { keys: pooled.keyCount, per: pooled.keyConcurrency ?? 1, n: pooled.keyCount * (pooled.keyConcurrency ?? 1) })}</span>
+          </label>
+        {/if}
       </label>
     </section>
 
@@ -329,6 +388,41 @@
   }
   .glossary {
     margin-bottom: 10px;
+  }
+  .langs {
+    display: inline-flex;
+    padding: 2px;
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    background: var(--paper);
+    margin: 0 10px 10px 0;
+  }
+  .lang {
+    border: 0;
+    background: transparent;
+    padding: 1px 10px 3px;
+    border-radius: 3px;
+    font-size: 13.5px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .lang:lang(zh-CN) {
+    font-family: var(--font-zh);
+  }
+  .lang.on {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .check input {
+    accent-color: var(--seal);
   }
   .explain.grow {
     flex: 1;

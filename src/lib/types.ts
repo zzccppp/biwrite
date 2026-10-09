@@ -124,12 +124,18 @@ export interface ProviderConfig {
   effort: Effort;
   wireApi?: WireApi;
   serviceTier?: ServiceTier | null;
+  /** Requests one key may carry at a time (null: no limit). */
+  keyConcurrency?: number | null;
+  /** Retries for transient errors (null: the default). */
+  maxRetries?: number | null;
 }
 
 export interface ProviderView extends ProviderConfig {
   hasKey: boolean;
   /** Keys in the provider's pool. */
   keyCount: number;
+  /** Key names by key fingerprint. */
+  keyNames: Record<string, string>;
   builtin: boolean;
   needsKey: boolean;
 }
@@ -142,6 +148,8 @@ export interface Preset {
   model: string;
   effort: Effort;
   serviceTier: ServiceTier | null;
+  keyConcurrency: number | null;
+  maxRetries: number | null;
 }
 
 export interface LogSettings {
@@ -166,6 +174,12 @@ export interface SettingsView {
   assistantLabel: string;
   assistantReady: boolean;
   requestLog: LogSettings;
+  /** Paragraphs per translation request. */
+  batchSize: number;
+  /** Parallel requests follow the key pool. */
+  matchPool: boolean;
+  /** Parallel requests in effect. */
+  effectiveConcurrency: number;
 }
 
 /** What the translation cache holds. */
@@ -195,8 +209,21 @@ export interface CacheGroupView {
 /** State of one key of a provider's pool. */
 export interface KeyStatus {
   number: number;
+  fingerprint: string;
   tail: string;
   state: "ready" | "cooling" | "rejected";
+  inFlight: number;
+  detail: string | null;
+}
+
+/** One key in the key manager (never the key itself). */
+export interface KeyEntry {
+  number: number;
+  fingerprint: string;
+  tail: string;
+  name: string;
+  state: "ready" | "cooling" | "rejected" | "idle";
+  inFlight: number;
   detail: string | null;
 }
 
@@ -227,7 +254,7 @@ export interface RequestRecord {
   provider: string;
   wire: string;
   endpoint: string;
-  key: { number: number; count: number; tail: string } | null;
+  key: { number: number; count: number; tail: string; fingerprint: string } | null;
   request: Declared;
   response: Declared;
   httpStatus: number | null;

@@ -1,13 +1,8 @@
 <script lang="ts">
+  import { t } from "../i18n.svelte";
   import { errorMessage, settingsIpc } from "../ipc";
-  import type {
-    Effort,
-    KeyStatus,
-    ProviderConfig,
-    ProviderView,
-    ServiceTier,
-    SettingsView,
-  } from "../types";
+  import type { Effort, ProviderConfig, ProviderView, ServiceTier, SettingsView } from "../types";
+  import KeyManager from "./KeyManager.svelte";
 
   interface Props {
     /** Provider being edited; `id === ""` for a new one. */
@@ -32,10 +27,12 @@
     effort: "low",
     wireApi: "chat",
     serviceTier: null,
+    keyConcurrency: null,
+    maxRetries: null,
   });
   let keyInput = $state("");
   let models = $state<string[]>([]);
-  let keys = $state<KeyStatus[] | null>(null);
+  let managing = $state(false);
   let busy = $state<"" | "save" | "key" | "test" | "models" | "delete">("");
   let message = $state<{ ok: boolean; text: string } | null>(null);
 
@@ -46,9 +43,8 @@
       draft = copy(provider);
       keyInput = "";
       models = [];
-      keys = null;
+      managing = false;
       message = null;
-      if (provider.id && provider.keyCount > 0) void loadKeyStatus(provider.id);
     }
   });
 
@@ -76,6 +72,8 @@
       effort: p.effort,
       wireApi: p.wireApi ?? "chat",
       serviceTier: p.serviceTier ?? null,
+      keyConcurrency: p.keyConcurrency ?? null,
+      maxRetries: p.maxRetries ?? null,
     };
   }
 
@@ -95,15 +93,6 @@
       return undefined;
     } finally {
       busy = "";
-    }
-  }
-
-  async function loadKeyStatus(id: string): Promise<void> {
-    try {
-      const status = await settingsIpc.keyStatus(id);
-      if (provider.id === id) keys = status;
-    } catch {
-      keys = null;
     }
   }
 
@@ -133,43 +122,20 @@
     }
   }
 
-  /** Replace every stored key with the pasted ones, or add them to the pool. */
-  async function storeKeys(mode: "replace" | "add"): Promise<void> {
+  /** Store the pasted keys (the first ones of this provider). */
+  async function storeKeys(): Promise<void> {
     await act("key", async () => {
-      const view =
-        mode === "replace"
-          ? await settingsIpc.setApiKey(provider.id, keyInput)
-          : await settingsIpc.addApiKeys(provider.id, keyInput);
+      const view = await settingsIpc.setApiKey(provider.id, keyInput);
       keyInput = "";
-      const count = view.providers.find((p) => p.id === provider.id)?.keyCount ?? 0;
-      message = {
-        ok: true,
-        text: `${count} key${count === 1 ? "" : "s"} in the system keychain.`,
-      };
-      keys = null;
+      const n = view.providers.find((p) => p.id === provider.id)?.keyCount ?? 0;
+      message = { ok: true, text: t("keys.stored", { n }) };
       onsaved(view, provider.id);
-    });
-  }
-
-  async function removeKey(k: KeyStatus): Promise<void> {
-    await act("key", async () => {
-      const view = await settingsIpc.removeApiKey(provider.id, k.number, k.tail);
-      keys = null;
-      onsaved(view, provider.id);
-    });
-  }
-
-  async function removeAllKeys(): Promise<void> {
-    await act("key", async () => {
-      keys = null;
-      onsaved(await settingsIpc.clearApiKey(provider.id), provider.id);
     });
   }
 
   async function test(): Promise<void> {
     const out = await act("test", () => settingsIpc.test(provider.id));
     if (out !== undefined) message = { ok: true, text: out };
-    void loadKeyStatus(provider.id);
   }
 
   async function fetchModels(): Promise<void> {
@@ -204,11 +170,6 @@
     { value: "default", label: "Default" },
   ];
 
-  const keyStateLabel: Record<KeyStatus["state"], string> = {
-    ready: "ready",
-    cooling: "rate limited, cooling down",
-    rejected: "set aside",
-  };
 </script>
 
 <div class="form">
@@ -285,58 +246,29 @@
 
   <div class="field">
     <span class="label">
-      API keys{#if provider.keyCount > 0}&nbsp;· {provider.keyCount} in the keychain{/if}
+      API keys{#if provider.keyCount > 0}&nbsp;· {t("keys.inKeychain", { n: provider.keyCount })}{/if}
     </span>
-    {#if keys && keys.length > 0}
-      <ul class="keys">
-        {#each keys as k (k.number)}
-          <li data-state={k.state}>
-            <span class="mono">#{k.number} …{k.tail}</span>
-            <span class="state" title={k.detail ?? ""}>{keyStateLabel[k.state]}</span>
-            <button
-              class="remove"
-              onclick={() => removeKey(k)}
-              disabled={!!busy}
-              aria-label="Remove key {k.number}"
-              title="Remove this key">✕</button
-            >
-          </li>
-        {/each}
-      </ul>
-    {:else if provider.keyCount > 1}
-      <p class="note">The keys rotate per request. Their state shows here after the first request.</p>
-    {/if}
-    <textarea
-      class="textarea mono"
-      rows={pasted > 1 ? 4 : 2}
-      autocomplete="off"
-      spellcheck="false"
-      bind:value={keyInput}
-      placeholder={provider.keyCount > 0
-        ? "Paste keys to add, one per line"
-        : "Paste the key, or several keys one per line"}
-    ></textarea>
-    <span class="hint">
-      Kept in the system keychain. BiWrite never shows them again. Several keys form a pool: requests rotate, and a key that
-      is rate limited or rejected hands over to the next.
-    </span>
-    {#if !isNew && (pasted > 0 || provider.keyCount > 0)}
+    {#if !isNew && provider.keyCount > 0}
       <div class="row">
-        {#if pasted > 0}
-          {#if provider.keyCount > 0}
-            <button class="btn" onclick={() => storeKeys("add")} disabled={!!busy}>
-              Add {pasted} key{pasted === 1 ? "" : "s"}
-            </button>
-          {/if}
-          <button class="btn" onclick={() => storeKeys("replace")} disabled={!!busy}>
-            {provider.keyCount > 0 ? "Replace all keys" : `Save ${pasted === 1 ? "key" : `${pasted} keys`}`}
-          </button>
-        {/if}
-        <span class="spacer"></span>
-        {#if provider.keyCount > 0}
-          <button class="btn danger" onclick={removeAllKeys} disabled={!!busy}>Remove all</button>
-        {/if}
+        <span class="stored">
+          {provider.keyCount === 1 ? t("keys.count.one") : t("keys.count.many", { n: provider.keyCount })}{#if provider.keyConcurrency}
+            · {t("keys.perKey")} {provider.keyConcurrency}{/if}
+        </span>
+        <button class="btn" onclick={() => (managing = true)} disabled={!!busy}>{t("keys.manage")}</button>
       </div>
+    {:else}
+      <textarea
+        class="textarea mono"
+        rows={pasted > 1 ? 4 : 2}
+        autocomplete="off"
+        spellcheck="false"
+        bind:value={keyInput}
+        placeholder={t("keys.paste")}
+      ></textarea>
+      <span class="hint">{t("keys.hint")}</span>
+      {#if !isNew && pasted > 0}
+        <div><button class="btn" onclick={storeKeys} disabled={!!busy}>{t("keys.saveFirst")}</button></div>
+      {/if}
     {/if}
   </div>
 
@@ -357,6 +289,14 @@
     <p class="message" class:error={!message.ok} lang={message.ok ? "zh-CN" : "en"}>{message.text}</p>
   {/if}
 </div>
+
+{#if managing}
+  <KeyManager
+    {provider}
+    onchange={(view) => onsaved(view, provider.id)}
+    onclose={() => (managing = false)}
+  />
+{/if}
 
 <style>
   .form {
@@ -379,53 +319,6 @@
     font-size: 12px;
     font-style: italic;
     color: var(--faint);
-  }
-  .keys {
-    list-style: none;
-    margin: 0 0 4px;
-    padding: 0;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    background: var(--paper);
-  }
-  .keys li {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 3px 8px;
-    border-bottom: 1px solid var(--rule);
-    font-size: 13px;
-  }
-  .keys li:last-child {
-    border-bottom: 0;
-  }
-  .keys .state {
-    flex: 1;
-    color: var(--muted);
-    font-style: italic;
-  }
-  .keys li[data-state="ready"] .state::before {
-    content: "●";
-    margin-right: 6px;
-    font-size: 8px;
-    font-style: normal;
-    vertical-align: 2px;
-    color: #3f8f5a;
-  }
-  .keys li[data-state="cooling"] .state {
-    color: var(--accent);
-  }
-  .keys li[data-state="rejected"] .state {
-    color: var(--error);
-  }
-  .remove {
-    border: 0;
-    background: transparent;
-    color: var(--faint);
-    cursor: pointer;
-  }
-  .remove:hover:not(:disabled) {
-    color: var(--error);
   }
   .mono {
     font-family: var(--font-mono);

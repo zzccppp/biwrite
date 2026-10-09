@@ -10,6 +10,7 @@ import type {
   Direction,
   ExportView,
   GlossaryEntry,
+  KeyEntry,
   KeyStatus,
   LogSettings,
   LogView,
@@ -61,6 +62,13 @@ export const settingsIpc = {
     invoke<SettingsView>("remove_api_key", { id, number, tail }),
   clearApiKey: (id: string) => invoke<SettingsView>("clear_api_key", { id }),
   keyStatus: (id: string) => invoke<KeyStatus[] | null>("key_status", { id }),
+  /** The pool with names and live state (reads the keychain). */
+  listKeys: (id: string) => invoke<KeyEntry[]>("list_api_keys", { id }),
+  renameKey: (id: string, fingerprint: string, name: string) =>
+    invoke<SettingsView>("rename_api_key", { id, fingerprint, name }),
+  testKey: (id: string, fingerprint: string) => invoke<string>("test_api_key", { id, fingerprint }),
+  setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),
+  setMatchPool: (on: boolean) => invoke<SettingsView>("set_match_pool", { on }),
   setAssistantProvider: (id: string) => invoke<SettingsView>("set_assistant_provider", { id }),
   setActive: (id: string) => invoke<SettingsView>("set_active_provider", { id }),
   test: (id: string) => invoke<string>("test_provider", { id }),
