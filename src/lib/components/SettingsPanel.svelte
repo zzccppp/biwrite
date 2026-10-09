@@ -48,12 +48,23 @@
       baseUrl: preset.baseUrl,
       model: preset.model,
       temperature: 0,
-      effort: "low",
+      effort: preset.effort,
+      wireApi: preset.wireApi,
+      serviceTier: preset.serviceTier,
       hasKey: false,
+      keyCount: 0,
       builtin: false,
       needsKey: true,
     };
   }
+
+  /** "OpenAI Responses · gpt-6-astra", "Anthropic · claude-opus-5-5". */
+  function describe(p: ProviderView): string {
+    const api = p.kind === "openai_compatible" && p.wireApi === "responses" ? "OpenAI Responses" : KIND_LABELS[p.kind];
+    return `${api} · ${p.model}`;
+  }
+
+  const assistantChoices = $derived(settings.providers.filter((p) => !p.builtin));
 
   function onPreset(e: Event): void {
     const select = e.currentTarget as HTMLSelectElement;
@@ -107,8 +118,9 @@
             >
               <span class="name">{p.name}</span>
               <span class="meta">
-                {p.builtin ? "offline" : `${KIND_LABELS[p.kind]} · ${p.model}`}
-                {#if p.needsKey && !p.hasKey}<span class="nokey"> · no key</span>{/if}
+                {p.builtin ? "offline" : describe(p)}
+                {#if p.needsKey && !p.hasKey}<span class="nokey"> · no key</span>{:else if p.keyCount > 1}
+                  · {p.keyCount} keys{/if}
               </span>
             </button>
           </li>
@@ -140,6 +152,28 @@
           real provider above.
         </p>
       {/if}
+    </section>
+
+    <section>
+      <h3 class="smallcaps">Writing assistant</h3>
+      <label class="field">
+        <span class="label">Model for polishing, edits and questions</span>
+        <select
+          class="select"
+          value={settings.assistantProvider}
+          onchange={(e) => run(() => settingsIpc.setAssistantProvider(e.currentTarget.value))}
+        >
+          <option value="">Same as translation ({settings.activeLabel})</option>
+          {#each assistantChoices as p (p.id)}
+            <option value={p.id}>{p.name} · {p.model}</option>
+          {/each}
+        </select>
+        <span class="hint">
+          {settings.assistantReady
+            ? `Uses ${settings.assistantLabel}. A fast model can translate while a stronger one writes.`
+            : "The offline mock cannot write. Add a provider above and choose it here."}
+        </span>
+      </label>
     </section>
 
     <section>

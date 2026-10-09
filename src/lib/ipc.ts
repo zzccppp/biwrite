@@ -8,9 +8,13 @@ import type {
   Direction,
   ExportView,
   GlossaryEntry,
+  KeyStatus,
+  LogSettings,
+  LogView,
   Mode,
   PromptView,
   ProviderConfig,
+  RequestRecord,
   SavedView,
   SegmentState,
   SessionUsage,
@@ -47,8 +51,15 @@ export const settingsIpc = {
   get: () => invoke<SettingsView>("get_settings"),
   saveProvider: (provider: ProviderConfig) => invoke<SettingsView>("save_provider", { provider }),
   deleteProvider: (id: string) => invoke<SettingsView>("delete_provider", { id }),
+  /** Replace the provider's keys with the pasted ones (one per line). */
   setApiKey: (id: string, key: string) => invoke<SettingsView>("set_api_key", { id, key }),
+  /** Add the pasted keys to the provider's pool. */
+  addApiKeys: (id: string, keys: string) => invoke<SettingsView>("add_api_keys", { id, keys }),
+  removeApiKey: (id: string, number: number, tail: string) =>
+    invoke<SettingsView>("remove_api_key", { id, number, tail }),
   clearApiKey: (id: string) => invoke<SettingsView>("clear_api_key", { id }),
+  keyStatus: (id: string) => invoke<KeyStatus[] | null>("key_status", { id }),
+  setAssistantProvider: (id: string) => invoke<SettingsView>("set_assistant_provider", { id }),
   setActive: (id: string) => invoke<SettingsView>("set_active_provider", { id }),
   test: (id: string) => invoke<string>("test_provider", { id }),
   listModels: (id: string) => invoke<string[]>("list_provider_models", { id }),
@@ -59,10 +70,19 @@ export const settingsIpc = {
   revealPrompts: () => invoke<void>("reveal_prompts"),
 };
 
+/** Request log (metadata of model requests, no text, no keys). */
+export const logIpc = {
+  get: () => invoke<LogView>("get_request_log"),
+  set: (settings: LogSettings) => invoke<LogView>("set_request_log", { settings }),
+  clear: () => invoke<LogView>("clear_request_log"),
+  reveal: () => invoke<void>("reveal_request_log"),
+};
+
 export interface EngineEvents {
   onStates(states: SegmentState[]): void;
   onUsage(usage: SessionUsage): void;
   onNotice(message: string): void;
+  onRequest(record: RequestRecord): void;
 }
 
 export async function subscribe(handlers: EngineEvents): Promise<UnlistenFn> {
@@ -70,6 +90,7 @@ export async function subscribe(handlers: EngineEvents): Promise<UnlistenFn> {
     listen<SegmentState[]>("segment-states", (e) => handlers.onStates(e.payload)),
     listen<SessionUsage>("usage", (e) => handlers.onUsage(e.payload)),
     listen<string>("notice", (e) => handlers.onNotice(e.payload)),
+    listen<RequestRecord>("request-log", (e) => handlers.onRequest(e.payload)),
   ]);
   return () => unlisten.forEach((fn) => fn());
 }

@@ -110,6 +110,9 @@ export const SKIP_LABELS: Record<SkipReason, string> = {
 
 export type ProviderKind = "openai_compatible" | "anthropic" | "mock";
 export type Effort = "low" | "medium" | "high" | "default";
+/** Endpoint of an OpenAI-compatible provider (absent means "chat"). */
+export type WireApi = "chat" | "responses";
+export type ServiceTier = "priority" | "flex" | "default";
 
 export interface ProviderConfig {
   id: string;
@@ -119,10 +122,14 @@ export interface ProviderConfig {
   model: string;
   temperature: number;
   effort: Effort;
+  wireApi?: WireApi;
+  serviceTier?: ServiceTier | null;
 }
 
 export interface ProviderView extends ProviderConfig {
   hasKey: boolean;
+  /** Keys in the provider's pool. */
+  keyCount: number;
   builtin: boolean;
   needsKey: boolean;
 }
@@ -130,8 +137,18 @@ export interface ProviderView extends ProviderConfig {
 export interface Preset {
   name: string;
   kind: ProviderKind;
+  wireApi: WireApi;
   baseUrl: string;
   model: string;
+  effort: Effort;
+  serviceTier: ServiceTier | null;
+}
+
+export interface LogSettings {
+  /** Record new requests. */
+  enabled: boolean;
+  /** Append finished records to the log file. */
+  persist: boolean;
 }
 
 export interface SettingsView {
@@ -142,6 +159,67 @@ export interface SettingsView {
   docNote: string;
   presets: Preset[];
   promptDir: string;
+  /** Chosen assistant provider; "" follows the translation provider. */
+  assistantProvider: string;
+  assistantLabel: string;
+  assistantReady: boolean;
+  requestLog: LogSettings;
+}
+
+/** State of one key of a provider's pool. */
+export interface KeyStatus {
+  number: number;
+  tail: string;
+  state: "ready" | "cooling" | "rejected";
+  detail: string | null;
+}
+
+// ── Request log ──────────────────────────────────────────────────────
+
+/** What a request asked for, or what its response declared (null: not sent / not returned). */
+export interface Declared {
+  model: string | null;
+  effort: string | null;
+  serviceTier: string | null;
+}
+
+export interface UsageDetail {
+  inputTokens: number | null;
+  cachedTokens: number | null;
+  outputTokens: number | null;
+  reasoningTokens: number | null;
+}
+
+export type RecordState = "in_flight" | "ok" | "error" | "cancelled";
+
+/** One HTTP request to a model (metadata only). */
+export interface RequestRecord {
+  id: number;
+  /** Unix time in milliseconds. */
+  startedAt: number;
+  purpose: string;
+  provider: string;
+  wire: string;
+  endpoint: string;
+  key: { number: number; count: number; tail: string } | null;
+  request: Declared;
+  response: Declared;
+  httpStatus: number | null;
+  state: RecordState;
+  error: string | null;
+  durationMs: number | null;
+  firstTokenMs: number | null;
+  usage: UsageDetail;
+  promptChars: number;
+  outputChars: number;
+  notes: string[];
+}
+
+export interface LogView {
+  settings: LogSettings;
+  /** Newest first. */
+  records: RequestRecord[];
+  file: string | null;
 }
 
 export interface PromptView {

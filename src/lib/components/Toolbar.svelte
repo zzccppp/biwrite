@@ -17,6 +17,9 @@
     onswap: () => void;
     onglossary: () => void;
     onsettings: () => void;
+    onlog: () => void;
+    /** Model requests in flight (badge on the Log button). */
+    inflight: number;
   }
 
   let {
@@ -33,6 +36,8 @@
     onswap,
     onglossary,
     onsettings,
+    onlog,
+    inflight,
   }: Props = $props();
 
   const zh = $derived(session.direction === "zh-en");
@@ -148,6 +153,17 @@
     <button class="tool secondary" onclick={ontheme} title="Theme: {themeLabel[theme]}">
       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" /><path d="M8 3a5 5 0 0 0 0 10z" class="fill" /></svg>
       <span class="smallcaps">{themeLabel[theme]}</span>
+    </button>
+    <button
+      class="tool log"
+      onclick={onlog}
+      title="Request log: model, reasoning effort and service tier of every request, as sent and as declared ({mod}⇧L)"
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true"
+        ><path d="M3 3.5h10M3 6.5h10M3 9.5h6M3 12.5h4M11.5 9.5v4M9.5 11.5h4" /></svg
+      >
+      <span class="smallcaps">Log</span>
+      {#if inflight > 0}<span class="badge" aria-label="{inflight} in flight">{inflight}</span>{/if}
     </button>
   </div>
 </header>
@@ -268,6 +284,21 @@
   .tool.paused {
     color: var(--seal);
     background: var(--seal-wash);
+  }
+  .tool.log {
+    position: relative;
+  }
+  .badge {
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--paper);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 15px;
+    text-align: center;
   }
   svg {
     width: 15px;

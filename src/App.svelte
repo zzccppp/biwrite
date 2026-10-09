@@ -3,13 +3,15 @@
   import type { ViewUpdate } from "@codemirror/view";
   import { onMount } from "svelte";
   import GlossaryPanel from "./lib/components/GlossaryPanel.svelte";
+  import LogPanel from "./lib/components/LogPanel.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import Splitter from "./lib/components/Splitter.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TranslationPane from "./lib/components/TranslationPane.svelte";
   import { SourceEditor } from "./lib/editor/editor";
-  import { errorMessage, ipc, settingsIpc, subscribe } from "./lib/ipc";
+  import { errorMessage, ipc, logIpc, settingsIpc, subscribe } from "./lib/ipc";
+  import { RequestLogStore } from "./lib/requestLog.svelte";
   import { ScrollSync, type Side } from "./lib/scrollSync";
   import { Session } from "./lib/session.svelte";
   import { applyTheme, loadTheme, nextTheme, type ThemePref } from "./lib/theme";
@@ -21,6 +23,7 @@
   const isMac = navigator.platform.toLowerCase().includes("mac");
 
   const session = new Session();
+  const requestLog = new RequestLogStore();
   const blocks = new Map<number, HTMLElement>();
 
   let editor: SourceEditor | null = null;
@@ -33,6 +36,7 @@
   let settings = $state<SettingsView | null>(null);
   let showSettings = $state(false);
   let showGlossary = $state(false);
+  let showLog = $state(false);
 
   // Engine round-trip bookkeeping (not reactive).
   let savedDoc: Text | null = null;
@@ -355,6 +359,9 @@
     } else if (key === "o" && !e.shiftKey) {
       e.preventDefault();
       if (!e.repeat) void open();
+    } else if (key === "l" && e.shiftKey) {
+      e.preventDefault();
+      if (!e.repeat) showLog = !showLog;
     }
   }
 
@@ -398,10 +405,12 @@
             session.usage = usage;
           },
           onNotice: (message) => session.flash(message),
+          onRequest: (record) => requestLog.apply(record),
         });
         if (disposed) off();
         else unlisten = off;
         loadView(await ipc.getSession());
+        requestLog.load(await logIpc.get());
       } catch (err) {
         fail(err);
       }
@@ -439,6 +448,10 @@
     onsettings={() => {
       showSettings = true;
     }}
+    onlog={() => {
+      showLog = true;
+    }}
+    inflight={requestLog.inFlight}
     ontoggleauto={toggleAuto}
     ontheme={cycleTheme}
   />
@@ -504,6 +517,16 @@
   <GlossaryPanel
     onclose={() => {
       showGlossary = false;
+      editor?.focus();
+    }}
+  />
+{/if}
+
+{#if showLog}
+  <LogPanel
+    log={requestLog}
+    onclose={() => {
+      showLog = false;
       editor?.focus();
     }}
   />

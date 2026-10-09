@@ -1,6 +1,13 @@
 <script lang="ts">
   import { errorMessage, settingsIpc } from "../ipc";
-  import { KIND_LABELS, type Effort, type ProviderConfig, type ProviderView, type SettingsView } from "../types";
+  import type {
+    Effort,
+    KeyStatus,
+    ProviderConfig,
+    ProviderView,
+    ServiceTier,
+    SettingsView,
+  } from "../types";
 
   interface Props {
     /** Provider being edited; `id === ""` for a new one. */
@@ -11,6 +18,9 @@
 
   let { provider, onsaved, ondeleted }: Props = $props();
 
+  /** The three request formats, as one choice. */
+  type Api = "chat" | "responses" | "anthropic";
+
   // Local draft, reset whenever another provider is selected.
   let draft = $state<ProviderConfig>({
     id: "",
@@ -20,9 +30,12 @@
     model: "",
     temperature: 0,
     effort: "low",
+    wireApi: "chat",
+    serviceTier: null,
   });
   let keyInput = $state("");
   let models = $state<string[]>([]);
+  let keys = $state<KeyStatus[] | null>(null);
   let busy = $state<"" | "save" | "key" | "test" | "models" | "delete">("");
   let message = $state<{ ok: boolean; text: string } | null>(null);
 
@@ -33,14 +46,24 @@
       draft = copy(provider);
       keyInput = "";
       models = [];
+      keys = null;
       message = null;
+      if (provider.id && provider.keyCount > 0) void loadKeyStatus(provider.id);
     }
   });
 
   const isNew = $derived(provider.id === "");
-  const anthropic = $derived(draft.kind === "anthropic");
+  const api = $derived<Api>(
+    draft.kind === "anthropic" ? "anthropic" : draft.wireApi === "responses" ? "responses" : "chat",
+  );
   const dirty = $derived(JSON.stringify(draft) !== JSON.stringify(copy(provider)));
   const listId = $derived(`models-${provider.id || "new"}`);
+  const pasted = $derived(
+    keyInput
+      .split(/[\s,]+/)
+      .map((k) => k.trim())
+      .filter(Boolean).length,
+  );
 
   function copy(p: ProviderConfig): ProviderConfig {
     return {
@@ -51,7 +74,15 @@
       model: p.model,
       temperature: p.temperature,
       effort: p.effort,
+      wireApi: p.wireApi ?? "chat",
+      serviceTier: p.serviceTier ?? null,
     };
+  }
+
+  function setApi(next: Api): void {
+    draft.kind = next === "anthropic" ? "anthropic" : "openai_compatible";
+    draft.wireApi = next === "responses" ? "responses" : "chat";
+    if (next === "anthropic") draft.serviceTier = null;
   }
 
   async function act<T>(kind: typeof busy, f: () => Promise<T>): Promise<T | undefined> {
@@ -64,6 +95,15 @@
       return undefined;
     } finally {
       busy = "";
+    }
+  }
+
+  async function loadKeyStatus(id: string): Promise<void> {
+    try {
+      const status = await settingsIpc.keyStatus(id);
+      if (provider.id === id) keys = status;
+    } catch {
+      keys = null;
     }
   }
 
@@ -93,22 +133,43 @@
     }
   }
 
-  async function saveKey(): Promise<void> {
+  /** Replace every stored key with the pasted ones, or add them to the pool. */
+  async function storeKeys(mode: "replace" | "add"): Promise<void> {
     await act("key", async () => {
-      const view = await settingsIpc.setApiKey(provider.id, keyInput);
+      const view =
+        mode === "replace"
+          ? await settingsIpc.setApiKey(provider.id, keyInput)
+          : await settingsIpc.addApiKeys(provider.id, keyInput);
       keyInput = "";
-      message = { ok: true, text: "Key stored in the system keychain." };
+      const count = view.providers.find((p) => p.id === provider.id)?.keyCount ?? 0;
+      message = {
+        ok: true,
+        text: `${count} key${count === 1 ? "" : "s"} in the system keychain.`,
+      };
+      keys = null;
       onsaved(view, provider.id);
     });
   }
 
-  async function removeKey(): Promise<void> {
-    await act("key", async () => onsaved(await settingsIpc.clearApiKey(provider.id), provider.id));
+  async function removeKey(k: KeyStatus): Promise<void> {
+    await act("key", async () => {
+      const view = await settingsIpc.removeApiKey(provider.id, k.number, k.tail);
+      keys = null;
+      onsaved(view, provider.id);
+    });
+  }
+
+  async function removeAllKeys(): Promise<void> {
+    await act("key", async () => {
+      keys = null;
+      onsaved(await settingsIpc.clearApiKey(provider.id), provider.id);
+    });
   }
 
   async function test(): Promise<void> {
     const out = await act("test", () => settingsIpc.test(provider.id));
     if (out !== undefined) message = { ok: true, text: out };
+    void loadKeyStatus(provider.id);
   }
 
   async function fetchModels(): Promise<void> {
@@ -123,12 +184,31 @@
     await act("delete", async () => ondeleted(await settingsIpc.deleteProvider(provider.id)));
   }
 
+  const apis: { value: Api; label: string }[] = [
+    { value: "chat", label: "OpenAI-compatible (chat)" },
+    { value: "responses", label: "OpenAI Responses" },
+    { value: "anthropic", label: "Anthropic" },
+  ];
+
   const efforts: { value: Effort; label: string }[] = [
     { value: "low", label: "Low (fast)" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
     { value: "default", label: "Model default" },
   ];
+
+  const tiers: { value: ServiceTier | ""; label: string }[] = [
+    { value: "", label: "Not sent" },
+    { value: "priority", label: "Priority (fast)" },
+    { value: "flex", label: "Flex (slow, cheaper)" },
+    { value: "default", label: "Default" },
+  ];
+
+  const keyStateLabel: Record<KeyStatus["state"], string> = {
+    ready: "ready",
+    cooling: "rate limited, cooling down",
+    rejected: "set aside",
+  };
 </script>
 
 <div class="form">
@@ -140,18 +220,19 @@
   <div class="two">
     <label class="field">
       <span class="label">API type</span>
-      <select class="select" bind:value={draft.kind}>
-        <option value="openai_compatible">{KIND_LABELS.openai_compatible}</option>
-        <option value="anthropic">{KIND_LABELS.anthropic}</option>
+      <select class="select" value={api} onchange={(e) => setApi(e.currentTarget.value as Api)}>
+        {#each apis as a (a.value)}<option value={a.value}>{a.label}</option>{/each}
       </select>
     </label>
     <label class="field">
       <span class="label">Temperature · {draft.temperature.toFixed(2)}</span>
-      <input type="range" min="0" max="0.3" step="0.05" bind:value={draft.temperature} disabled={anthropic} />
+      <input type="range" min="0" max="0.3" step="0.05" bind:value={draft.temperature} disabled={api !== "chat"} />
     </label>
   </div>
-  {#if anthropic}
+  {#if api === "anthropic"}
     <p class="note">Current Claude models fix sampling, so temperature is not sent to them.</p>
+  {:else if api === "responses"}
+    <p class="note">Reasoning models on the Responses API take an effort instead of a temperature.</p>
   {/if}
 
   <label class="field">
@@ -172,36 +253,90 @@
     </datalist>
   </div>
 
-  {#if anthropic}
-    <label class="field">
-      <span class="label">Effort</span>
-      <select class="select" bind:value={draft.effort}>
-        {#each efforts as e (e.value)}<option value={e.value}>{e.label}</option>{/each}
-      </select>
-      <span class="hint">Low is plenty for translation and keeps latency down.</span>
-    </label>
+  {#if api !== "chat" || draft.kind === "openai_compatible"}
+    <div class="two">
+      {#if api !== "chat"}
+        <label class="field">
+          <span class="label">{api === "anthropic" ? "Effort" : "Reasoning effort"}</span>
+          <select class="select" bind:value={draft.effort}>
+            {#each efforts as e (e.value)}<option value={e.value}>{e.label}</option>{/each}
+          </select>
+        </label>
+      {/if}
+      {#if api !== "anthropic"}
+        <label class="field">
+          <span class="label">Service tier</span>
+          <select
+            class="select"
+            value={draft.serviceTier ?? ""}
+            onchange={(e) => (draft.serviceTier = (e.currentTarget.value || null) as ServiceTier | null)}
+          >
+            {#each tiers as t (t.value)}<option value={t.value}>{t.label}</option>{/each}
+          </select>
+        </label>
+      {/if}
+    </div>
+    {#if api === "responses"}
+      <p class="note">
+        Priority is the fast tier (Codex “fast”). The Log shows whether the server declares it back.
+      </p>
+    {/if}
   {/if}
 
   <div class="field">
-    <span class="label">API key</span>
-    {#if provider.hasKey}
-      <div class="row">
-        <span class="stored">Stored in the system keychain</span>
-        <button class="btn danger" onclick={removeKey} disabled={!!busy}>Remove</button>
-      </div>
-      <input
-        class="input mono"
-        type="password"
-        autocomplete="off"
-        bind:value={keyInput}
-        placeholder="Paste a new key to replace it"
-      />
-    {:else}
-      <input class="input mono" type="password" autocomplete="off" bind:value={keyInput} placeholder="Paste the key" />
+    <span class="label">
+      API keys{#if provider.keyCount > 0}&nbsp;· {provider.keyCount} in the keychain{/if}
+    </span>
+    {#if keys && keys.length > 0}
+      <ul class="keys">
+        {#each keys as k (k.number)}
+          <li data-state={k.state}>
+            <span class="mono">#{k.number} …{k.tail}</span>
+            <span class="state" title={k.detail ?? ""}>{keyStateLabel[k.state]}</span>
+            <button
+              class="remove"
+              onclick={() => removeKey(k)}
+              disabled={!!busy}
+              aria-label="Remove key {k.number}"
+              title="Remove this key">✕</button
+            >
+          </li>
+        {/each}
+      </ul>
+    {:else if provider.keyCount > 1}
+      <p class="note">The keys rotate per request. Their state shows here after the first request.</p>
     {/if}
-    <span class="hint">Kept in the keychain; BiWrite never shows it again.</span>
-    {#if !isNew && keyInput.trim()}
-      <div><button class="btn" onclick={saveKey} disabled={!!busy}>Save key</button></div>
+    <textarea
+      class="textarea mono"
+      rows={pasted > 1 ? 4 : 2}
+      autocomplete="off"
+      spellcheck="false"
+      bind:value={keyInput}
+      placeholder={provider.keyCount > 0
+        ? "Paste keys to add, one per line"
+        : "Paste the key, or several keys one per line"}
+    ></textarea>
+    <span class="hint">
+      Kept in the system keychain. BiWrite never shows them again. Several keys form a pool: requests rotate, and a key that
+      is rate limited or rejected hands over to the next.
+    </span>
+    {#if !isNew && (pasted > 0 || provider.keyCount > 0)}
+      <div class="row">
+        {#if pasted > 0}
+          {#if provider.keyCount > 0}
+            <button class="btn" onclick={() => storeKeys("add")} disabled={!!busy}>
+              Add {pasted} key{pasted === 1 ? "" : "s"}
+            </button>
+          {/if}
+          <button class="btn" onclick={() => storeKeys("replace")} disabled={!!busy}>
+            {provider.keyCount > 0 ? "Replace all keys" : `Save ${pasted === 1 ? "key" : `${pasted} keys`}`}
+          </button>
+        {/if}
+        <span class="spacer"></span>
+        {#if provider.keyCount > 0}
+          <button class="btn danger" onclick={removeAllKeys} disabled={!!busy}>Remove all</button>
+        {/if}
+      </div>
     {/if}
   </div>
 
@@ -245,20 +380,56 @@
     font-style: italic;
     color: var(--faint);
   }
-  .stored {
-    flex: 1;
-    font-size: 13px;
-    color: var(--ink-2);
+  .keys {
+    list-style: none;
+    margin: 0 0 4px;
+    padding: 0;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--paper);
   }
-  .stored::before {
+  .keys li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--rule);
+    font-size: 13px;
+  }
+  .keys li:last-child {
+    border-bottom: 0;
+  }
+  .keys .state {
+    flex: 1;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .keys li[data-state="ready"] .state::before {
     content: "●";
     margin-right: 6px;
-    font-size: 9px;
+    font-size: 8px;
+    font-style: normal;
     vertical-align: 2px;
     color: #3f8f5a;
   }
-  .row .input {
-    flex: 1;
+  .keys li[data-state="cooling"] .state {
+    color: var(--accent);
+  }
+  .keys li[data-state="rejected"] .state {
+    color: var(--error);
+  }
+  .remove {
+    border: 0;
+    background: transparent;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  .remove:hover:not(:disabled) {
+    color: var(--error);
+  }
+  .mono {
+    font-family: var(--font-mono);
+    font-size: 12px;
   }
   .actions {
     margin: 4px 0 10px;
