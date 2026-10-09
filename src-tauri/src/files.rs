@@ -125,6 +125,22 @@ pub async fn read_small_file(path: PathBuf, max_bytes: u64) -> CommandResult<Vec
     .map_err(|e| CommandError::Task(e.to_string()))?
 }
 
+/// Show a folder in Finder / Explorer.
+pub fn reveal(dir: &Path) -> CommandResult<()> {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| CommandError::io(dir, e))
+}
+
 /// Ask whether unsaved changes may be discarded.
 pub fn ask_discard<R: Runtime>(
     app: &AppHandle<R>,

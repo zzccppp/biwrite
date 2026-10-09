@@ -4,32 +4,53 @@
 use std::path::Path;
 use std::sync::{Arc, MutexGuard, PoisonError};
 
-use biwrite_engine::Translator;
-use biwrite_providers::{KeyFn, PromptFiles, PromptSource, build_translator};
+use biwrite_engine::{MockTranslator, Translator};
+use biwrite_providers::{
+    HttpProvider, KeyFn, KeyStatus, PromptFiles, PromptSource, ProviderKind, RequestObserver,
+    build_http,
+};
 
 use crate::error::{CommandError, CommandResult};
-use crate::secrets::SecretStore;
+use crate::secrets::{self, SecretStore};
 use crate::settings::{self, AppSettings, ProviderEntry, SettingsView};
 use crate::state::AppState;
 
 /// Key source for provider `id`, reading the OS credential store lazily.
-pub fn key_fn(secrets: &Arc<dyn SecretStore>, id: &str) -> KeyFn {
-    let secrets = Arc::clone(secrets);
+pub fn key_fn(store: &Arc<dyn SecretStore>, id: &str) -> KeyFn {
+    let store = Arc::clone(store);
     let id = id.to_owned();
-    Arc::new(move || secrets.get(&id))
+    Arc::new(move || secrets::get_keys(store.as_ref(), &id))
 }
 
-/// The translator for `entry`, or the mock if it cannot be built.
+/// A translator and, unless it is the mock, the HTTP provider behind it.
+pub struct Built {
+    pub translator: Arc<dyn Translator>,
+    pub http: Option<Arc<HttpProvider>>,
+}
+
+/// The translator for `entry`, reporting its requests to `observer`.
 pub fn translator_for(
     entry: &ProviderEntry,
     secrets: &Arc<dyn SecretStore>,
     prompts: Arc<dyn PromptSource>,
-) -> Result<Arc<dyn Translator>, CommandError> {
-    Ok(build_translator(
+    observer: Arc<dyn RequestObserver>,
+) -> Result<Built, CommandError> {
+    if entry.config.kind == ProviderKind::Mock {
+        return Ok(Built {
+            translator: Arc::new(MockTranslator::default()),
+            http: None,
+        });
+    }
+    let http = build_http(
         &entry.config,
         key_fn(secrets, &entry.config.id),
         prompts,
-    )?)
+        observer,
+    )?;
+    Ok(Built {
+        translator: http.clone(),
+        http: Some(http),
+    })
 }
 
 impl AppState {
@@ -56,9 +77,51 @@ impl AppState {
         // engine on a different provider than settings. (The engine never
         // takes the settings lock, so this can't deadlock.)
         let settings = self.settings();
-        let translator = translator_for(settings.active(), &self.secrets, self.prompts())?;
-        self.engine.set_translator(translator);
+        let built = translator_for(
+            settings.active(),
+            &self.secrets,
+            self.prompts(),
+            self.request_log.clone(),
+        )?;
+        self.engine.set_translator(built.translator);
+        self.set_translation_http(settings.active().config.id.clone(), built.http);
         Ok(())
+    }
+
+    /// Remember the HTTP provider the engine translates with (for key status).
+    pub fn set_translation_http(&self, id: String, http: Option<Arc<HttpProvider>>) {
+        *self
+            .translation_http
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = http.map(|h| (id, h));
+    }
+
+    /// Drop the assistant's provider, so the next request builds it again
+    /// from the current settings and keys.
+    pub fn invalidate_assistant(&self) {
+        *self
+            .assistant_http
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// State of each key of provider `id`, if a provider in use has read them.
+    pub fn key_status(&self, id: &str) -> Option<Vec<KeyStatus>> {
+        let translation = self
+            .translation_http
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let assistant = self
+            .assistant_http
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        [translation, assistant]
+            .into_iter()
+            .flatten()
+            .filter(|(owner, _)| owner == id)
+            .find_map(|(_, http)| http.key_status())
     }
 
     fn doc_key(&self) -> Option<String> {

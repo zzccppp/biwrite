@@ -1,18 +1,20 @@
 //! Settings commands: providers, API keys, models, prompts, concurrency,
-//! document note. Responses never include an API key: `set_api_key` is
-//! write-only and views carry `has_key` flags.
+//! document note, assistant provider. Responses never include an API key:
+//! the key commands are write-only, views carry key counts, and key status
+//! names a key by its position and last four characters.
 
 use std::time::Duration;
 
 use biwrite_core::Direction;
 use biwrite_engine::TranslationRequest;
 use biwrite_providers::prompt::{default_prompt, prompt_file_name};
-use biwrite_providers::{ProviderConfig, ProviderKind, list_models};
+use biwrite_providers::{KeyStatus, ProviderConfig, ProviderKind, key_tail, list_models};
 use serde::Serialize;
 use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::provider_state::translator_for;
+use crate::secrets::{self, MAX_KEYS};
 use crate::settings::{MOCK_ID, ProviderEntry, SettingsView};
 use crate::state::AppState;
 
@@ -81,9 +83,9 @@ pub async fn save_provider(
         .provider(&id)
         .is_some_and(|old| old.has_key && !same_destination(&old.config, &config));
     if moved {
-        let secrets = state.secrets.clone();
+        let store = state.secrets.clone();
         let account = id.clone();
-        blocking(move || secrets.delete(&account)).await?;
+        blocking(move || secrets::delete_keys(store.as_ref(), &account)).await?;
     }
     let is_active = {
         let mut s = state.settings();
@@ -92,17 +94,20 @@ pub async fn save_provider(
                 entry.config = config;
                 if moved {
                     entry.has_key = false;
+                    entry.key_count = 0;
                 }
             }
             None if provider.id.is_empty() => s.providers.push(ProviderEntry {
                 config,
                 has_key: false,
+                key_count: 0,
             }),
             None => return Err(not_found(&id)),
         }
         state.persist(&s)?;
         s.active_provider == id
     };
+    state.invalidate_assistant();
     if is_active {
         state.apply_active_provider()?;
     }
@@ -119,9 +124,9 @@ pub async fn delete_provider(
             "the mock provider can't be removed".into(),
         ));
     }
-    let secrets = state.secrets.clone();
+    let store = state.secrets.clone();
     let account = id.clone();
-    blocking(move || secrets.delete(&account)).await?;
+    blocking(move || secrets::delete_keys(store.as_ref(), &account)).await?;
     let was_active = {
         let mut s = state.settings();
         s.providers.retain(|p| p.config.id != id);
@@ -129,54 +134,155 @@ pub async fn delete_provider(
         if was_active {
             s.active_provider = MOCK_ID.to_owned();
         }
+        if s.assistant_provider == id {
+            s.assistant_provider.clear();
+        }
         state.persist(&s)?;
         was_active
     };
+    state.invalidate_assistant();
     if was_active {
         state.apply_active_provider()?;
     }
     Ok(state.settings_view())
 }
 
-/// Store an API key in the OS keychain. Write-only: no command returns keys.
+fn parse_keys(text: &str) -> CommandResult<Vec<String>> {
+    secrets::parse_keys(text).map_err(CommandError::Settings)
+}
+
+/// Replace the provider's keys with the pasted ones (one or more, one per
+/// line). Keys go to the OS keychain. Write-only: no command returns keys.
 #[tauri::command]
 pub async fn set_api_key(
     state: State<'_, AppState>,
     id: String,
     key: String,
 ) -> CommandResult<SettingsView> {
-    let key = key.trim().to_owned();
-    if key.is_empty() {
-        return Err(CommandError::Settings("the key is empty".into()));
-    }
+    let keys = parse_keys(&key)?;
     if state.settings().provider(&id).is_none() {
         return Err(not_found(&id));
     }
-    let secrets = state.secrets.clone();
+    let count = keys.len();
+    let store = state.secrets.clone();
     let account = id.clone();
-    blocking(move || secrets.set(&account, &key)).await?;
-    update_key_flag(&state, &id, true)
+    blocking(move || secrets::set_keys(store.as_ref(), &account, &keys)).await?;
+    update_key_count(&state, &id, count)
+}
+
+/// Add the pasted keys to the provider's pool (duplicates are skipped).
+#[tauri::command]
+pub async fn add_api_keys(
+    state: State<'_, AppState>,
+    id: String,
+    keys: String,
+) -> CommandResult<SettingsView> {
+    let added = parse_keys(&keys)?;
+    if state.settings().provider(&id).is_none() {
+        return Err(not_found(&id));
+    }
+    let store = state.secrets.clone();
+    let account = id.clone();
+    let count = blocking(move || {
+        let mut pool = secrets::get_keys(store.as_ref(), &account)?;
+        for key in added {
+            if !pool.contains(&key) {
+                pool.push(key);
+            }
+        }
+        if pool.len() > MAX_KEYS {
+            return Err(format!("at most {MAX_KEYS} keys per provider"));
+        }
+        secrets::set_keys(store.as_ref(), &account, &pool)?;
+        Ok(pool.len())
+    })
+    .await?;
+    update_key_count(&state, &id, count)
+}
+
+/// Remove key `number` (1-based) of the pool, if it still ends in `tail`.
+#[tauri::command]
+pub async fn remove_api_key(
+    state: State<'_, AppState>,
+    id: String,
+    number: usize,
+    tail: String,
+) -> CommandResult<SettingsView> {
+    if state.settings().provider(&id).is_none() {
+        return Err(not_found(&id));
+    }
+    let store = state.secrets.clone();
+    let account = id.clone();
+    let count = blocking(move || {
+        let mut pool = secrets::get_keys(store.as_ref(), &account)?;
+        match number.checked_sub(1).filter(|&i| i < pool.len()) {
+            Some(i) if key_tail(&pool[i]) == tail => {
+                pool.remove(i);
+            }
+            _ => return Err("the keys have changed; reopen the settings and try again".into()),
+        }
+        secrets::set_keys(store.as_ref(), &account, &pool)?;
+        Ok(pool.len())
+    })
+    .await?;
+    update_key_count(&state, &id, count)
 }
 
 #[tauri::command]
 pub async fn clear_api_key(state: State<'_, AppState>, id: String) -> CommandResult<SettingsView> {
-    let secrets = state.secrets.clone();
+    let store = state.secrets.clone();
     let account = id.clone();
-    blocking(move || secrets.delete(&account)).await?;
-    update_key_flag(&state, &id, false)
+    blocking(move || secrets::delete_keys(store.as_ref(), &account)).await?;
+    update_key_count(&state, &id, 0)
 }
 
-fn update_key_flag(state: &AppState, id: &str, has_key: bool) -> CommandResult<SettingsView> {
+/// State of each key of provider `id` (ready, cooling down, rejected), once
+/// a provider in use has read them. `None` before the first request.
+#[tauri::command]
+pub async fn key_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<Option<Vec<KeyStatus>>> {
+    Ok(state.key_status(&id))
+}
+
+fn update_key_count(state: &AppState, id: &str, count: usize) -> CommandResult<SettingsView> {
     let is_active = {
         let mut s = state.settings();
-        s.provider_mut(id).ok_or_else(|| not_found(id))?.has_key = has_key;
+        if !s.set_key_count(id, count) {
+            return Err(not_found(id));
+        }
         state.persist(&s)?;
         s.active_provider == id
     };
+    // Fresh providers read the new keys.
+    state.invalidate_assistant();
     if is_active {
-        // A fresh translator drops the previously cached key.
         state.apply_active_provider()?;
     }
+    Ok(state.settings_view())
+}
+
+/// Choose the assistant's provider (empty: use the translation provider).
+#[tauri::command]
+pub async fn set_assistant_provider(
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<SettingsView> {
+    {
+        let mut s = state.settings();
+        if !id.is_empty() {
+            let entry = s.provider(&id).ok_or_else(|| not_found(&id))?;
+            if entry.config.kind == ProviderKind::Mock {
+                return Err(CommandError::Settings(
+                    "the offline mock cannot run the assistant".into(),
+                ));
+            }
+        }
+        s.assistant_provider = id;
+        state.persist(&s)?;
+    }
+    state.invalidate_assistant();
     Ok(state.settings_view())
 }
 
@@ -205,12 +311,17 @@ pub async fn test_provider(state: State<'_, AppState>, id: String) -> CommandRes
         .provider(&id)
         .cloned()
         .ok_or_else(|| not_found(&id))?;
-    let translator = translator_for(&entry, &state.secrets, state.prompts())?;
+    let built = translator_for(
+        &entry,
+        &state.secrets,
+        state.prompts(),
+        state.request_log.clone(),
+    )?;
     let request = TranslationRequest {
         source: TEST_SENTENCE.to_owned(),
         ..Default::default()
     };
-    let run = translator.translate(&request, &|_| {});
+    let run = built.translator.translate(&request, &|_| {});
     match tokio::time::timeout(Duration::from_secs(90), run).await {
         Ok(result) => Ok(result?.text),
         Err(_) => Err(CommandError::Settings("no answer within 90 seconds".into())),
@@ -228,10 +339,12 @@ pub async fn list_provider_models(
         .cloned()
         .ok_or_else(|| not_found(&id))?;
     let key = if entry.config.kind.needs_key() {
-        let secrets = state.secrets.clone();
+        let store = state.secrets.clone();
         let account = id.clone();
-        blocking(move || secrets.get(&account))
+        blocking(move || secrets::get_keys(store.as_ref(), &account))
             .await?
+            .into_iter()
+            .next()
             .ok_or_else(|| CommandError::Settings("add an API key first".into()))?
     } else {
         String::new()
@@ -308,19 +421,7 @@ pub async fn save_prompt(
 /// Show the prompt files in Finder / Explorer.
 #[tauri::command]
 pub async fn reveal_prompts(state: State<'_, AppState>) -> CommandResult<()> {
-    let dir = state.paths.prompts.clone();
-    let program = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(program)
-        .arg(&dir)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| CommandError::io(&dir, e))
+    crate::files::reveal(&state.paths.prompts)
 }
 
 #[cfg(test)]
@@ -338,6 +439,8 @@ mod tests {
             model: "m".into(),
             temperature: 0.0,
             effort: Effort::Low,
+            wire_api: biwrite_providers::WireApi::Chat,
+            service_tier: None,
         }
     }
 

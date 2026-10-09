@@ -1,5 +1,5 @@
-//! Shared HTTP plumbing: client, lazily fetched API key, error mapping with
-//! key redaction, and the SSE read loop.
+//! Shared HTTP plumbing: client, error mapping with key redaction, and the
+//! SSE read loop.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -11,6 +11,8 @@ use reqwest::{RequestBuilder, Response};
 use serde_json::Value;
 
 use crate::config::{ProviderConfig, is_loopback};
+use crate::keys::{KeyFn, KeyPool};
+use crate::observe::RequestObserver;
 use crate::prompt::PromptSource;
 use crate::sse::{SseEvent, SseParser};
 
@@ -23,21 +25,14 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Error bodies are read up to this size.
 const MAX_ERROR_BODY: usize = 16 * 1024;
 
-/// Fetches the API key (from the OS keychain in the app). Called at most
-/// once per translator, lazily, on a blocking thread.
-pub type KeyFn = Arc<dyn Fn() -> Result<Option<String>, String> + Send + Sync>;
-
 /// State shared by the HTTP providers.
 pub(crate) struct Core {
     pub config: ProviderConfig,
     pub client: reqwest::Client,
     pub prompts: Arc<dyn PromptSource>,
     pub identity: String,
-    key_fn: KeyFn,
-    /// The key, or the failure to read it (remembered so a denied keychain
-    /// prompt isn't shown again for every paragraph; a new translator is
-    /// built when the key changes).
-    key: tokio::sync::Mutex<Option<Result<String, TranslateError>>>,
+    pub keys: KeyPool,
+    pub observer: Arc<dyn RequestObserver>,
     /// Optional parameters this endpoint rejected; they are not sent again.
     dropped: Mutex<HashSet<&'static str>>,
 }
@@ -45,42 +40,19 @@ pub(crate) struct Core {
 impl Core {
     pub fn new(
         config: ProviderConfig,
-        key_fn: KeyFn,
+        keys: KeyFn,
         prompts: Arc<dyn PromptSource>,
+        observer: Arc<dyn RequestObserver>,
     ) -> Result<Self, TranslateError> {
         Ok(Self {
             client: client(&config.base_url)?,
             identity: config.cache_identity(),
+            keys: KeyPool::new(&config.name, keys),
             config,
             prompts,
-            key_fn,
-            key: tokio::sync::Mutex::new(None),
+            observer,
             dropped: Mutex::new(HashSet::new()),
         })
-    }
-
-    /// The API key, read from the key source on first use.
-    pub async fn key(&self) -> Result<String, TranslateError> {
-        let mut cached = self.key.lock().await;
-        if let Some(result) = cached.as_ref() {
-            return result.clone();
-        }
-        let fetch = Arc::clone(&self.key_fn);
-        let fetched = tokio::task::spawn_blocking(move || fetch())
-            .await
-            .map_err(|e| TranslateError::Config(format!("reading the API key failed: {e}")))?;
-        let name = &self.config.name;
-        let result = match fetched {
-            Ok(Some(key)) if !key.trim().is_empty() => Ok(key.trim().to_owned()),
-            Ok(_) => Err(TranslateError::Config(format!(
-                "No API key for “{name}”. Add one in Settings."
-            ))),
-            Err(e) => Err(TranslateError::Config(format!(
-                "Could not read the API key for “{name}”: {e}"
-            ))),
-        };
-        *cached = Some(result.clone());
-        result
     }
 
     pub fn is_dropped(&self, param: &str) -> bool {
@@ -91,36 +63,31 @@ impl Core {
     }
 
     /// If `err` says one of the optional parameters `sent` with this request
-    /// is unsupported, drop it (for all later requests too) and return `true`
-    /// so the caller retries without it. Concurrent requests that sent the
-    /// same parameter all retry, even if another one dropped it first.
+    /// is unsupported, drop it (for all later requests too) and return its
+    /// name so the caller retries without it. Concurrent requests that sent
+    /// the same parameter all retry, even if another one dropped it first.
     pub fn retry_without(
         &self,
         err: &TranslateError,
         candidates: &[(&'static str, &[&str])],
         sent: &[&'static str],
-    ) -> bool {
+    ) -> Option<&'static str> {
         let TranslateError::Rejected {
             status: 400 | 422,
             message,
         } = err
         else {
-            return false;
+            return None;
         };
         let lower = message.to_lowercase();
-        let rejected = candidates.iter().find(|(param, needles)| {
+        let (param, _) = candidates.iter().find(|(param, needles)| {
             sent.contains(param) && needles.iter().any(|n| lower.contains(n))
-        });
-        match rejected {
-            Some((param, _)) => {
-                self.dropped
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(param);
-                true
-            }
-            None => false,
-        }
+        })?;
+        self.dropped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(param);
+        Some(param)
     }
 }
 
@@ -205,6 +172,70 @@ pub(crate) fn status_error(
         },
         _ => TranslateError::Rejected { status, message },
     }
+}
+
+/// A short description of an in-stream error object for the request log:
+/// its code or type and its message, redacted.
+pub(crate) fn describe_stream_error(err: &Value, key: &str) -> String {
+    let field = |name: &str| match err.get(name) {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    };
+    let code = field("code").or_else(|| field("type")).unwrap_or_default();
+    let message = field("message").unwrap_or_default();
+    truncate(
+        &redact(&format!("stream error {code}: {message}"), key),
+        300,
+    )
+}
+
+/// An error object sent inside a stream (OpenAI style, also used by relays
+/// and OpenRouter): a numeric HTTP-like `code`, or a symbolic `code` or
+/// `type` such as `rate_limit_exceeded`. Unknown errors count as transient.
+pub(crate) fn stream_error_object(err: &Value, key: &str) -> TranslateError {
+    let message = redact(
+        err.get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("stream error"),
+        key,
+    );
+    if let Some(code) = err
+        .get("code")
+        .and_then(Value::as_u64)
+        .and_then(|c| u16::try_from(c).ok())
+    {
+        return status_error(code, message, None);
+    }
+    let code = err.get("code").and_then(Value::as_str).unwrap_or("");
+    let kind = err.get("type").and_then(Value::as_str).unwrap_or("");
+    let is = |names: &[&str]| names.contains(&code) || names.contains(&kind);
+    if is(&["insufficient_quota"]) {
+        return TranslateError::Rejected {
+            status: 429,
+            message,
+        };
+    }
+    let status = if is(&[
+        "rate_limit_exceeded",
+        "rate_limit_error",
+        "too_many_requests",
+    ]) {
+        429
+    } else if is(&["invalid_api_key", "authentication_error", "unauthorized"]) {
+        401
+    } else if is(&["permission_error", "permission_denied"]) {
+        403
+    } else if is(&[
+        "invalid_prompt",
+        "invalid_request_error",
+        "context_length_exceeded",
+    ]) {
+        400
+    } else {
+        500
+    };
+    status_error(status, message, None)
 }
 
 /// The provider's error message from a JSON error body, else the raw body.

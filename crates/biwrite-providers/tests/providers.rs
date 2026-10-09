@@ -12,7 +12,8 @@ use std::time::Duration;
 use biwrite_core::Direction;
 use biwrite_engine::{TranslateError, TranslationRequest, Translator};
 use biwrite_providers::{
-    DefaultPrompts, Effort, KeyFn, ProviderConfig, ProviderKind, build_translator, list_models,
+    DefaultPrompts, Effort, KeyFn, ProviderConfig, ProviderKind, WireApi, build_translator,
+    list_models,
 };
 use support::{Canned, MockServer};
 
@@ -21,7 +22,7 @@ const KEY: &str = "sk-test-0123456789abcdefSECRET";
 fn key_fn(calls: Arc<AtomicUsize>) -> KeyFn {
     Arc::new(move || {
         calls.fetch_add(1, Ordering::SeqCst);
-        Ok(Some(KEY.to_owned()))
+        Ok(vec![KEY.to_owned()])
     })
 }
 
@@ -34,6 +35,8 @@ fn config(kind: ProviderKind, base: &str, model: &str) -> ProviderConfig {
         model: model.into(),
         temperature: 0.2,
         effort: Effort::Low,
+        wire_api: WireApi::Chat,
+        service_tier: None,
     }
     .validated()
     .unwrap()
@@ -268,7 +271,7 @@ async fn missing_key_is_a_config_error() {
         &format!("{}/v1", server.base),
         "m",
     );
-    let t = build_translator(&cfg, Arc::new(|| Ok(None)), Arc::new(DefaultPrompts)).unwrap();
+    let t = build_translator(&cfg, Arc::new(|| Ok(vec![])), Arc::new(DefaultPrompts)).unwrap();
     let err = run(&t, &request("x")).await.0.unwrap_err();
     assert!(matches!(&err, TranslateError::Config(m) if m.contains("No API key")));
     assert!(!err.is_retryable());

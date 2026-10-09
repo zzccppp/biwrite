@@ -6,25 +6,18 @@
 //! is a simple task). On the first-party API, Claude Opus 5.5 / Opus 5 /
 //! Fable 5.1 / Sonnet 5.5 requests opt into server-side refusal fallbacks.
 
-use std::sync::Arc;
-
-use biwrite_engine::{
-    BoxFuture, PartialFn, TokenUsage, TranslateError, TranslationOutput, TranslationRequest,
-    Translator,
-};
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
+use biwrite_engine::{PartialFn, TokenUsage, TranslateError};
+use reqwest::RequestBuilder;
 use serde_json::{Value, json};
 
-use crate::clean::{ThinkFilter, clean_output};
-use crate::config::ProviderConfig;
-use crate::http::{
-    Core, Flow, KeyFn, error_from_response, invalid, read_sse, redact, send, status_error,
-};
-use crate::prompt::{self, Messages, PromptSource};
+use crate::clean::ThinkFilter;
+use crate::http::{Core, Flow, invalid, read_sse, redact, status_error};
+use crate::observe::{Declared, Tap, UsageDetail};
+use crate::provider::{Body, Streamed, cut_off, refused};
 
 pub const API_VERSION: &str = "2023-06-01";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
-/// Output ceiling per paragraph (includes thinking tokens on adaptive models).
+/// Output ceiling per request (includes thinking tokens on adaptive models).
 const MAX_TOKENS: u32 = 32_000;
 
 /// Model families that reject `temperature` (sampling parameters removed).
@@ -46,16 +39,11 @@ const FALLBACK_MODELS: &[&str] = &[
     "claude-sonnet-5-5",
 ];
 
-const DROPPABLE: &[(&str, &[&str])] = &[
+pub(crate) const DROPPABLE: &[(&str, &[&str])] = &[
     ("temperature", &["temperature"]),
     ("effort", &["effort", "output_config"]),
     ("fallbacks", &["fallback", "anthropic-beta"]),
 ];
-
-pub struct AnthropicTranslator {
-    core: Core,
-    endpoint: String,
-}
 
 pub(crate) fn sends_temperature(model: &str) -> bool {
     !NO_SAMPLING_PREFIXES.iter().any(|p| model.starts_with(p))
@@ -67,94 +55,63 @@ pub(crate) fn uses_fallbacks(model: &str, base_url: &str) -> bool {
     first_party && FALLBACK_MODELS.contains(&model)
 }
 
-impl AnthropicTranslator {
-    pub fn new(
-        config: ProviderConfig,
-        key: KeyFn,
-        prompts: Arc<dyn PromptSource>,
-    ) -> Result<Self, TranslateError> {
-        let endpoint = format!("{}/v1/messages", config.base_url);
-        Ok(Self {
-            core: Core::new(config, key, prompts)?,
-            endpoint,
-        })
+/// Request body and the optional parameters it includes.
+pub(crate) fn body(core: &Core, system: &str, user: &str) -> Body {
+    let config = &core.config;
+    let mut sent = Vec::new();
+    let mut json = json!({
+        "model": config.model,
+        "max_tokens": MAX_TOKENS,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+        "stream": true,
+    });
+    if sends_temperature(&config.model) && !core.is_dropped("temperature") {
+        json["temperature"] = json!(config.temperature);
+        sent.push("temperature");
     }
-
-    fn fallbacks(&self) -> bool {
-        !self.core.is_dropped("fallbacks")
-            && uses_fallbacks(&self.core.config.model, &self.core.config.base_url)
+    let effort = config
+        .effort
+        .as_param()
+        .filter(|_| !core.is_dropped("effort"));
+    if let Some(effort) = effort {
+        json["output_config"] = json!({"effort": effort});
+        sent.push("effort");
     }
-
-    /// Request body and the optional parameters it includes.
-    fn body(&self, m: &Messages) -> (Value, Vec<&'static str>) {
-        let config = &self.core.config;
-        let mut sent = Vec::new();
-        let mut body = json!({
-            "model": config.model,
-            "max_tokens": MAX_TOKENS,
-            "system": m.system,
-            "messages": [{"role": "user", "content": m.user}],
-            "stream": true,
-        });
-        if sends_temperature(&config.model) && !self.core.is_dropped("temperature") {
-            body["temperature"] = json!(config.temperature);
-            sent.push("temperature");
-        }
-        if let Some(effort) = config
-            .effort
-            .as_param()
-            .filter(|_| !self.core.is_dropped("effort"))
-        {
-            body["output_config"] = json!({"effort": effort});
-            sent.push("effort");
-        }
-        if self.fallbacks() {
-            body["fallbacks"] = json!("default");
-            sent.push("fallbacks");
-        }
-        (body, sent)
+    if !core.is_dropped("fallbacks") && uses_fallbacks(&config.model, &config.base_url) {
+        json["fallbacks"] = json!("default");
+        sent.push("fallbacks");
     }
-
-    async fn run(
-        &self,
-        req: &TranslationRequest,
-        on_partial: PartialFn<'_>,
-    ) -> Result<TranslationOutput, TranslateError> {
-        let key = self.core.key().await?;
-        let messages = prompt::build(req, self.core.prompts.system_prompt(req.direction));
-        for _ in 0..=DROPPABLE.len() {
-            let (body, sent) = self.body(&messages);
-            let mut request = self
-                .core
-                .client
-                .post(&self.endpoint)
-                .header("x-api-key", &key)
-                .header("anthropic-version", API_VERSION)
-                .header(ACCEPT, "text/event-stream")
-                .header(CONTENT_TYPE, "application/json");
-            if sent.contains(&"fallbacks") {
-                request = request.header("anthropic-beta", FALLBACK_BETA);
-            }
-            let resp = send(request.body(body.to_string()), &key).await?;
-            if !resp.status().is_success() {
-                let err = error_from_response(resp, &key).await;
-                if self.core.retry_without(&err, DROPPABLE, &sent) {
-                    continue;
-                }
-                return Err(err);
-            }
-            return read_stream(resp, req, on_partial, &key).await;
-        }
-        Err(invalid("the provider kept rejecting the request"))
+    Body {
+        json,
+        sent,
+        declared: Declared {
+            model: Some(config.model.clone()),
+            effort: effort.map(str::to_owned),
+            service_tier: None,
+        },
     }
 }
 
-async fn read_stream(
+/// Authentication and version headers (raw HTTP: there is no official Rust SDK).
+pub(crate) fn headers(request: RequestBuilder, key: &str, sent: &[&'static str]) -> RequestBuilder {
+    let request = request
+        .header("x-api-key", key)
+        .header("anthropic-version", API_VERSION);
+    if sent.contains(&"fallbacks") {
+        request.header("anthropic-beta", FALLBACK_BETA)
+    } else {
+        request
+    }
+}
+
+pub(crate) async fn read_stream(
     resp: reqwest::Response,
-    req: &TranslationRequest,
-    on_partial: PartialFn<'_>,
     key: &str,
-) -> Result<TranslationOutput, TranslateError> {
+    purpose: &str,
+    tap: &mut Tap,
+    on_partial: PartialFn<'_>,
+) -> Result<Streamed, TranslateError> {
     let mut text = String::new();
     let mut usage = TokenUsage::default();
     let mut filter = ThinkFilter::default();
@@ -181,6 +138,16 @@ async fn read_stream(
                 .filter_map(|f| u[*f].as_u64())
                 .sum();
                 usage.output_tokens = u["output_tokens"].as_u64().unwrap_or(0);
+                tap.declared(
+                    v.pointer("/message/model").and_then(Value::as_str),
+                    None,
+                    None,
+                );
+                tap.usage(UsageDetail {
+                    input_tokens: Some(usage.input_tokens),
+                    cached_tokens: u["cache_read_input_tokens"].as_u64(),
+                    ..Default::default()
+                });
             }
             "content_block_start" => {
                 // A fallback block marks a switch to another model after a
@@ -190,6 +157,12 @@ async fn read_stream(
                     visible.clear();
                     filter = ThinkFilter::default();
                     on_partial("");
+                    tap.note("server-side fallback to another model");
+                    tap.declared(
+                        v.pointer("/content_block/to/model").and_then(Value::as_str),
+                        None,
+                        None,
+                    );
                 }
             }
             "content_block_delta" => {
@@ -198,6 +171,9 @@ async fn read_stream(
                         .pointer("/delta/text")
                         .and_then(Value::as_str)
                         .unwrap_or("");
+                    if !delta.is_empty() {
+                        tap.first_token();
+                    }
                     text.push_str(delta);
                     if let Some(more) = filter.push(delta) {
                         visible.push_str(&more);
@@ -211,6 +187,10 @@ async fn read_stream(
                 }
                 if let Some(out) = v.pointer("/usage/output_tokens").and_then(Value::as_u64) {
                     usage.output_tokens = out;
+                    tap.usage(UsageDetail {
+                        output_tokens: Some(out),
+                        ..Default::default()
+                    });
                 }
             }
             "message_stop" => {
@@ -228,23 +208,9 @@ async fn read_stream(
         return Err(TranslateError::Network("the response ended early".into()));
     }
     match stop_reason.as_deref() {
-        Some("refusal") => Err(TranslateError::Rejected {
-            status: 200,
-            message: "the model declined to translate this paragraph".into(),
-        }),
-        Some("max_tokens") => Err(invalid(
-            "the translation was cut off (output limit reached)",
-        )),
-        _ => {
-            let cleaned = clean_output(&text, &req.source);
-            if cleaned.is_empty() {
-                return Err(invalid("the model returned no translation"));
-            }
-            Ok(TranslationOutput {
-                text: cleaned,
-                usage,
-            })
-        }
+        Some("refusal") => Err(refused(purpose)),
+        Some("max_tokens") => Err(cut_off(purpose)),
+        _ => Ok(Streamed { text, usage }),
     }
 }
 
@@ -264,24 +230,6 @@ fn stream_error(err: &Value, key: &str) -> TranslateError {
         _ => 500,
     };
     status_error(status, message, None)
-}
-
-impl Translator for AnthropicTranslator {
-    fn provider(&self) -> &str {
-        &self.core.identity
-    }
-
-    fn model(&self) -> &str {
-        &self.core.config.model
-    }
-
-    fn translate<'a>(
-        &'a self,
-        request: &'a TranslationRequest,
-        on_partial: PartialFn<'a>,
-    ) -> BoxFuture<'a, Result<TranslationOutput, TranslateError>> {
-        Box::pin(self.run(request, on_partial))
-    }
 }
 
 #[cfg(test)]

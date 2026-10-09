@@ -4,11 +4,15 @@
 //! passes through here may contain credentials.
 
 use biwrite_engine::{EventSink, SegmentState, SessionUsage};
+use biwrite_providers::RequestRecord;
 use tauri::{AppHandle, Emitter};
+
+use crate::request_log::LogSink;
 
 pub const EVENT_SEGMENT_STATES: &str = "segment-states";
 pub const EVENT_USAGE: &str = "usage";
 pub const EVENT_NOTICE: &str = "notice";
+pub const EVENT_REQUEST_LOG: &str = "request-log";
 
 pub struct TauriSink {
     app: AppHandle,
@@ -39,5 +43,11 @@ impl EventSink for TauriSink {
 
     fn notice(&self, message: &str) {
         self.emit(EVENT_NOTICE, message);
+    }
+}
+
+impl LogSink for TauriSink {
+    fn updated(&self, record: &RequestRecord) {
+        self.emit(EVENT_REQUEST_LOG, record);
     }
 }

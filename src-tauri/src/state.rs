@@ -6,11 +6,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use biwrite_core::{LineEnding, Mode, TextFile};
 use biwrite_engine::{Engine, Snapshot};
+use biwrite_providers::HttpProvider;
 use serde::Serialize;
 
 use crate::error::CommandError;
+use crate::request_log::RequestLog;
 use crate::secrets::SecretStore;
 use crate::settings::{AppSettings, Paths};
+
+/// An HTTP provider in use, with the id of its settings entry.
+pub type HttpInUse = Option<(String, Arc<HttpProvider>)>;
 
 /// The open file as it is on disk.
 #[derive(Default)]
@@ -50,6 +55,11 @@ pub struct AppState {
     pub secrets: Arc<dyn SecretStore>,
     /// Document note for an untitled document (not persisted).
     pub(crate) untitled_note: Mutex<String>,
+    pub request_log: Arc<RequestLog>,
+    /// The provider the engine translates with (for key status).
+    pub(crate) translation_http: Mutex<HttpInUse>,
+    /// The provider the writing assistant uses, built on first use.
+    pub(crate) assistant_http: Mutex<HttpInUse>,
 }
 
 impl AppState {
@@ -58,6 +68,7 @@ impl AppState {
         settings: AppSettings,
         paths: Paths,
         secrets: Arc<dyn SecretStore>,
+        request_log: Arc<RequestLog>,
     ) -> Self {
         Self {
             engine,
@@ -71,6 +82,9 @@ impl AppState {
             paths,
             secrets,
             untitled_note: Mutex::new(String::new()),
+            request_log,
+            translation_http: Mutex::new(None),
+            assistant_http: Mutex::new(None),
         }
     }
 

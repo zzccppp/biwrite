@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use biwrite_core::Mode;
 use biwrite_engine::{Engine, EngineSettings, MemoryCache, MockTranslator, NullSink};
-use biwrite_providers::{Effort, ProviderConfig, ProviderKind};
+use biwrite_providers::{Effort, ProviderConfig, ProviderKind, WireApi};
 
+use crate::request_log::{LogSettings, NoSink, RequestLog};
 use crate::secrets::{MemoryStore, SecretStore};
 use crate::settings::{AppSettings, Paths, ProviderEntry};
 use crate::state::AppState;
@@ -31,8 +32,11 @@ async fn key_never_appears_in_views_or_settings_file() {
             model: "deepseek-chat".into(),
             temperature: 0.0,
             effort: Effort::Low,
+            wire_api: WireApi::Chat,
+            service_tier: None,
         },
         has_key: true,
+        key_count: 1,
     });
     settings.active_provider = "p-1".into();
 
@@ -43,13 +47,20 @@ async fn key_never_appears_in_views_or_settings_file() {
         EngineSettings::default(),
         tokio::runtime::Handle::current(),
     );
-    let state = AppState::new(engine, settings, paths.clone(), secrets);
+    let log = Arc::new(RequestLog::new(
+        LogSettings::default(),
+        Some(dir.join("requests.jsonl")),
+        Arc::new(NoSink),
+    ));
+    let state = AppState::new(engine, settings, paths.clone(), secrets, log);
     state.apply_active_provider().unwrap();
     let snapshot = state.engine.load("Hello world.".into(), Mode::Plain);
 
     let payloads = [
         serde_json::to_string(&state.settings_view()).unwrap(),
         serde_json::to_string(&state.session_view(snapshot)).unwrap(),
+        serde_json::to_string(&state.request_log.records()).unwrap(),
+        serde_json::to_string(&state.key_status("p-1")).unwrap(),
     ];
     for json in &payloads {
         assert!(!json.contains(KEY), "key leaked into IPC payload: {json}");

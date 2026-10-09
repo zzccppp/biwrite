@@ -4,7 +4,9 @@ mod commands;
 mod error;
 mod files;
 mod glossary_commands;
+mod log_commands;
 mod provider_state;
+mod request_log;
 mod secrets;
 mod settings;
 mod settings_commands;
@@ -17,11 +19,13 @@ mod leak_tests;
 use std::sync::Arc;
 
 use biwrite_engine::{
-    Engine, EngineSettings, MemoryCache, MockTranslator, SqliteCache, TranslationCache, Translator,
+    Engine, EngineSettings, MemoryCache, MockTranslator, SqliteCache, TranslationCache,
 };
-use biwrite_providers::PromptFiles;
+use biwrite_providers::{PromptFiles, RequestObserver};
 use tauri::{App, AppHandle, Manager, RunEvent, Window, WindowEvent};
 
+use crate::provider_state::Built;
+use crate::request_log::RequestLog;
 use crate::secrets::{Keychain, SecretStore};
 use crate::settings::Paths;
 use crate::sink::TauriSink;
@@ -36,11 +40,17 @@ pub fn run() {
             settings::ensure_prompt_files(&paths.prompts);
             let settings = settings::load(&paths.settings);
             let secrets: Arc<dyn SecretStore> = Arc::new(Keychain);
-            let translator = initial_translator(&settings, &secrets, &paths);
+            let sink = Arc::new(TauriSink::new(app.handle().clone()));
+            let request_log = Arc::new(RequestLog::new(
+                settings.request_log,
+                request_log_file(app),
+                sink.clone(),
+            ));
+            let built = initial_translator(&settings, &secrets, &paths, request_log.clone());
             let engine = Engine::new(
-                translator,
+                built.translator,
                 open_cache(app),
-                Arc::new(TauriSink::new(app.handle().clone())),
+                sink,
                 EngineSettings {
                     concurrency: settings.concurrency,
                     ..EngineSettings::default()
@@ -48,7 +58,9 @@ pub fn run() {
                 tauri::async_runtime::handle().inner().clone(),
             );
             engine.set_glossary(settings.glossary.clone());
-            let state = AppState::new(engine, settings, paths, secrets);
+            let active_id = settings.active().config.id.clone();
+            let state = AppState::new(engine, settings, paths, secrets, request_log);
+            state.set_translation_http(active_id, built.http);
             if let Some(path) = std::env::args_os().nth(1).map(std::path::PathBuf::from) {
                 // `biwrite paper.tex`: open a file from the command line.
                 match state.load_path_blocking(path) {
@@ -80,7 +92,11 @@ pub fn run() {
             settings_commands::save_provider,
             settings_commands::delete_provider,
             settings_commands::set_api_key,
+            settings_commands::add_api_keys,
+            settings_commands::remove_api_key,
             settings_commands::clear_api_key,
+            settings_commands::key_status,
+            settings_commands::set_assistant_provider,
             settings_commands::set_active_provider,
             settings_commands::test_provider,
             settings_commands::list_provider_models,
@@ -94,6 +110,10 @@ pub fn run() {
             glossary_commands::import_glossary,
             glossary_commands::export_glossary,
             glossary_commands::export_bilingual,
+            log_commands::get_request_log,
+            log_commands::set_request_log,
+            log_commands::clear_request_log,
+            log_commands::reveal_request_log,
         ])
         .build(tauri::generate_context!());
 
@@ -112,14 +132,27 @@ fn initial_translator(
     settings: &settings::AppSettings,
     secrets: &Arc<dyn SecretStore>,
     paths: &Paths,
-) -> Arc<dyn Translator> {
+    observer: Arc<dyn RequestObserver>,
+) -> Built {
     let prompts = Arc::new(PromptFiles {
         dir: paths.prompts.clone(),
     });
-    provider_state::translator_for(settings.active(), secrets, prompts).unwrap_or_else(|e| {
-        eprintln!("BiWrite: provider unavailable ({e}); using the mock translator");
-        Arc::new(MockTranslator::default())
-    })
+    provider_state::translator_for(settings.active(), secrets, prompts, observer).unwrap_or_else(
+        |e| {
+            eprintln!("BiWrite: provider unavailable ({e}); using the mock translator");
+            Built {
+                translator: Arc::new(MockTranslator::default()),
+                http: None,
+            }
+        },
+    )
+}
+
+/// `requests.jsonl` in the app data folder, if the folder is available.
+fn request_log_file(app: &App) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("requests.jsonl"))
 }
 
 /// The persistent translation cache in the app data folder; falls back to an

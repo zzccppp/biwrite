@@ -41,6 +41,11 @@ pub fn clean_output(text: &str, source: &str) -> String {
     t.trim().to_owned()
 }
 
+/// The text after any reasoning blocks at its start (`<think>…</think>`).
+pub fn strip_reasoning(text: &str) -> &str {
+    strip_think(text)
+}
+
 /// Remove reasoning blocks at the start (complete ones only).
 fn strip_think(text: &str) -> &str {
     let mut t = text.trim_start();
