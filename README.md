@@ -13,6 +13,32 @@ changed paragraphs are retranslated.
 > provider (reverses text) stays available for trying things out. See
 > [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Install
+
+Download the installer from the
+[Releases](https://github.com/zzccppp/biwrite/releases) page:
+`BiWrite_<version>_x64-setup.exe` (Windows 10/11) or
+`BiWrite_<version>_universal.dmg` (macOS 12+, Apple Silicon and Intel).
+They aren't signed with a trusted certificate yet: on Windows choose *More
+info → Run anyway*; on macOS right-click the app and choose *Open* the first
+time (or run `xattr -dr com.apple.quarantine /Applications/BiWrite.app`).
+
+### Releasing
+
+`.github/workflows/build-installers.yml` builds both installers on every
+push to `master` (as workflow artifacts). To publish a release, set the
+version in `src-tauri/tauri.conf.json`, `package.json` and the workspace
+`Cargo.toml`, commit, then push a matching tag:
+
+```sh
+git tag -a v0.1.0 -m "BiWrite 0.1.0"
+git push origin v0.1.0
+```
+
+The workflow checks that the tag matches the app version, builds both
+installers and creates the GitHub Release with them attached. A tag with a
+suffix (`v0.2.0-beta.1`) is published as a pre-release.
+
 ## Requirements
 
 * Rust ≥ 1.85 (tested with 1.96), Node ≥ 20 (tested with 26), npm
