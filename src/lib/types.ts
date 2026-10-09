@@ -159,11 +159,37 @@ export interface SettingsView {
   docNote: string;
   presets: Preset[];
   promptDir: string;
+  /** Log folder, or null when logs only go to stderr. */
+  logDir: string | null;
   /** Chosen assistant provider; "" follows the translation provider. */
   assistantProvider: string;
   assistantLabel: string;
   assistantReady: boolean;
   requestLog: LogSettings;
+}
+
+/** What the translation cache holds. */
+export interface CacheView {
+  entries: number;
+  bytes: number;
+  /** Database file; null for the temporary in-memory cache. */
+  location: string | null;
+  groups: CacheGroupView[];
+}
+
+export interface ClearedView {
+  removed: number;
+  cache: CacheView;
+}
+
+export interface CacheGroupView {
+  /** Provider identity in the cache (unique together with model and direction). */
+  id: string;
+  /** Display name: the configured provider, or the API host. */
+  provider: string;
+  model: string;
+  direction: Direction;
+  entries: number;
 }
 
 /** State of one key of a provider's pool. */

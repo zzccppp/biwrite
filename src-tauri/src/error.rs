@@ -38,8 +38,12 @@ impl CommandError {
 }
 
 impl serde::Serialize for CommandError {
+    /// Serialized exactly once, when a command returns it to the UI: the
+    /// natural place to log every error the user is shown.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+        let message = self.to_string();
+        log::warn!("command failed: {message}");
+        serializer.serialize_str(&message)
     }
 }
 

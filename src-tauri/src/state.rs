@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use biwrite_core::{LineEnding, Mode, TextFile};
-use biwrite_engine::{Engine, Snapshot};
+use biwrite_engine::{Engine, Snapshot, TranslationCache};
 use biwrite_providers::HttpProvider;
 use serde::Serialize;
 
@@ -45,6 +45,8 @@ pub fn display_name(path: Option<&Path>) -> String {
 
 pub struct AppState {
     pub engine: Engine,
+    /// The engine's translation cache, for viewing and clearing it.
+    pub cache: Arc<dyn TranslationCache>,
     file: Mutex<FileState>,
     /// Saves run one at a time (held across the async write).
     pub save_lock: tokio::sync::Mutex<()>,
@@ -65,6 +67,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         engine: Engine,
+        cache: Arc<dyn TranslationCache>,
         settings: AppSettings,
         paths: Paths,
         secrets: Arc<dyn SecretStore>,
@@ -72,6 +75,7 @@ impl AppState {
     ) -> Self {
         Self {
             engine,
+            cache,
             file: Mutex::new(FileState {
                 file: TextFile::untitled(String::new()),
                 ..FileState::default()
@@ -115,6 +119,7 @@ impl AppState {
         self.engine.set_doc_note(Some(self.note_for(Some(&path))));
         self.engine
             .load(file.text().to_owned(), Mode::from_path(&path));
+        log::info!("opened {}", display_name(Some(&path)));
         *self.file() = FileState {
             path: Some(path),
             file,

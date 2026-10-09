@@ -291,12 +291,13 @@ dependencies = [
 
 [[package]]
 name = "biwrite"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "biwrite-core",
  "biwrite-engine",
  "biwrite-providers",
  "keyring",
+ "log",
  "reqwest",
  "serde",
  "serde_json",
@@ -304,12 +305,13 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "thiserror 2.0.21",
+ "time",
  "tokio",
 ]
 
 [[package]]
 name = "biwrite-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "serde",
@@ -320,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "biwrite-core",
  "rusqlite",
@@ -331,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite-providers"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "biwrite-core",
  "biwrite-engine",
@@ -2435,6 +2437,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_threads"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "objc2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4212,7 +4223,9 @@ checksum = "f9e442fc33d7fdb45aa9bfeb312c095964abdf596f7567261062b2a7107aaabd"
 dependencies = [
  "deranged",
  "itoa",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",

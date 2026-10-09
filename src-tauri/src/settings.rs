@@ -163,8 +163,8 @@ pub fn load(path: &Path) -> AppSettings {
     match serde_json::from_str::<AppSettings>(&text) {
         Ok(s) => s.normalized(),
         Err(e) => {
-            eprintln!(
-                "BiWrite: {} is invalid ({e}); starting with defaults",
+            log::warn!(
+                "{} is invalid ({e}); starting with defaults",
                 path.display()
             );
             let _ = std::fs::rename(path, path.with_extension("json.bad"));
@@ -181,7 +181,7 @@ pub fn save(path: &Path, settings: &AppSettings) -> Result<(), String> {
 /// Create missing prompt files with the defaults so users can find and edit them.
 pub fn ensure_prompt_files(dir: &Path) {
     if let Err(e) = std::fs::create_dir_all(dir) {
-        eprintln!("BiWrite: cannot create {}: {e}", dir.display());
+        log::warn!("cannot create {}: {e}", dir.display());
         return;
     }
     for direction in [Direction::EnZh, Direction::ZhEn] {
@@ -189,7 +189,7 @@ pub fn ensure_prompt_files(dir: &Path) {
         if !path.exists()
             && let Err(e) = std::fs::write(&path, format!("{}\n", default_prompt(direction)))
         {
-            eprintln!("BiWrite: cannot write {}: {e}", path.display());
+            log::warn!("cannot write {}: {e}", path.display());
         }
     }
 }
@@ -218,6 +218,8 @@ pub struct SettingsView {
     pub doc_note: String,
     pub presets: Vec<Preset>,
     pub prompt_dir: String,
+    /// Log folder, if logs are written to files.
+    pub log_dir: Option<String>,
     /// Chosen assistant provider (empty: the translation provider).
     pub assistant_provider: String,
     /// "Name · model" of the provider the assistant uses.
@@ -227,7 +229,7 @@ pub struct SettingsView {
     pub request_log: LogSettings,
 }
 
-pub fn view(settings: &AppSettings, doc_note: String, prompt_dir: &Path) -> SettingsView {
+pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> SettingsView {
     let active = settings.active();
     SettingsView {
         providers: settings
@@ -246,7 +248,8 @@ pub fn view(settings: &AppSettings, doc_note: String, prompt_dir: &Path) -> Sett
         concurrency: settings.concurrency,
         doc_note,
         presets: presets(),
-        prompt_dir: prompt_dir.display().to_string(),
+        prompt_dir: paths.prompts.display().to_string(),
+        log_dir: paths.logs.as_ref().map(|d| d.display().to_string()),
         assistant_provider: settings.assistant_provider.clone(),
         assistant_label: label(&settings.assistant().config),
         assistant_ready: settings.assistant().config.kind != ProviderKind::Mock,
@@ -261,11 +264,15 @@ pub fn label(config: &ProviderConfig) -> String {
     }
 }
 
-/// Paths of the settings file and prompt directory.
+/// Where BiWrite keeps its files.
 #[derive(Clone, Debug)]
 pub struct Paths {
     pub settings: PathBuf,
     pub prompts: PathBuf,
+    /// Log folder (`None`: logging to stderr only).
+    pub logs: Option<PathBuf>,
+    /// Translation cache database (`None`: in-memory cache).
+    pub cache: Option<PathBuf>,
 }
 
 impl Paths {
@@ -273,6 +280,8 @@ impl Paths {
         Self {
             settings: config_dir.join("settings.json"),
             prompts: config_dir.join("prompts"),
+            logs: None,
+            cache: None,
         }
     }
 }

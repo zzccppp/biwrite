@@ -39,6 +39,7 @@ pub async fn save_glossary(
     state.persist(&next)?;
     *settings = next;
     state.engine.set_glossary(entries.clone());
+    log::info!("glossary saved ({} terms)", entries.len());
     Ok(entries)
 }
 
@@ -57,9 +58,14 @@ pub async fn import_glossary(
     let parsed = tokio::task::spawn_blocking(move || glossary::from_csv(&bytes))
         .await
         .map_err(|e| CommandError::Task(e.to_string()))?;
-    parsed
-        .map(Some)
-        .map_err(|e: GlossaryError| CommandError::Settings(format!("{}: {e}", path.display())))
+    let entries = parsed
+        .map_err(|e: GlossaryError| CommandError::Settings(format!("{}: {e}", path.display())))?;
+    log::info!(
+        "read {} glossary terms from {}",
+        entries.len(),
+        display_name(Some(&path))
+    );
+    Ok(Some(entries))
 }
 
 /// Write the saved glossary to a CSV chosen in the Save dialog. Returns the
@@ -77,6 +83,7 @@ pub async fn export_glossary(
         return Ok(None);
     };
     files::write_file_atomic(path.clone(), csv.into_bytes()).await?;
+    log::info!("glossary exported to {}", display_name(Some(&path)));
     Ok(Some(display_name(Some(&path))))
 }
 
@@ -110,6 +117,11 @@ pub async fn export_bilingual(
     // Built after the dialog, so translations that finished meanwhile count.
     let export = state.engine.bilingual_markdown();
     files::write_file_atomic(path.clone(), export.text.into_bytes()).await?;
+    log::info!(
+        "exported {} ({} paragraphs not translated yet)",
+        display_name(Some(&path)),
+        export.missing
+    );
     Ok(Some(ExportView {
         name: display_name(Some(&path)),
         missing: export.missing,

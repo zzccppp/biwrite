@@ -1,8 +1,13 @@
-# Build the installers on GitHub's runners and upload them as workflow
-# artifacts (Actions tab → run → Artifacts):
+# Build the installers on GitHub's runners:
 #   - Windows: NSIS installer, BiWrite_<version>_x64-setup.exe
 #   - macOS:   universal DMG (Apple Silicon + Intel), BiWrite_<version>_universal.dmg
-# Trigger it from the Actions tab (workflow_dispatch) or by pushing to master.
+#
+# - Push to master (code changes) or run from the Actions tab: the installers
+#   are uploaded as workflow artifacts (Actions → run → Artifacts).
+# - Push a version tag `v<version>` (e.g. `git tag v0.1.0 && git push origin
+#   v0.1.0`): the same build, then a GitHub Release with both installers. The
+#   tag must match the version in src-tauri/tauri.conf.json; a tag with a
+#   suffix (v0.2.0-beta.1) makes a pre-release.
 #
 # Neither installer is signed by a trusted certificate yet. On Windows,
 # SmartScreen asks for confirmation. On macOS, the app is only ad-hoc signed
@@ -16,6 +21,8 @@ on:
   workflow_dispatch:
   push:
     branches: [master]
+    # Path filters don't apply to tag pushes: every version tag builds.
+    tags: ["v*"]
     paths:
       - "src/**"
       - "src-tauri/**"
@@ -56,13 +63,23 @@ jobs:
             path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
+
+      - name: Check that the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the app version $version in src-tauri/tauri.conf.json"
+            exit 1
+          fi
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -79,8 +96,54 @@ jobs:
         run: npx tauri build ${{ matrix.tauri-args }}
 
       - name: Upload the installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.path }}
           if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the installers
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -l dist
+          cat > notes.md <<'NOTES'
+          ## Install
+
+          | Platform | File |
+          |---|---|
+          | Windows 10/11 (x64) | `BiWrite_*_x64-setup.exe` |
+          | macOS 12+ (Apple Silicon and Intel) | `BiWrite_*_universal.dmg` |
+
+          The installers are not signed with a trusted certificate yet:
+
+          - **Windows:** if SmartScreen says "Windows protected your PC", choose *More info* → *Run anyway*.
+          - **macOS:** drag BiWrite into Applications. The first time, right-click the app and choose *Open*, or run `xattr -dr com.apple.quarantine /Applications/BiWrite.app`.
+
+          NOTES
+          # A tag with a suffix (v0.2.0-beta.1) is published as a pre-release.
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then prerelease=(--prerelease); fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A re-run: replace the assets of the existing release.
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag "${prerelease[@]}" \
+              --title "BiWrite ${TAG#v}" --notes-file notes.md --generate-notes
+          fi

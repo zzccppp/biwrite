@@ -18,15 +18,20 @@ biwrite-core.workspace = true
 biwrite-engine.workspace = true
 biwrite-providers.workspace = true
 keyring.workspace = true
+# Both are already part of the build (via keyring and tauri); `local-offset`
+# names daily log files by local date.
+log = "0.4.34"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tauri = { version = "2.12.2", features = [] }
 tauri-plugin-dialog = "2.8.1"
+time = { version = "0.3.45", features = ["local-offset"] }
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+time = { version = "0.3.45", features = ["macros"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

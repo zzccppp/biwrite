@@ -85,6 +85,7 @@ impl AppState {
         )?;
         self.engine.set_translator(built.translator);
         self.set_translation_http(settings.active().config.id.clone(), built.http);
+        log::info!("provider: {}", settings::label(&settings.active().config));
         Ok(())
     }
 
@@ -181,6 +182,6 @@ impl AppState {
 
     pub fn settings_view(&self) -> SettingsView {
         let note = self.doc_note();
-        settings::view(&self.settings(), note, &self.paths.prompts)
+        settings::view(&self.settings(), note, &self.paths)
     }
 }
