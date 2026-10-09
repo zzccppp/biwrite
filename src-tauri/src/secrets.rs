@@ -204,16 +204,13 @@ mod pool_tests {
 
     #[test]
     fn names_come_from_the_line_before_or_the_same_line() {
-        let text = format!("qzkinharbin\n{A}\nqzkinhit: {B}\n{C}\n");
+        let text = format!("main\n{A}\nlab: {B}\n{C}\n");
         let keys = parse_named_keys(&text).unwrap();
         let named: Vec<(Option<&str>, &str)> = keys
             .iter()
             .map(|k| (k.name.as_deref(), k.key.as_str()))
             .collect();
-        assert_eq!(
-            named,
-            [(Some("qzkinharbin"), A), (Some("qzkinhit"), B), (None, C)]
-        );
+        assert_eq!(named, [(Some("main"), A), (Some("lab"), B), (None, C)]);
         let one_line = parse_named_keys(&format!("main account, {A}")).unwrap();
         assert_eq!(one_line[0].name.as_deref(), Some("main account"));
         let digits_in_name = parse_named_keys(&format!("account2024\n{B}")).unwrap();

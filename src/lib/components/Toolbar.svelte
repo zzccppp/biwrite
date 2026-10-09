@@ -11,6 +11,8 @@
     project: ProjectView | null;
     onnew: () => void;
     onfile: (file: string) => void;
+    /** Open the user guide. */
+    onhelp: () => void;
     /** Pair the document with its translation in another file. */
     onimportmirror: () => void;
     onclosemirror: () => void;
@@ -44,6 +46,7 @@
     project,
     onnew,
     onfile,
+    onhelp,
     onimportmirror,
     onclosemirror,
     swapWaiting,
@@ -239,6 +242,12 @@
     <button class="tool secondary" onclick={ontheme} title={t("toolbar.themeTitle", { theme: t(themeLabel[theme]) })}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" /><path d="M8 3a5 5 0 0 0 0 10z" class="fill" /></svg>
       <span class="smallcaps">{t(themeLabel[theme])}</span>
+    </button>
+    <button class="tool secondary" onclick={onhelp} title={t("toolbar.helpTitle")}>
+      <svg viewBox="0 0 16 16" aria-hidden="true"
+        ><circle cx="8" cy="8" r="5.5" /><path d="M6.4 6.3a1.7 1.7 0 0 1 3.2.6c0 1.1-1.6 1.4-1.6 2.4M8 11.3v.2" /></svg
+      >
+      <span class="smallcaps">{t("toolbar.help")}</span>
     </button>
     <button
       class="tool secondary log"

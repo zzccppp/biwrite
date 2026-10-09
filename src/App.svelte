@@ -999,6 +999,7 @@
     onopen={open}
     onsave={() => save(false)}
     onsaveas={() => save(true)}
+    onhelp={() => ipc.openManual(language.current).catch(fail)}
     onexport={exportBilingual}
     onmode={changeMode}
     onretranslate={retranslateActive}

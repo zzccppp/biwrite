@@ -1,0 +1,381 @@
+% !TEX program = xelatex
+\documentclass[a4paper,11pt]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{fontspec}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{tabularx}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
+\setmainfont{Palatino}
+\setmonofont{Menlo}[Scale=0.86]
+\setlist{itemsep=2pt, topsep=4pt}
+\captionsetup{font=small, labelsep=quad, skip=4pt}
+\graphicspath{{img-en/}}
+\newfontfamily\keysfont{Apple Symbols}
+\newfontfamily\cjkfont{Songti SC}
+\newcommand{\cmdkey}{{\keysfont ⌘}}
+\newcommand{\optkey}{{\keysfont ⌥}}
+\newcommand{\shiftkey}{{\keysfont ⇧}}
+\newcommand{\swapsym}{{\keysfont ⇄}}
+\newcommand{\zhch}{{\cjkfont 中}}
+\newcommand{\ui}[1]{\emph{#1}}
+% Box numbers as in the screenshots.
+\newcommand{\n}[1]{\textbf{(#1)}}
+% Figures float, 0.74 of the line width, labelled fig:<file name>.
+\newcommand{\shot}[2]{\begin{figure}[!htbp]\centering\includegraphics[width=0.74\linewidth]{#1}\caption{#2}\label{fig:#1}\end{figure}}
+\newcommand{\fig}[1]{Figure~\ref{fig:#1}}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.8}
+\setcounter{topnumber}{3}
+\setcounter{totalnumber}{4}
+\setlength{\parskip}{3pt}
+
+\title{\textbf{BiWrite User Guide}}
+\author{Version 0.2.1}
+\date{October 2026}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{center}
+Source code \url{https://github.com/zzccppp/biwrite}\\[2pt]
+Writing skill research-builder \url{https://github.com/qzkinhit/research-builder}
+\end{center}
+
+\begin{abstract}
+BiWrite is an editor for writing an academic paper in English and Chinese at once. You write on the left, the right pane shows the other language paragraph by paragraph, and only paragraphs you change are translated again. A LaTeX paper compiles into a PDF inside the app, and a click on a sentence in the PDF selects that sentence in the source. A writing assistant polishes, edits, answers questions and writes figures with the rules of the research-builder writing skill. This guide goes through each task step by step. In the screenshots, red boxes mark the buttons to use and the areas to look at, and the numbers in the text, such as \n{1}, refer to the numbers next to the boxes.
+\end{abstract}
+
+\section{Features at a glance}
+\label{sec:overview}
+Each feature name below links to its section.
+\begin{description}[leftmargin=0pt, style=nextline]
+\item[{\hyperref[sec:write]{Bilingual writing}}] English on the left, the Chinese paragraph by paragraph on the right, and only changed paragraphs are translated again. The swap button in the toolbar lets you edit the Chinese instead, with the English following and unchanged paragraphs kept word for word.
+\item[{\hyperref[sec:latex]{LaTeX builds and PDF navigation}}] The PDF compiles inside the app. A click on a sentence in the PDF selects it in the source, ready to polish. The paragraph at the cursor can be found in the PDF, and a build error opens its line.
+\item[{\hyperref[sec:zhpdf]{Chinese PDF}}] Once the English is translated, the Chinese PDF compiles in one step, and the Chinese PDF and a stand-alone Chinese .tex can be exported.
+\item[{\hyperref[sec:pair]{Your existing Chinese version}}] \texttt{paper\_zh.tex} or \texttt{sections\_zh/} pair with the English paragraph by paragraph. Edit either side and the matching paragraph of the other file is updated in place, with the rest unchanged.
+\item[{\hyperref[sec:assist]{Writing assistant}}] Polish, edit by instruction, ask, write figures, or rewrite a translation and let the paragraph follow. Jobs run in the background, results come as a diff, and you decide what is applied.
+\item[{\hyperref[sec:templates]{Paper templates}}] VLDB, ICLR 2027 and IEEE TII built in. Your own projects can be imported as templates, and the open project exported.
+\item[{\hyperref[sec:provider]{APIs and key pools}}] OpenAI-compatible, OpenAI Responses and Anthropic APIs. A provider holds several keys, uses them evenly and moves to another key on rate limits.
+\item[{\hyperref[sec:log]{Request log} and \hyperref[sec:update]{updates}}] The log records the model, reasoning effort and service tier of every request. Any version published on GitHub can be installed from inside the app.
+\end{description}
+\fig{o-editor} shows the main window: \n{1} is the source, \n{2} the translation.
+
+\shot{o-editor}{The main window: (1) English LaTeX on the left, (2) the Chinese paragraph by paragraph on the right}
+
+\section{Everyday writing}
+\label{sec:write}
+
+\subsection{Open and edit}
+\ui{Open} in the toolbar (\fig{w-open} \n{1}, \cmdkey O) opens a \texttt{.tex}, \texttt{.md} or \texttt{.txt} file. A LaTeX project of several files lists its files in the title bar \n{2}, to move between them. Each block on the right is one paragraph, heading or caption of the source. Click a block and the cursor moves to its paragraph, which is highlighted on both sides \n{3}.
+
+0.8 seconds after you stop typing, only the paragraphs you changed are translated again, streamed as they arrive. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back exactly as they were.
+
+\shot{w-open}{(1) Open a file, (2) the files of the project, (3) the paragraph's translation}
+
+\subsection{Switching the edited language}
+The \ui{EN \swapsym{} \zhch} button in the middle of the toolbar (\fig{w-swap} \n{1}) decides which language you edit on the left.
+\begin{enumerate}
+\item By default you edit English on the left and read Chinese on the right.
+\item After the swap, the left pane holds the Chinese (\fig{w-swapped} \n{2}) and you edit it, with the English on the right \n{3}. Only the paragraphs you change get new English, revised from your previous English. Every other paragraph keeps your exact English.
+\item Click again \n{1} to edit English. Paragraphs you did not change come back word for word.
+\end{enumerate}
+A swap needs every paragraph translated. If some are still being translated, the button waits and swaps once they are done. A second click swaps at once, with untranslated paragraphs as they are, and they come back unchanged when you swap back.
+
+\shot{w-swap}{(1) The button that swaps the edited language}
+\shot{w-swapped}{After the swap: (1) the button reads \zhch{} \swapsym{} EN, (2) the Chinese is edited on the left, (3) the English follows on the right}
+
+Without a paired Chinese file, saving always writes the English file. While you edit the Chinese, saving writes the English composed from the translations. With a paired Chinese file, both files are written (Section~\ref{sec:pair}).
+
+\subsection{Save and Save As}
+\ui{Save} (\fig{w-save} \n{1}, \cmdkey S) overwrites the file. \ui{Save As} \n{2} (\cmdkey\shiftkey S) saves under a new name and suggests one not taken yet, for example \texttt{paper-2.tex}. The original stays as it was.
+
+\shot{w-save}{(1) Save, (2) Save As}
+
+\subsection{Glossary}
+\ui{Glossary} in the toolbar opens the glossary (\fig{w-glossary}). In the table \n{1}, set your preferred Chinese for a term or tick \ui{Keep EN}. The buttons \n{2} import and export CSV files with the columns \texttt{term,translation} (UTF-8). After a change, only paragraphs that mention the term are translated again.
+
+\shot{w-glossary}{The glossary: (1) terms and their Chinese, (2) import, export and save}
+
+\section{LaTeX papers}
+\label{sec:latex}
+
+\subsection{Open a project}
+Open a \texttt{.tex} file with \ui{Open}, or click \ui{New} (\fig{l-files} \n{1}) and choose \ui{Open LaTeX folder…} to open a project by its main file. A project of several files lists them in the title bar \n{2}, with the main file marked. The right pane of a LaTeX document has two tabs, \ui{Translation} and \ui{PDF} \n{3}.
+
+BiWrite finds the main file from a \texttt{\% !TEX root = …} comment, else from the \texttt{\textbackslash input} and \texttt{\textbackslash include} chains that reach the open file, however deeply nested. The engine comes from a \texttt{\% !TEX program} comment, else the project's \texttt{latexmkrc} (\texttt{\$pdf\_mode}), else the packages of the preamble.
+
+\shot{l-files}{(1) New and Open LaTeX folder, (2) the files of the project, (3) the Translation and PDF tabs}
+
+\subsection{Compile the English PDF}
+\begin{enumerate}
+\item Click the \ui{PDF} tab (\fig{l-compile} \n{1}).
+\item Click \ui{Compile} \n{2} or press \cmdkey B (Ctrl+B on Windows). Unsaved edits are saved first, since the PDF comes from the files on disk.
+\item The PDF appears. \n{3} shows the time taken and the numbers of errors and warnings, and the problem list \n{4} links each one to its line.
+\end{enumerate}
+\ui{Compile after saving a .tex file} is on by default, so every save compiles again. A document with errors still gets its PDF, with the errors listed.
+
+\shot{l-compile}{(1) The PDF tab, (2) Compile, (3) the result, (4) the problem list}
+
+\subsection{From the PDF to the source}
+Click a sentence in the PDF (\fig{l-click} \n{1}) and the same sentence is selected in the source \n{2}. A small menu next to the click \n{3} offers \ui{Polish}, \ui{Edit…} and \ui{Ask…} on that sentence. If the sentence is in another file of the project (such as \texttt{sections/04\_method.tex}), BiWrite opens that file and selects it there, after asking when the open file has unsaved changes.
+
+\shot{l-click}{(1) A click on a sentence in the PDF, (2) the sentence selected in the source, (3) the menu}
+
+\subsection{From the source to the PDF}
+Put the cursor in a paragraph (\fig{l-locate} \n{1}) and click the locate button above the PDF \n{2}, or press \cmdkey\optkey J (Ctrl+Alt+J). The paragraph is highlighted in the PDF for a few seconds \n{3}.
+
+\shot{l-locate}{(1) The paragraph at the cursor, (2) the locate button, (3) its place in the PDF}
+
+\subsection{Compile the Chinese PDF after translation}
+\label{sec:zhpdf}
+The Chinese PDF is the translation set as a document, compiled with XeLaTeX with Chinese font support (the ctex package) added.
+\begin{enumerate}
+\item Open the English paper and wait until every paragraph is translated. The status bar counts translated, in-flight and pending paragraphs.
+\item In the PDF tab, click \ui{Chinese} (\fig{l-zh} \n{1}). The first switch compiles it, and \ui{Compile} \n{2} builds it again later.
+\item Paragraphs not translated yet are set in English, and a note above the PDF counts them \n{3}.
+\end{enumerate}
+The Chinese PDF and its build files are kept in the hidden folder \texttt{.biwrite/zh/} of the paper's folder. None of your files are touched.
+
+\shot{l-zh}{(1) Show the Chinese PDF, (2) Compile, (3) paragraphs not translated yet}
+
+\subsection{Export the Chinese PDF and .tex}
+On the Chinese PDF (\fig{l-export}):
+\begin{itemize}
+\item \n{1} \ui{Save PDF as…} saves a copy of the Chinese PDF, named \texttt{paper.zh.pdf} by default. The same button saves the English PDF.
+\item \n{2} \ui{Export Chinese .tex…} saves a LaTeX file that compiles on its own with XeLaTeX, named \texttt{paper\_zh.tex} by default.
+\item \n{3} \ui{Show in folder} shows the PDF in Finder or Explorer.
+\end{itemize}
+
+\shot{l-export}{(1) Save PDF as, (2) Export Chinese .tex, (3) Show in folder}
+
+\subsection{Paper templates}
+\label{sec:templates}
+\ui{New} opens \ui{Papers and templates} (\fig{l-templates}).
+\begin{itemize}
+\item The built-in templates are VLDB (PVLDB volume 20, 2027), ICLR 2027 and IEEE TII. The first two use the official template files, and TII comes with a short skeleton paper.
+\item \n{1} \ui{New paper…} copies a template into a folder you name and opens the main file. The PDF tab compiles it.
+\item \n{2} \ui{Open LaTeX folder…} opens an existing paper project.
+\item \n{3} \ui{Import folder…} and \ui{Import .zip…} keep an existing project as a template of your own, listed under \ui{My templates}.
+\item \n{4} \ui{Export this project…} zips the open project with a template manifest, for others to import.
+\end{itemize}
+
+\shot{l-templates}{(1) A new paper from a template, (2) Open LaTeX folder, (3) import a template, (4) export the project}
+
+\section{An existing Chinese version}
+\label{sec:pair}
+If you keep a Chinese version by hand (\texttt{paper\_zh.tex} next to \texttt{paper.tex}), BiWrite uses it instead of translating. Once the two files are paired, editing the English updates the matching paragraph of the Chinese file, and editing the Chinese updates the English file.
+
+\subsection{Automatic pairing}
+Opening an English file looks for its Chinese counterpart by name and pairs them when their paragraphs match:
+\begin{itemize}
+\item a suffix in the same folder: \texttt{paper.tex} with \texttt{paper\_zh.tex}, or \texttt{.zh}, \texttt{-zh}, \texttt{\_cn},
+\item parallel language folders: \texttt{sections\_en/04\_method.tex} with \texttt{sections\_zh/04\_method.tex}, \texttt{en/} with \texttt{zh/}.
+\end{itemize}
+
+\subsection{Pair by hand}
+\begin{enumerate}
+\item Open and save the English file.
+\item Click \ui{Pair} (\fig{p-import} \n{1}, the link icon) next to the file name in the title bar.
+\item Choose the Chinese file. BiWrite aligns the two files paragraph by paragraph. The title bar shows the Chinese file (\fig{p-paired} \n{1}), the status bar counts the paired paragraphs \n{2}, and the right pane shows your Chinese \n{3}.
+\end{enumerate}
+Paragraphs pair by kind (paragraph, heading, caption), shared citation keys, references, labels, math, numbers and names, and length. A figure placed elsewhere in the Chinese file still finds its partner. Paragraphs without a partner are translated, but their translation is not written into the Chinese file.
+
+\shot{p-import}{(1) Pair}
+\shot{p-paired}{After pairing: (1) the Chinese file, (2) the paired paragraphs, (3) your Chinese on the right}
+
+\subsection{Editing and saving a pair}
+\begin{itemize}
+\item The right pane shows your Chinese, with no requests.
+\item Edit an English paragraph, and only its Chinese is revised, from your Chinese.
+\item You can also edit the Chinese directly. The pencil on a paragraph on the right (\fig{p-edit} \n{1}) opens \ui{Via translation} in the writing assistant with the paragraph's Chinese in the box \n{2}. Rewrite it and click \ui{Run} \n{3}: the model revises the English as little as possible to say the same. The card shows the change to the English (\fig{p-done} \n{1}), and \ui{Accept} \n{2} applies it, with your sentence as the paragraph's Chinese.
+\item Saving writes both files. Only changed paragraphs are replaced in the Chinese file, and the rest stays byte for byte. If a translation is still on its way, the English is saved at once and the Chinese file follows when the translation arrives.
+\item After the swap, you edit your Chinese file on the left, and changes go back into the English file the same way.
+\item \ui{Save As} (\fig{p-saveas} \n{1}) saves both files under the new name, for example \texttt{paper-2.tex} and \texttt{paper\_zh-2.tex}. The original two stay as they were.
+\end{itemize}
+
+\shot{p-edit}{(1) The pencil, (2) the paragraph's Chinese to rewrite, (3) Run}
+\shot{p-done}{(1) The change to the English, (2) Accept}
+\shot{p-saveas}{(1) Save As, (2) unpair}
+
+\subsection{PDFs of a pair, and unpairing}
+With a pair, \ui{Chinese} in the PDF tab compiles your own Chinese main file (\texttt{paper\_zh.tex}), not a document assembled from the translation. A click in the Chinese PDF selects the matching English paragraph. The cross on the Chinese file in the title bar (\fig{p-saveas} \n{2}) ends the pair, and saving no longer writes the Chinese file.
+
+\section{Writing assistant}
+\label{sec:assist}
+
+\subsection{Open it and pick a task}
+\ui{Assistant} in the toolbar or \cmdkey J opens the writing assistant on the right (\fig{a-dock}). It works on the selection, or on the paragraph at the cursor \n{2}.
+\begin{enumerate}
+\item Pick a task at \n{1}.
+\begin{description}[leftmargin=1em, style=nextline]
+\item[Polish] Applies the writing rules: it removes AI-style phrasing and dashes or semicolons that splice sentences, and keeps claims, numbers, citations and formulas. \cmdkey\shiftkey P polishes the paragraph at the cursor.
+\item[Edit] Follows your instruction, for example \ui{shorter, state the number of benchmarks}.
+\item[Ask] Answers a question about the selection or the whole paper, with follow-up questions.
+\item[Figure] Writes a LaTeX figure or table from a description, inserted after the paragraph.
+\item[Via translation] Fills the box with the paragraph's translation. Rewrite it and run, and the paragraph is revised to say the same (Section~\ref{sec:pair}).
+\end{description}
+\item Write the instruction or question at \n{3} (polishing needs none).
+\item \n{4} \ui{Context} sends the text alone, with its neighbouring paragraphs, or with the whole paper.
+\item \n{5} \ui{References to imitate} takes text samples whose style to follow, or images such as a figure whose style to follow.
+\item Click \ui{Run} \n{6}. The job runs in the background while you keep writing.
+\end{enumerate}
+
+\shot{a-dock}{(1) Task, (2) target, (3) instruction, (4) context, (5) references, (6) Run}
+
+\subsection{Decide on the result}
+The finished card (\fig{a-result}) shows the changes as a diff \n{1} (deleted words struck out, new ones highlighted), the translation of the revision \n{2} and the reasons for the changes in Chinese and English \n{3}. \ui{Accept} \n{4} writes the revision where the text is now, even after you kept typing. If the target itself was edited meanwhile, the card says so, and \ui{Re-apply with the model} brings the revision onto the current text. \ui{Again} runs the job once more, \ui{Discard} drops it, and \cmdkey Z undoes an accepted revision.
+
+\shot{a-result}{(1) The diff, (2) the translation, (3) the reasons, (4) Accept}
+
+\subsection{Questions and figures}
+An answer appears in the card (\fig{a-ask} \n{1}), with a box for a follow-up question \n{2}. A figure job returns LaTeX ready to insert (\fig{a-figure} \n{1}), and \ui{Insert} \n{2} puts it after the paragraph.
+
+\shot{a-ask}{(1) The answer, (2) a follow-up question}
+\shot{a-figure}{(1) The LaTeX figure or table, (2) Insert}
+
+\subsection{The writing skill}
+The rules come from research-builder, an open-source writing skill under the MIT license. BiWrite ships a copy. The \ui{Writing skill} section of Settings (\fig{a-skill}) can \n{1} update it from GitHub, \n{2} use a skill folder of your own, and \n{3} open the skill's repository.
+
+\shot{a-skill}{(1) Update from GitHub, (2) use your own folder, (3) the skill's repository}
+
+\section{Request log}
+\label{sec:log}
+The log button at the right of the toolbar (\cmdkey\shiftkey L) opens the request log (\fig{g-log}). \n{1} filters the records, pauses recording, clears the log and opens the log file. Each row of the table \n{2} is one request, with the model, reasoning effort and service tier that were sent and the ones the server declared, marked where they differ. A click on a row shows its details (\fig{g-details} \n{1}): the HTTP status, time to the first token, duration, input and output tokens (cached and reasoning tokens included), the key used (its name and last characters), and notes on retries and failover. The log never holds document text or keys.
+
+\shot{g-log}{(1) Filters and actions, (2) the requests}
+\shot{g-details}{(1) The details of one request}
+
+\section{Updates}
+\label{sec:update}
+In Settings, under \ui{Updates}, \ui{Show versions} (\fig{u-list} \n{1}) lists every release on GitHub with its notes \n{2}, older versions and pre-releases (branch builds) included. Pick a version and click \ui{Install} \n{3}. BiWrite downloads the installer and checks it against the SHA-256 that GitHub reports. On macOS, \ui{Restart now} (\fig{u-done} \n{1}) starts the new version. On Windows, the installer runs after BiWrite quits. At startup, BiWrite looks for a newer release and says so in the status bar, which can be turned off.
+
+\shot{u-list}{(1) Show versions, (2) the releases, (3) Install}
+\shot{u-done}{(1) Restart after the installation}
+
+\section{Install}
+\label{sec:install}
+
+\subsection{macOS}
+Download \texttt{BiWrite\_\textless version\textgreater\_universal.dmg} from the Releases page (\url{https://github.com/zzccppp/biwrite/releases}). It runs on Apple silicon and Intel Macs with macOS 12 or later. Open the disk image and drag BiWrite into \ui{Applications}.
+
+The app is not signed with an Apple developer certificate, so macOS blocks it the first time. To allow it:
+\begin{enumerate}
+\item Double-click BiWrite. macOS says it cannot verify the developer. Click \ui{Done}.
+\item Open \ui{System Settings} and go to \ui{Privacy \& Security}.
+\item Under \ui{Security} near the bottom, macOS shows \ui{"BiWrite" was blocked to protect your Mac}. Click \ui{Open Anyway}.
+\item Confirm with \ui{Open Anyway} again and enter your password or use Touch ID.
+\end{enumerate}
+After this, BiWrite opens normally. In Terminal, this command has the same effect:
+\begin{center}\texttt{xattr -dr com.apple.quarantine /Applications/BiWrite.app}\end{center}
+
+\subsection{Windows}
+Download \texttt{BiWrite\_\textless version\textgreater\_x64-setup.exe} for 64-bit Windows 10 or 11. The installer has no trusted code signature either. When SmartScreen shows \ui{Windows protected your PC}, click \ui{More info}, then \ui{Run anyway}, and follow the installer.
+
+\subsection{A TeX distribution}
+LaTeX papers need a TeX distribution: MacTeX on macOS, TeX Live or MiKTeX on Windows. BiWrite looks for it in the usual places and shows what it found in the \ui{LaTeX} section of Settings (\fig{i-latex} \n{1}). For a distribution somewhere else, \ui{Choose folder…} \n{2} picks the folder that holds \texttt{pdflatex}. \n{3} turns compiling after every save on or off.
+
+\shot{i-latex}{(1) The TeX distribution found, (2) Choose folder, (3) compile after saving}
+
+\section{Set up a model provider}
+\label{sec:provider}
+
+\subsection{Supported APIs}
+Translation and the writing assistant use a language model API. BiWrite supports:
+\begin{itemize}
+\item OpenAI-compatible Chat Completions APIs: OpenAI, DeepSeek, Qwen, Kimi, OpenRouter and local servers such as Ollama or LM Studio,
+\item the OpenAI Responses API, for reasoning models that take a reasoning effort and a service tier,
+\item the Anthropic Messages API.
+\end{itemize}
+The built-in \ui{Mock} provider works offline and returns each paragraph reversed, for trying the interface without a key.
+
+\subsection{Add a provider}
+\begin{enumerate}
+\item Open \ui{Settings} (\cmdkey ,). \n{1} lists the providers, and the radio button selects the one that translates (\fig{c-add}).
+\item Choose \ui{+ Add provider…} at \n{2} and pick a preset.
+\item In the provider's form (\fig{c-form}), check the base URL, the model and the API type \n{1}, and choose the reasoning effort and service tier \n{2} where the API takes them.
+\item Paste the key and click \ui{Add provider}. Keys are kept in the system keychain (the Credential Manager on Windows) and are never shown again. \ui{Manage keys…} \n{3} manages them later.
+\item \ui{Test} \n{4} translates one sentence.
+\end{enumerate}
+
+\shot{c-add}{(1) The providers, (2) add a provider}
+\shot{c-form}{The provider's form: (1) API type and temperature, (2) reasoning effort and service tier, (3) Manage keys, (4) Test}
+
+\subsection{A third-party API: AnyRouter as an example}
+AnyRouter is a third-party service compatible with the OpenAI Responses API. The \ui{AnyRouter (GPT-6 Astra)} preset sets the Responses API, the address \texttt{https://anyrouter.top/v1}, the model \texttt{gpt-6-astra}, high reasoning effort, the \ui{Priority} service tier, two requests per key and ten retries. Paste one or more keys and save. Other third-party APIs are set up the same way, with the address, model and API type from the provider's documentation. The request log shows the reasoning effort and service tier the server reports back, so you can check that a third-party service honours them.
+
+\subsection{Key pools}
+A provider can hold several keys, a pool. \ui{Manage keys…} in the provider's form opens it (\fig{c-keys}).
+\begin{itemize}
+\item \n{1} lists the keys. Give each a name. The table shows only the last characters of a key, its state and its requests in flight. Each request goes to the least busy ready key. A key hitting a rate limit cools down and the request moves to another key, and a rejected key is set aside.
+\item \n{2} sets the requests per key and the retries. AnyRouter allows two conversations per account, hence 2.
+\item \n{3} takes new keys: one per line, or a name on one line and its key on the next, or \ui{name: key}. \ui{Add keys} adds them to the pool.
+\item \n{4} \ui{Import from file…} and \ui{Export to file…}: the export saves the names and keys to a text file to move them to another computer or share them with a colleague, and the import adds the keys of such a file. The keys go from the keychain to the file without passing through the window. The file holds the keys in plain text, so share it only with people you trust.
+\end{itemize}
+
+\shot{c-keys}{The key pool: (1) the keys, (2) requests per key and retries, (3) new keys, (4) import from and export to a file}
+
+\subsection{Separate models for translation and writing}
+The \ui{Writing assistant} section of Settings (\fig{c-assistant} \n{1}) picks the model for polishing, edits and questions. A cheap, fast model can translate while a stronger one writes. \ui{Same as translation} uses one provider for both.
+
+\shot{c-assistant}{(1) The model of the writing assistant}
+
+\subsection{Request pacing}
+The \ui{Requests} section (\fig{c-pacing}) controls how many requests reach the provider.
+\begin{itemize}
+\item \n{1} Paragraphs per request: 1 by default. With 2 to 8, several new paragraphs share one request, which suits providers with rate limits. Edited paragraphs are always sent alone, so their translation is revised minimally.
+\item \n{2} Parallel requests: the number of requests at once.
+\item \n{3} With \ui{Use the whole key pool}, it is the number of keys times the requests per key.
+\end{itemize}
+
+\shot{c-pacing}{(1) Paragraphs per request, (2) parallel requests, (3) follow the key pool}
+
+\subsection{Interface language}
+\ui{Language} at the top of Settings (\fig{c-language} \n{1}) switches the interface between English and Chinese. Translation directions do not change.
+
+\shot{c-language}{(1) The interface language}
+
+\section{Keyboard shortcuts}
+\begin{center}
+\begin{tabularx}{0.82\linewidth}{@{}lX@{}}
+\toprule
+macOS (Ctrl for \cmdkey and Alt for \optkey on Windows) & Action \\
+\midrule
+\cmdkey O & Open a file \\
+\cmdkey S / \cmdkey\shiftkey S & Save / Save As \\
+\cmdkey B & Compile the PDF on show \\
+\cmdkey\optkey J & Find the cursor in the PDF \\
+\cmdkey J & Open or close the writing assistant \\
+\cmdkey\shiftkey P & Polish the paragraph at the cursor \\
+\cmdkey K & Focus the assistant's input \\
+\cmdkey , & Settings \\
+\cmdkey\shiftkey L & Request log \\
+\cmdkey F & Find and replace in the source \\
+\cmdkey Z & Undo (accepted revisions too) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Questions}
+
+\paragraph{No TeX distribution was found.} Install MacTeX, TeX Live or MiKTeX and click \ui{Check again} in the PDF tab. For a distribution in another place, choose its folder in the \ui{LaTeX} section of Settings.
+
+\paragraph{The build failed or the PDF is old.} Read the problem list above the PDF and click an error to reach its line. For a failure without a log, \ui{Console output} shows the tools' output. A build stops after five minutes.
+
+\paragraph{A click in the PDF does nothing.} Every PDF that BiWrite builds has SyncTeX data. A click on an image or empty space shows that it has no source line.
+
+\paragraph{The swap button keeps waiting.} Some paragraphs are still being translated or failed. Click \ui{Retry} on a failed paragraph, or click the swap button again to swap with those paragraphs as they are.
+
+\paragraph{A third-party API often hits rate limits.} Add several keys to the pool, set \ui{Requests per key} to what the provider allows, raise \ui{Paragraphs per request} and \ui{Retries}. The request log shows each rate limit and each switch to another key.
+
+\paragraph{The Chinese file does not pair.} Files pair only when at least half of their paragraphs match. Check that the two files are the same document in two languages.
+
+\paragraph{Where is the data kept?} Translations are cached in \texttt{cache.sqlite3} in the app data folder. The \ui{Translation cache} section of Settings shows its size and clears it. Keys are kept only in the system keychain.
+
+\end{document}

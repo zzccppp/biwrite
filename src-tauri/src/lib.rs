@@ -146,6 +146,7 @@ pub fn run() {
             commands::set_dirty,
             commands::swap_languages,
             commands::open_link,
+            commands::open_manual,
             settings_commands::get_settings,
             settings_commands::save_provider,
             settings_commands::delete_provider,

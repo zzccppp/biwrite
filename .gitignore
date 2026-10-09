@@ -21,3 +21,6 @@ temp/
 
 # Mock viewer PDF (compile samples/paper.tex into dev/sample.pdf)
 dev/*.pdf
+
+# Manual build output
+docs/manual/*.pdf

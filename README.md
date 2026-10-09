@@ -1,3 +1,5 @@
+**English** | [简体中文](README.zh-CN.md)
+
 # BiWrite
 
 A desktop editor for writing an academic paper in English and Chinese at
@@ -9,7 +11,12 @@ writing assistant polishes, edits or answers questions on the selection with
 the rules of the [research-builder](https://github.com/qzkinhit/research-builder)
 skill. The interface is in English or Chinese.
 
-![Writing in English with the Chinese beside it](docs/images/editor.jpg)
+The illustrated user guide covers every feature step by step:
+[User guide (PDF)](src-tauri/resources/docs/BiWrite-Manual-en.pdf) ·
+[使用说明（PDF）](src-tauri/resources/docs/BiWrite-Manual-zh.pdf). The **Guide** button in
+the toolbar opens it too.
+
+![Writing in English with the Chinese beside it](docs/images/en/editor.jpg)
 
 ## Contents
 
@@ -19,7 +26,7 @@ skill. The interface is in English or Chinese.
 * [LaTeX papers](#latex-papers)
 * [An existing Chinese version](#an-existing-chinese-version)
 * [Writing assistant](#writing-assistant)
-* [Key pools and AnyRouter](#key-pools-and-anyrouter)
+* [Key pools and third-party APIs](#key-pools-and-third-party-apis)
 * [Request log](#request-log)
 * [Updates](#updates)
 * [Glossary, cache and logs](#glossary-cache-and-logs)
@@ -34,7 +41,7 @@ skill. The interface is in English or Chinese.
 | Your own Chinese version | `paper.tex` with `paper_zh.tex`, or `sections_en/` with `sections_zh/`, pair up paragraph by paragraph. Your Chinese becomes the translation with no requests, and saving writes each edited paragraph into the other file in place. |
 | Writing assistant | Polish, edit by instruction, ask, write figures or tables, or rewrite a paragraph's translation and let the paragraph follow. Jobs run in the background, results come as a diff with the Chinese, and you decide what is applied. |
 | Templates | VLDB (PVLDB 2027), ICLR 2027 and IEEE TII built in. Import a project folder or a `.zip` as a template, export a project as one, open any LaTeX folder. |
-| Model providers | OpenAI-compatible (Chat or Responses API), Anthropic, DeepSeek, Qwen, Kimi, OpenRouter, local servers, and an AnyRouter preset for `gpt-6-astra`. Translation and the assistant can use different providers. |
+| Model providers | OpenAI-compatible Chat Completions (OpenAI, DeepSeek, Qwen, Kimi, OpenRouter, local servers such as Ollama), the OpenAI Responses API and the Anthropic Messages API, with presets, third-party services such as AnyRouter among them. Translation and the assistant can use different providers. |
 | Key pools | Many named keys per provider, used evenly with a per-key limit, failover on rate limits, import and export to a file. |
 | Request log | Every model request with the model, reasoning effort and service tier that were sent and the ones the server declared, timings, tokens and the key used. |
 | Updates | Any GitHub release can be installed from inside the app, pre-releases (branch builds) and older versions included. |
@@ -45,10 +52,16 @@ Download the installer from the
 [Releases](https://github.com/zzccppp/biwrite/releases) page:
 `BiWrite_<version>_x64-setup.exe` (Windows 10/11) or
 `BiWrite_<version>_universal.dmg` (macOS 12 or later, Apple Silicon and
-Intel). The installers are not signed with a trusted certificate yet. On
-Windows choose *More info*, then *Run anyway*. On macOS right-click the app
-and choose *Open* the first time, or run
-`xattr -dr com.apple.quarantine /Applications/BiWrite.app`.
+Intel). The installers are not signed with a trusted certificate yet, so the
+first launch needs your approval:
+
+* **macOS.** Open BiWrite once and close the warning. Then open *System
+  Settings*, *Privacy & Security*. Near the bottom, under *Security*, macOS
+  shows that BiWrite was blocked. Click *Open Anyway*, confirm, and enter
+  your password. In Terminal, `xattr -dr com.apple.quarantine
+  /Applications/BiWrite.app` does the same.
+* **Windows.** When SmartScreen shows *Windows protected your PC*, click
+  *More info*, then *Run anyway*.
 
 LaTeX support needs a TeX distribution: MacTeX on macOS, TeX Live or MiKTeX
 on Windows and Linux. BiWrite finds it in the usual places. One installed
@@ -73,7 +86,7 @@ elsewhere can be chosen in Settings, under *LaTeX*.
 
 ## LaTeX papers
 
-![A click in the PDF selects the sentence in the source](docs/images/pdf-click.jpg)
+![A click in the PDF selects the sentence in the source](docs/images/en/pdf-click.jpg)
 
 * **Open** a `.tex` file, or **New** then *Open LaTeX folder…* to open a
   project by its main file. A multi-file project shows its files in the title
@@ -91,15 +104,11 @@ elsewhere can be chosen in Settings, under *LaTeX*.
   from the translation with XeLaTeX and `ctex` (paragraphs not translated
   yet stay English). *Save PDF as…* and *Export Chinese .tex…* save copies.
 
-![The Chinese PDF built from the translation](docs/images/pdf-zh.jpg)
-
 **Templates.** **New** lists the built-in templates (official PVLDB and ICLR
 2027 files, the IEEE TII class with a short skeleton) and your own. *New
 paper…* copies one into a folder you name and opens it. *Import folder…* and
 *Import .zip…* add your own templates, *Export this project…* zips the open
 project with a manifest.
-
-![Paper templates](docs/images/templates.jpg)
 
 ## An existing Chinese version
 
@@ -124,7 +133,7 @@ translating:
 
 ## Writing assistant
 
-![Polishing a sentence selected from the PDF](docs/images/assistant.jpg)
+![Polishing a sentence selected from the PDF](docs/images/en/assistant.jpg)
 
 Open it with **Assistant** (`⌘J`). It works on the selection, or on the
 paragraph at the cursor:
@@ -152,13 +161,16 @@ The rules come from [research-builder](https://github.com/qzkinhit/research-buil
 an open-source (MIT) research writing skill. BiWrite ships a copy, Settings
 can update it from GitHub, and a folder of your own can replace it.
 
-![Pairing with paper_zh.tex and editing through the translation](docs/images/pair-mirror.jpg)
+![Pairing with paper_zh.tex and editing through the translation](docs/images/en/pair-mirror.jpg)
 
-## Key pools and AnyRouter
+## Key pools and third-party APIs
 
-The *AnyRouter (GPT-6 Astra)* preset sets the Responses API at
-`https://anyrouter.top/v1`, model `gpt-6-astra`, high reasoning effort, the
-priority service tier, two requests per key and ten retries.
+BiWrite talks to OpenAI-compatible Chat Completions APIs, the OpenAI
+Responses API and the Anthropic Messages API. A third-party service is set
+up like any other provider. Taking AnyRouter as an example, its preset sets
+the Responses API at `https://anyrouter.top/v1`, the model `gpt-6-astra`,
+high reasoning effort, the priority service tier, two requests per key and
+ten retries.
 
 *Manage keys…* shows the pool:
 
@@ -173,8 +185,6 @@ priority service tier, two requests per key and ten retries.
   keychain to the file without passing through the window. The file holds
   secret keys, so share it only with people you trust.
 
-![The key pool](docs/images/keys.jpg)
-
 ## Request log
 
 **Log** (`⌘⇧L`) lists each request with the model, reasoning effort and
@@ -183,8 +193,6 @@ are marked), the HTTP status, time to first token, duration, tokens with
 cached and reasoning tokens, the key used (by name and the last characters
 only), and notes on retries and failover. The log can be paused, cleared and
 kept on disk. It never holds request text or keys.
-
-![The request log](docs/images/log.jpg)
 
 ## Updates
 
@@ -195,8 +203,6 @@ On macOS the app is replaced in place and *Restart now* starts the new
 version. On Windows the installer runs after BiWrite quits. BiWrite looks
 for a newer release at startup and says so in the status bar (this can be
 turned off).
-
-![Settings in Chinese, with the writing skill and LaTeX sections](docs/images/settings.jpg)
 
 ## Glossary, cache and logs
 

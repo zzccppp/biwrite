@@ -258,6 +258,30 @@ pub async fn set_dirty(
     Ok(())
 }
 
+/// Open the user guide bundled with the app, in `lang` ("zh" or "en"), with
+/// the system's PDF viewer.
+#[tauri::command]
+pub async fn open_manual(app: AppHandle, lang: String) -> CommandResult<()> {
+    use tauri::Manager;
+    let name = if lang == "zh" {
+        "BiWrite-Manual-zh.pdf"
+    } else {
+        "BiWrite-Manual-en.pdf"
+    };
+    let path = app
+        .path()
+        .resource_dir()
+        .map_err(|e| crate::error::CommandError::Settings(e.to_string()))?
+        .join("resources/docs")
+        .join(name);
+    if !path.is_file() {
+        return Err(crate::error::CommandError::Settings(format!(
+            "the user guide is missing from this installation ({name})"
+        )));
+    }
+    files::open_url(&path.display().to_string())
+}
+
 /// Open one of BiWrite's known links (see `files::known_link`).
 #[tauri::command]
 pub async fn open_link(name: String) -> CommandResult<()> {

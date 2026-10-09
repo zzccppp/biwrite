@@ -59,6 +59,8 @@ export const ipc = {
   exportBilingual: (text: string) => invoke<ExportView | null>("export_bilingual", { text }),
   /** Open a known link ("skill", "repo", "releases") in the browser. */
   openLink: (name: "skill" | "repo" | "releases") => invoke<void>("open_link", { name }),
+  /** The bundled user guide in the system's PDF viewer. */
+  openManual: (lang: "en" | "zh") => invoke<void>("open_manual", { lang }),
 };
 
 /** Glossary commands. CSV files are picked in native dialogs on the Rust side. */

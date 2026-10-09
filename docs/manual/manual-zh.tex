@@ -1,0 +1,376 @@
+% !TEX program = xelatex
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{tabularx}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
+\setlist{itemsep=2pt, topsep=4pt}
+\captionsetup{font=small, labelsep=quad, skip=4pt}
+\graphicspath{{img-zh/}}
+\newfontfamily\keysfont{Apple Symbols}
+\newcommand{\cmdkey}{{\keysfont ⌘}}
+\newcommand{\optkey}{{\keysfont ⌥}}
+\newcommand{\shiftkey}{{\keysfont ⇧}}
+\newcommand{\swapsym}{{\keysfont ⇄}}
+\newcommand{\ui}[1]{「#1」}
+% 插图：浮动排版，宽度 0.74 倍行宽，标签 fig:文件名。
+\newcommand{\shot}[2]{\begin{figure}[!htbp]\centering\includegraphics[width=0.74\linewidth]{#1}\caption{#2}\label{fig:#1}\end{figure}}
+\newcommand{\fig}[1]{图~\ref{fig:#1}}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.8}
+\setcounter{topnumber}{3}
+\setcounter{totalnumber}{4}
+\ctexset{section={format=\Large\bfseries}}
+% 带圈数字用中文字体排版。
+\xeCJKsetcharclass{"2460}{"2473}{1}
+
+\title{\textbf{BiWrite 使用说明}}
+\author{版本 0.2.1}
+\date{2026 年 10 月}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{center}
+开源仓库 \url{https://github.com/zzccppp/biwrite}\\[2pt]
+写作技能 research-builder \url{https://github.com/qzkinhit/research-builder}
+\end{center}
+
+\begin{abstract}
+BiWrite 是一个中英双语的论文写作编辑器。左侧编写正文，右侧逐段显示另一种语言，只有改动过的段落会重新翻译。LaTeX 论文可以在软件内编译成 PDF，点击 PDF 中的句子即可在源码中选中该句。写作助手按 research-builder 写作技能的规则润色、修改、回答问题和生成图表。本说明按使用场景分步介绍。截图中的红框标出要操作的按钮或要看的区域，正文中的 ①②③ 与红框旁的编号一一对应。
+\end{abstract}
+
+\section{功能一览}
+\label{sec:overview}
+点击下面的功能名称可以跳到对应的章节。
+\begin{description}[leftmargin=0pt, style=nextline]
+\item[{\hyperref[sec:write]{双语写作}}] 左侧写英文，右侧逐段显示中文，只有改动过的段落会重新翻译。顶部的切换按钮可以改为直接编辑中文，英文随之修改，没改的段落保持原文。
+\item[{\hyperref[sec:latex]{LaTeX 编译与 PDF 定位}}] 在软件内编译 PDF。点击 PDF 中的句子，源码中对应的句子被选中，并可直接润色。光标所在段落可以反向定位到 PDF，编译错误点击即跳到源码行。
+\item[{\hyperref[sec:zhpdf]{中文 PDF}}] 英文译完后一键编译中文 PDF，并可导出中文 PDF 和可以单独编译的中文 .tex 文件。
+\item[{\hyperref[sec:pair]{导入已有中文译文}}] 与 \texttt{paper\_zh.tex} 或 \texttt{sections\_zh/} 逐段配对。改任何一侧，另一侧文件中对应的段落原位更新，其余内容不变。
+\item[{\hyperref[sec:assist]{写作助手}}] 润色、按指令修改、提问、生成图表、按译文改原文。任务在后台运行，结果以差异形式呈现，由你决定是否采纳。
+\item[{\hyperref[sec:templates]{论文模板}}] 内置 VLDB、ICLR 2027 和 IEEE TII 模板，可以导入自己的项目作为模板，也可以导出当前项目。
+\item[{\hyperref[sec:provider]{多种接口与号池}}] 支持 OpenAI 兼容接口、OpenAI Responses 接口和 Anthropic 接口。一个接口可以挂多个密钥，均匀分配请求，限流时自动换号重试。
+\item[{\hyperref[sec:log]{请求日志}与\hyperref[sec:update]{版本更新}}] 日志记录每次请求的模型、推理强度和服务等级。软件内可以安装 GitHub 上发布的任意版本。
+\end{description}
+\fig{o-editor} 是主界面，①为源文编辑区，②为译文区。
+
+\shot{o-editor}{主界面：①左侧编辑英文 LaTeX，②右侧逐段显示中文}
+
+\section{日常写作}
+\label{sec:write}
+
+\subsection{打开与编辑}
+点工具栏的\ui{打开}（\fig{w-open} ①，快捷键 \cmdkey O）选择 \texttt{.tex}、\texttt{.md} 或 \texttt{.txt} 文件。多文件的 LaTeX 项目会在标题栏显示文件列表（②），可以在项目文件之间切换。右侧每个方块对应源文的一个段落、标题或图注，点击方块，光标跳到对应段落，当前段落在两侧同时高亮（③）。
+
+停止输入 0.8 秒后，只有改动过的段落会重新翻译，并以流式方式显示。公式、引用、交叉引用、标签、网址和注释在发给模型前被替换成占位符，返回后按原样还原。
+
+\shot{w-open}{①打开文件，②项目文件列表，③当前段落的译文}
+
+\subsection{中英文切换修改}
+工具栏中间的\ui{EN \swapsym{} 中}按钮（\fig{w-swap} ①）决定左侧编辑哪种语言。
+\begin{enumerate}
+\item 默认左侧编辑英文，右侧显示中文。
+\item 点切换按钮后，左侧变为中文（\fig{w-swapped} ②），可以直接改中文，右侧显示英文（③）。你改了哪一段中文，就只重新生成这一段的英文，并以原来的英文为基础做最小修改，其余段落保持你原来的英文措辞。
+\item 再点一次（①）切回英文编辑。没有改过的段落会逐字还原。
+\end{enumerate}
+切换需要每个段落都已有译文。点击时如果还有段落正在翻译，按钮会显示等待标记，等这些段落译完后自动切换。不想等可以再点一次，立即切换，未译完的段落保持原文，切回来时原样恢复。
+
+\shot{w-swap}{①切换编辑语言的按钮}
+\shot{w-swapped}{切换后：①按钮变为「中 \swapsym{} EN」，②左侧编辑中文，③右侧显示对应的英文}
+
+未导入中文文件时，保存的始终是英文文件。编辑中文时保存，软件会用当前译文组成英文后写入原文件。导入了已有的中文文件后，两个文件都会写入，见第~\ref{sec:pair}~节。
+
+\subsection{保存与另存为}
+\ui{保存}（\fig{w-save} ①，\cmdkey S）覆盖当前文件。\ui{另存为}（②，\cmdkey\shiftkey S）以新文件名保存，默认建议一个不重名的名字，例如 \texttt{paper-2.tex}，原文件保持不变。
+
+\shot{w-save}{①保存，②另存为}
+
+\subsection{术语表}
+工具栏的\ui{术语表}按钮打开术语表（\fig{w-glossary}）。在表格（①）中为术语指定中文译法，或勾选\ui{保留英文}。上方的按钮（②）可以导入和导出 CSV（两列 \texttt{term,translation}，UTF-8 编码）。修改术语后，只有提到这个术语的段落会重新翻译。
+
+\shot{w-glossary}{术语表：①术语与译法，②导入导出和保存}
+
+\section{LaTeX 论文}
+\label{sec:latex}
+
+\subsection{打开 LaTeX 项目}
+LaTeX 文件可以直接用\ui{打开}。也可以点\ui{新建}（\fig{l-files} ①），在弹出的窗口里选\ui{打开 LaTeX 文件夹…}，选择论文所在文件夹，软件会打开其中的主文件。多文件项目的标题栏显示文件列表（②），标有\ui{主文件}的是编译入口。LaTeX 文件的右侧窗格上方有\ui{译文}和\ui{PDF}两个页签（③）。
+
+软件按以下顺序确定主文件：文件开头的 \texttt{\% !TEX root = …} 注释，然后是通过 \texttt{\textbackslash input}、\texttt{\textbackslash include} 链引入当前文件的主文件，嵌套多层也能找到。编译引擎依次参考 \texttt{\% !TEX program} 注释、项目中 \texttt{latexmkrc} 的 \texttt{\$pdf\_mode} 设置，以及导言区加载的宏包。
+
+\shot{l-files}{①新建与打开 LaTeX 文件夹，②项目文件列表，③译文与 PDF 页签}
+
+\subsection{编译英文 PDF}
+\begin{enumerate}
+\item 点右侧的\ui{PDF}页签（\fig{l-compile} ①）。
+\item 点\ui{编译}（②）或按 \cmdkey B（Windows 为 Ctrl+B）。未保存的改动会先保存，因为 PDF 来自磁盘上的文件。
+\item 编译完成后显示 PDF。③处显示用时、错误数和警告数，④处的问题列表列出每条错误和警告，点击即跳到对应源码行。
+\end{enumerate}
+\ui{设置}中\ui{保存 .tex 文件后自动编译}默认开启，每次保存都会重新编译。文档有错误时仍会生成 PDF，问题列表中会列出这些错误。
+
+\shot{l-compile}{①PDF 页签，②编译，③编译结果，④问题列表}
+
+\subsection{点击 PDF 定位源码}
+在 PDF 中单击一个句子（\fig{l-click} ①），左侧源码中对应的句子被选中（②）。点击位置旁会出现一个小菜单（③），提供\ui{润色}、\ui{按指令改…}和\ui{提问…}，可以直接对这句话发起写作助手任务。如果这句话在另一个项目文件里（例如 \texttt{sections/04\_method.tex}），软件会打开那个文件并选中句子。当前文件有未保存改动时，软件先提示，由你决定是否打开。
+
+\shot{l-click}{①点击 PDF 中的句子，②源码中对应的句子被选中，③操作菜单}
+
+\subsection{光标定位到 PDF}
+把光标放在源码中的某一段（\fig{l-locate} ①），点 PDF 工具栏的定位按钮（②），或按 \cmdkey\optkey J（Windows 为 Ctrl+Alt+J），PDF 中对应的位置会高亮几秒（③）。
+
+\shot{l-locate}{①光标所在段落，②定位按钮，③PDF 中的对应位置}
+
+\subsection{英文翻译完成后编译中文 PDF}
+\label{sec:zhpdf}
+中文 PDF 由当前译文组成，用 XeLaTeX 编译，并自动加入中文字体支持（ctex 宏包）。
+\begin{enumerate}
+\item 打开英文论文，等右侧译文全部完成。状态栏显示已翻译、进行中和等待中的段落数。
+\item 在 PDF 页签点\ui{中文}（\fig{l-zh} ①）。第一次切换会自动编译，之后可以点\ui{编译}（②）重新生成。
+\item 尚未翻译的段落会以英文排版，PDF 上方会提示这类段落的数量（③）。
+\end{enumerate}
+中文 PDF 和编译过程中的文件保存在论文文件夹下的隐藏文件夹 \texttt{.biwrite/zh/} 中，不会覆盖你的任何文件。
+
+\shot{l-zh}{①切换到中文 PDF，②编译，③尚未翻译的段落提示}
+
+\subsection{导出中文 PDF 与中文 .tex}
+在中文 PDF 页面（\fig{l-export}）：
+\begin{itemize}
+\item ①\ui{另存 PDF…}保存一份中文 PDF，默认文件名为 \texttt{论文名.zh.pdf}。英文 PDF 用同一个按钮另存。
+\item ②\ui{导出中文 .tex…}得到一个可以单独编译的中文 LaTeX 文件，默认名为 \texttt{论文名\_zh.tex}，用 XeLaTeX 编译即可。
+\item ③\ui{在文件夹中显示}在访达或资源管理器中显示当前 PDF。
+\end{itemize}
+
+\shot{l-export}{①另存 PDF，②导出中文 .tex，③在文件夹中显示}
+
+\subsection{论文模板}
+\label{sec:templates}
+点\ui{新建}打开\ui{论文与模板}窗口（\fig{l-templates}）。
+\begin{itemize}
+\item 内置模板有 VLDB（PVLDB 第 20 卷，2027 年）、ICLR 2027 和 IEEE TII。前两个使用官方模板文件，TII 附带一个简短的论文骨架。
+\item ①\ui{用此模板新建…}：为新论文起一个文件夹名，软件复制模板并打开主文件，切到 PDF 页签即可编译。
+\item ②\ui{打开 LaTeX 文件夹…}：打开已有的论文项目。
+\item ③\ui{导入文件夹…}和\ui{导入 .zip…}：把已有的论文项目保存为自己的模板，显示在\ui{我的模板}中。
+\item ④\ui{导出当前项目…}：把当前论文项目打包成 zip，附带模板描述文件，可以发给他人导入。
+\end{itemize}
+
+\shot{l-templates}{①用模板新建论文，②打开 LaTeX 文件夹，③导入模板，④导出当前项目}
+
+\section{导入已有的中文译文}
+\label{sec:pair}
+如果你已经有一份人工维护的中文版（例如 \texttt{paper.tex} 对应 \texttt{paper\_zh.tex}），BiWrite 可以直接使用它，不再调用接口翻译。两个文件配对后，改英文会更新中文文件中对应的段落，改中文会更新英文文件中对应的段落。
+
+\subsection{自动配对}
+打开英文文件时，软件按文件名查找对应的中文文件，找到并且段落能对上时自动配对。支持两类命名方式。
+\begin{itemize}
+\item 同一文件夹下加后缀：\texttt{paper.tex} 对应 \texttt{paper\_zh.tex}，后缀也可以是 \texttt{.zh}、\texttt{-zh}、\texttt{\_cn}。
+\item 平行的语言文件夹：\texttt{sections\_en/04\_method.tex} 对应 \texttt{sections\_zh/04\_method.tex}，\texttt{en/} 对应 \texttt{zh/}。
+\end{itemize}
+
+\subsection{手动导入}
+\begin{enumerate}
+\item 打开并保存英文文件。
+\item 点标题栏文件名右侧的\ui{导入译文}按钮（\fig{p-import} ①，链条图标）。
+\item 选择中文文件。软件逐段对齐两个文件，标题栏出现中文文件名的标签（\fig{p-paired} ①），状态栏显示对上的段落数（②），右侧直接显示你的中文（③）。
+\end{enumerate}
+对齐按段落类型（正文、标题、图注）、共同出现的引用键、交叉引用、标签、公式、数字和专有名词，以及段落长度进行，图表在两个文件中位置不同也能对上。对不上的段落会单独翻译，但不会写入中文文件。
+
+\shot{p-import}{①导入译文}
+\shot{p-paired}{配对后：①中文文件标签，②对上的段落数，③右侧显示你的中文}
+
+\subsection{配对后的编辑与保存}
+\begin{itemize}
+\item 右侧直接显示你的中文，不产生任何请求。
+\item 改一段英文，只有这一段的中文会以你原来的中文为基础重新修订。
+\item 也可以直接改中文：点右侧段落上的铅笔按钮（\fig{p-edit} ①），写作助手打开\ui{按译文改}，输入框（②）里是这段的中文。改完点\ui{开始}（③），模型按你的中文最小幅度修改英文。结果卡片显示英文的改动（\fig{p-done} ①），点\ui{采纳}（②）写入英文，这段的中文就是你写的那句。
+\item 保存时两个文件都会写入。中文文件里只有改动过的段落被原位替换，其余内容逐字节不变。如果某段译文还在生成，英文文件先保存，中文文件在译文完成后自动写入。
+\item 点切换按钮后，左侧编辑的就是你的中文文件，改动以同样方式写回英文文件。
+\item \ui{另存为}（\fig{p-saveas} ①）会把两个文件都按新名字另存，例如 \texttt{paper-2.tex} 和 \texttt{paper\_zh-2.tex}，原来的两个文件不变。
+\end{itemize}
+
+\shot{p-edit}{①铅笔按钮，②改写这段的中文，③开始}
+\shot{p-done}{①英文的改动，②采纳}
+\shot{p-saveas}{①另存为，②取消配对}
+
+\subsection{配对后的 PDF 与取消配对}
+配对后，PDF 页签中的\ui{中文}直接编译你自己的中文主文件（例如 \texttt{paper\_zh.tex}），而不是由译文临时组成的文档。点击中文 PDF 中的句子，会选中英文源码中对应的段落。点中文文件标签上的叉号（\fig{p-saveas} ②）即取消配对，之后保存不再写入中文文件。
+
+\section{写作助手}
+\label{sec:assist}
+
+\subsection{打开与五种操作}
+点工具栏\ui{助手}或按 \cmdkey J 打开右侧的写作助手（\fig{a-dock}）。它作用于选中的文字，没有选中时作用于光标所在段落（②）。
+\begin{enumerate}
+\item 在①选择操作。
+\begin{description}[leftmargin=1em, style=nextline]
+\item[润色] 按写作规则修改措辞，去除 AI 腔、拼接句子的破折号和分号，保持论断、数字、引用和公式不变。\cmdkey\shiftkey P 直接润色光标所在段落。
+\item[按指令改] 按你写的要求修改，例如\ui{再简洁一些，写明基准测试的个数}。
+\item[提问] 就选中的文字或整篇论文提问，回答下方可以继续追问。
+\item[图表] 按描述生成 LaTeX 图或表，插入在段落之后。
+\item[按译文改] 输入框里预填这一段的译文，改写译文后运行，模型据此修改原文，见第~\ref{sec:pair}~节。
+\end{description}
+\item 在③写要求或问题（润色可以不写）。
+\item ④\ui{上下文}决定发给模型的范围，可选仅目标、含前后段或全文。
+\item ⑤\ui{参照样例}可以添加想模仿其写法的文字片段，或添加图片（例如想参照其风格的图）。
+\item 点\ui{开始}（⑥）。任务在后台运行，你可以继续写作。
+\end{enumerate}
+
+\shot{a-dock}{①操作，②作用对象，③要求，④上下文，⑤参照样例，⑥开始}
+
+\subsection{确认结果}
+任务完成后，结果卡片（\fig{a-result}）显示修改前后的差异（①，删除部分划线，新增部分高亮）、修订稿的对照译文（②）和中英文两份改动说明（③）。点\ui{采纳}（④）把修订写入当前位置，即使你在等待期间继续输入，软件也会找到原文的新位置。如果目标文字本身在等待期间被改过，卡片会提示，点\ui{让模型重新套用}即可。\ui{重新生成}再运行一次，\ui{放弃}丢弃结果，采纳后可以用 \cmdkey Z 撤销。
+
+\shot{a-result}{①差异，②对照译文，③改动说明，④采纳}
+
+\subsection{提问与图表}
+提问的回答显示在卡片中（\fig{a-ask} ①），下方的输入框（②）可以继续追问。图表任务给出可以直接插入的 LaTeX 代码（\fig{a-figure} ①），点\ui{插入}（②）放到段落之后。
+
+\shot{a-ask}{①回答，②追问}
+\shot{a-figure}{①生成的 LaTeX 图表代码，②插入}
+
+\subsection{写作技能}
+助手的规则来自开源写作技能 research-builder（MIT 协议）。软件自带一份，在\ui{设置}的\ui{写作技能}一节（\fig{a-skill}）可以①从 GitHub 更新到最新版本，②改用你自己的技能文件夹，③打开技能的开源仓库。
+
+\shot{a-skill}{①从 GitHub 更新，②使用自己的技能文件夹，③技能仓库}
+
+\section{请求日志}
+\label{sec:log}
+工具栏右侧的日志按钮（\cmdkey\shiftkey L）打开请求日志（\fig{g-log}）。①处可以按类型筛选、暂停记录、清空和打开日志文件。②的表格中每行是一次请求，列出发出的模型、推理强度和服务等级，以及服务端声明的实际值，不一致时会标出。点击一行展开详情（\fig{g-details} ①），包括 HTTP 状态、首字延迟、总耗时、输入与输出 token（含缓存和推理 token）、所用密钥的名称和末尾几位，以及重试和换密钥的说明。日志不记录正文和密钥。
+
+\shot{g-log}{①筛选与操作，②请求列表}
+\shot{g-details}{①一次请求的详情}
+
+\section{版本更新}
+\label{sec:update}
+在\ui{设置}最下方的\ui{版本更新}点\ui{查看可用版本}（\fig{u-list} ①），列出 GitHub 上发布的全部版本及更新说明（②），包括旧版本和预发布的分支构建。选择版本后点\ui{安装}（③），软件下载对应的安装包，并按 GitHub 提供的 SHA-256 校验。macOS 上安装完成后点\ui{立即重启}（\fig{u-done} ①）进入新版本。Windows 上安装程序会在 BiWrite 退出后运行。软件启动时会检查是否有新版本，有则在状态栏提示，这一检查可以关闭。
+
+\shot{u-list}{①查看可用版本，②版本列表，③安装}
+\shot{u-done}{①安装完成后重启}
+
+\section{安装}
+\label{sec:install}
+
+\subsection{macOS}
+从 Releases 页面（\url{https://github.com/zzccppp/biwrite/releases}）下载 \texttt{BiWrite\_\textless 版本\textgreater\_universal.dmg}，它同时支持 Apple 芯片和 Intel 芯片的 Mac，要求 macOS 12 或更高版本。打开 dmg 后，把 BiWrite 拖进\ui{应用程序}文件夹。
+
+安装包没有使用 Apple 签发的开发者证书签名，第一次打开时系统会拦截。放行步骤如下。
+\begin{enumerate}
+\item 双击 BiWrite，系统提示无法验证开发者，点\ui{完成}关闭提示。
+\item 打开\ui{系统设置}，进入\ui{隐私与安全性}。
+\item 页面下方的\ui{安全性}一栏会显示\ui{已阻止"BiWrite"以保护 Mac}，点旁边的\ui{仍要打开}。
+\item 在弹出的确认框里再点\ui{仍要打开}，按要求输入登录密码或使用触控 ID。
+\end{enumerate}
+完成一次之后，以后可以直接打开。熟悉终端的用户也可以执行下面这条命令，效果相同：
+\begin{center}\texttt{xattr -dr com.apple.quarantine /Applications/BiWrite.app}\end{center}
+
+\subsection{Windows}
+下载 \texttt{BiWrite\_\textless 版本\textgreater\_x64-setup.exe}，适用于 64 位 Windows 10 和 Windows 11。安装包同样没有受信任的代码签名，运行时 SmartScreen 会弹出\ui{Windows 已保护你的电脑}。点\ui{更多信息}，再点\ui{仍要运行}，之后按安装向导完成安装。
+
+\subsection{安装 TeX 发行版}
+编译 LaTeX 论文需要本机装有 TeX 发行版。macOS 安装 MacTeX，Windows 安装 TeX Live 或 MiKTeX。BiWrite 会在常见的安装位置自动查找，找到的发行版显示在\ui{设置}的\ui{LaTeX}一节（\fig{i-latex} ①）。装在别处时点\ui{指定文件夹…}（②），选择包含 \texttt{pdflatex} 的文件夹。③控制保存后是否自动编译。
+
+\shot{i-latex}{①找到的 TeX 发行版，②指定文件夹，③保存后自动编译}
+
+\section{配置模型接口}
+\label{sec:provider}
+
+\subsection{支持的接口}
+翻译和写作助手都通过大模型接口完成。BiWrite 支持以下几类接口。
+\begin{itemize}
+\item OpenAI 兼容的 Chat Completions 接口，覆盖 OpenAI、DeepSeek、通义千问、Kimi、OpenRouter，以及 Ollama、LM Studio 等本地服务。
+\item OpenAI Responses 接口，适用于需要推理强度和服务等级参数的推理模型。
+\item Anthropic Messages 接口。
+\end{itemize}
+内置的\ui{模拟接口}不联网，只把每段文字倒序输出，用于在没有密钥时试用界面。
+
+\subsection{添加接口}
+\begin{enumerate}
+\item 打开\ui{设置}（\cmdkey ,）。①是已添加的接口列表，单选按钮选中的接口负责翻译（\fig{c-add}）。
+\item 在②的下拉框选择\ui{+ 添加接口…}，再选一个预设。
+\item 在接口表单（\fig{c-form}）中核对 Base URL、模型名和接口类型（①），按需要选择推理强度和服务等级（②）。
+\item 在密钥框粘贴密钥，点\ui{添加接口}。密钥保存在系统钥匙串（Windows 为凭据管理器）中，之后界面不再显示密钥原文。已有密钥时用\ui{管理号池…}（③）管理。
+\item 点\ui{测试}（④）翻译一句话，确认接口可用。
+\end{enumerate}
+
+\shot{c-add}{①接口列表，②添加接口}
+\shot{c-form}{接口表单：①接口类型与温度，②推理强度与服务等级，③管理号池，④测试}
+
+\subsection{以第三方接口 AnyRouter 为例}
+AnyRouter 是一个兼容 OpenAI Responses 接口的第三方服务。在预设中选择\ui{AnyRouter (GPT-6 Astra)}，预设会填好 Responses 接口、地址 \texttt{https://anyrouter.top/v1}、模型 \texttt{gpt-6-astra}、推理强度\ui{高}、服务等级\ui{Priority}、每个密钥并发 2、失败重试 10 次。粘贴一个或多个密钥后保存即可。其他第三方接口的配置方法相同，按服务商文档填写地址、模型和接口类型。请求日志会显示服务端实际返回的推理强度和服务等级，可以用来核对第三方服务是否按要求执行。
+
+\subsection{号池：多个密钥一起用}
+一个接口可以保存多个密钥，组成号池。在接口表单中点\ui{管理号池…}打开号池窗口（\fig{c-keys}）。
+\begin{itemize}
+\item ①是号池中的密钥。每个密钥可以起一个名字，表格只显示密钥末尾几位、状态和进行中的请求数。每个请求交给当前最空闲的可用密钥，某个密钥被限流时进入冷却，请求自动换到其他密钥，被拒绝的密钥暂停使用。
+\item ②设置每个密钥的并发和失败重试次数。AnyRouter 每个账号同时只允许两个对话，所以设为 2。
+\item ③是粘贴框：每行一个密钥，或者一行名称、下一行密钥，也可以写成\ui{名称: 密钥}，点\ui{追加密钥}加入号池。
+\item ④\ui{从文件导入…}和\ui{导出到文件…}：导出把名称和密钥保存成文本文件，方便换电脑或分享给同事，导入读取这种文件并追加到号池。密钥从钥匙串直接写入文件，不经过界面。文件里是明文密钥，只发给你信任的人。
+\end{itemize}
+
+\shot{c-keys}{号池：①密钥列表，②并发与重试，③粘贴新密钥，④从文件导入、导出到文件}
+
+\subsection{翻译和写作分别用不同接口}
+\ui{设置}中的\ui{写作助手}一节（\fig{c-assistant} ①）可以单独选择润色、修改和提问所用的模型。常见做法是用便宜快速的模型翻译，用更强的模型写作。选\ui{与翻译相同}时，两者使用同一个接口。
+
+\shot{c-assistant}{①写作助手所用的模型}
+
+\subsection{请求节奏}
+\ui{请求节奏}一节（\fig{c-pacing}）控制发往接口的请求量。
+\begin{itemize}
+\item ①每次请求的段落数：默认 1，即一段一个请求。调到 2 到 8 时，多个新段落合并成一次请求，请求数随之减少，适合有频率限制的接口。改动过的段落始终单独发送，以便按原译文做最小修改。
+\item ②并行请求数：同时进行的请求上限。
+\item ③勾选\ui{按号池自动设置}时，并行数等于密钥个数乘以每个密钥的并发。
+\end{itemize}
+
+\shot{c-pacing}{①每次请求的段落数，②并行请求数，③按号池自动设置}
+
+\subsection{界面语言}
+\ui{设置}最上方的\ui{界面语言}（\fig{c-language} ①）可以在 English 和中文之间切换，只改变界面文字，不影响翻译方向。
+
+\shot{c-language}{①界面语言}
+
+\section{快捷键}
+\begin{center}
+\begin{tabularx}{0.82\linewidth}{@{}lX@{}}
+\toprule
+macOS（Windows 用 Ctrl 代替 \cmdkey，Alt 代替 \optkey） & 作用 \\
+\midrule
+\cmdkey O & 打开文件 \\
+\cmdkey S / \cmdkey\shiftkey S & 保存 / 另存为 \\
+\cmdkey B & 编译当前 PDF \\
+\cmdkey\optkey J & 在 PDF 中定位光标 \\
+\cmdkey J & 打开或关闭写作助手 \\
+\cmdkey\shiftkey P & 润色光标所在段落 \\
+\cmdkey K & 聚焦写作助手的输入框 \\
+\cmdkey , & 打开设置 \\
+\cmdkey\shiftkey L & 打开请求日志 \\
+\cmdkey F & 在源码中查找和替换 \\
+\cmdkey Z & 撤销（包括采纳的修订） \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{常见问题}
+
+\paragraph{提示没有找到 TeX 发行版。}安装 MacTeX、TeX Live 或 MiKTeX 后，在 PDF 页签点\ui{重新检测}。装在非默认位置时，在\ui{设置}的\ui{LaTeX}一节指定文件夹。
+
+\paragraph{编译失败或 PDF 不是最新的。}看 PDF 上方的问题列表，点击错误跳到源码行。没有日志信息的失败可以展开\ui{控制台输出}查看工具输出。编译超过 5 分钟会自动停止。
+
+\paragraph{点击 PDF 没有反应。}由 BiWrite 编译出的 PDF 都带有 SyncTeX 信息。点在图片或空白处时，菜单会提示没有对应的源码。
+
+\paragraph{切换语言按钮一直在等待。}说明还有段落在翻译或翻译失败。翻译失败的段落可以在右侧点\ui{重试}，或者再点一次切换按钮，保留原文直接切换。
+
+\paragraph{第三方接口经常限流。}在号池中加入多个密钥，把\ui{每个密钥的并发}设成服务商允许的数值，把\ui{每次请求的段落数}调大，并适当提高\ui{失败重试次数}。请求日志会显示每次限流和换密钥的经过。
+
+\paragraph{导入中文文件时提示段落对不上。}两个文件中能对上的段落少于一半时不会配对。检查选的是否是同一篇文档的两种语言版本。
+
+\paragraph{数据保存在哪里。}翻译缓存位于应用数据文件夹中的 \texttt{cache.sqlite3}，可以在\ui{设置}的\ui{翻译缓存}一节查看大小和清空。密钥只保存在系统钥匙串中。
+
+\end{document}

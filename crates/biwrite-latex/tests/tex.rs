@@ -209,10 +209,17 @@ async fn xelatex_writes_a_pdf_despite_errors() {
         "\\documentclass{article}\n\\usepackage{graphicx}\n\\usepackage[UTF8]{ctex}\n\\begin{document}\n中文段落。\n\\includegraphics{missing.pdf}\n\\end{document}\n",
     )
     .unwrap();
-    let built = compile(&tc, &job(&dir, "main.tex", Engine::Xelatex)).await.unwrap();
+    let built = compile(&tc, &job(&dir, "main.tex", Engine::Xelatex))
+        .await
+        .unwrap();
     assert_eq!(built.outcome, Outcome::Errors, "{}", built.output);
     assert!(built.pdf.is_some());
-    assert!(built.issues.iter().any(|i| i.severity == Severity::Error && i.line == Some(6)));
+    assert!(
+        built
+            .issues
+            .iter()
+            .any(|i| i.severity == Severity::Error && i.line == Some(6))
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

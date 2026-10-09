@@ -409,7 +409,8 @@ async fn anyrouter_revises_english_from_edited_chinese() {
     )
     .unwrap();
     let target = "We evaluate the method on four public datasets and report the mean accuracy over five runs \\cite{smith2020}.";
-    let new_chinese = "我们在六个公开数据集上评测该方法，并报告十次运行的平均准确率 \\cite{smith2020}。";
+    let new_chinese =
+        "我们在六个公开数据集上评测该方法，并报告十次运行的平均准确率 \\cite{smith2020}。";
     let prompt = assist::build(
         &assist::Request {
             action: Action::Mirror,
@@ -440,7 +441,12 @@ async fn anyrouter_revises_english_from_edited_chinese() {
             Err(e) => panic!("{e}"),
         }
     }
-    let answer = assist::parse(Action::Mirror, &out.expect("an answer").text, &prompt.protector).unwrap();
+    let answer = assist::parse(
+        Action::Mirror,
+        &out.expect("an answer").text,
+        &prompt.protector,
+    )
+    .unwrap();
     let revision = answer.revision.unwrap();
     println!("revision: {revision}");
     println!("changes_zh: {:?}", answer.changes_zh);

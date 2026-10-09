@@ -395,6 +395,11 @@ export const messages = {
     zh: "从模板新建论文、打开 LaTeX 文件夹、管理模板",
   },
   "toolbar.saveAs": { en: "Save As", zh: "另存为" },
+  "toolbar.help": { en: "Guide", zh: "说明书" },
+  "toolbar.helpTitle": {
+    en: "The user guide (PDF), in the interface language",
+    zh: "使用说明书（PDF），语言跟随界面",
+  },
   "toolbar.saveAsTitle": {
     en: "Save under a new name ({mod}⇧S). A paired translation is saved under the matching new name, and the old files stay as they were.",
     zh: "以新文件名保存（{mod}⇧S）。配对的译文文件按对应的新名字一起另存，原来的文件保持不变。",

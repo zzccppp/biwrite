@@ -47,7 +47,22 @@ This note collects open questions about whether the same idea transfers to graph
 
 How many examples per class are needed before accuracy saturates? Early results suggest that three to five are enough on citation graphs.`;
 
+/** The sample paper's blocks, and the same blocks in Chinese (for the swapped view). */
+const EN_BLOCKS = PAPER.match(/[^\n]+(?:\n[^\n]+)*/g) ?? [];
+
+function chineseText(): string {
+  const body = PAPER.indexOf("\\begin{document}");
+  let at = 0;
+  return EN_BLOCKS.map((b) => {
+    const from = PAPER.indexOf(b, at);
+    at = from + b.length;
+    const kind = latexKind(b, body >= 0 && from < body);
+    return kind.type === "paragraph" ? (sampleChinese(b) ?? b) : b;
+  }).join("\n\n");
+}
+
 const state = {
+  direction: "en-zh" as "en-zh" | "zh-en",
   text: LATEX ? PAPER : SAMPLE,
   revision: 1,
   version: 1,
@@ -172,11 +187,16 @@ function snapshot(full = true): Snapshot {
   const states: SegmentState[] = segs.map((s) => {
     const source = state.text.slice(s.from, s.to);
     const skipped = s.kind.type === "skipped";
+    const index = segs.indexOf(s);
+    const shown =
+      state.direction === "zh-en"
+        ? (EN_BLOCKS[index] ?? source)
+        : ((LATEX ? sampleChinese(source) : null) ?? fakeChinese(source));
     return {
       id: s.id,
       version: state.version++,
       status: skipped ? "skipped" : "translated",
-      text: skipped ? null : ((LATEX ? sampleChinese(source) : null) ?? fakeChinese(source)),
+      text: skipped ? null : shown,
       partial: false,
       error: null,
     };
@@ -184,7 +204,7 @@ function snapshot(full = true): Snapshot {
   return {
     revision: state.revision++,
     mode: LATEX ? "latex" : "plain",
-    direction: "en-zh",
+    direction: state.direction,
     full,
     layout: segs,
     states,
@@ -401,7 +421,11 @@ const handlers: Record<string, (args: Args) => unknown> = {
   write_mirror: () => ({ name: "paper_zh.tex", written: true, pending: 0, changed: 1 }),
   export_api_keys: () => "/Users/me/Desktop/AnyRouter-keys.txt",
   import_api_keys: () => state.settings,
-  swap_languages: () => session(),
+  swap_languages: () => {
+    state.direction = state.direction === "en-zh" ? "zh-en" : "en-zh";
+    state.text = state.direction === "zh-en" && LATEX ? chineseText() : LATEX ? PAPER : SAMPLE;
+    return session();
+  },
   latex_pdf: async (a) => (await fetch(a.lang === "zh" ? "/dev/sample-zh.pdf" : "/dev/sample.pdf")).arrayBuffer(),
   latex_reveal_pdf: () => null,
   latex_save_pdf: () => "/Users/me/papers/gnn-icl/paper.pdf",
@@ -487,6 +511,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     missing: [],
   }),
   open_link: () => null,
+  open_manual: () => null,
   get_session: () => session(),
   update_document: (a) => {
     state.text = String(a.text);
@@ -543,12 +568,18 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return handlers.get_request_log(a);
   },
   reveal_request_log: () => null,
-  get_glossary: () => [],
+  get_glossary: () => [
+    { term: "in-context learning", translation: "上下文学习" },
+    { term: "prompt graph", translation: "提示图" },
+    { term: "message passing", translation: "消息传递" },
+    { term: "GNN", translation: null },
+  ],
+  save_glossary: (a) => a.entries,
 };
 
 /** Install the stand-in backend. Unknown commands fail like a missing Rust command. */
 export function installMockBackend(): void {
-  const names = ["qzkinharbin", "qzkinhit", "qzkinjsj", "qzkinlss", "qzkinmdc", "qzkinxj"];
+  const names = ["main", "lab", "backup-1", "backup-2", "team", "spare"];
   POOL.forEach((k, i) => (state.settings.providers[1].keyNames[k.fingerprint] = names[i]));
   seedRecords();
   mockWindows("main");
