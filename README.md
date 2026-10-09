@@ -23,6 +23,7 @@ the toolbar opens it too.
 * [What it does](#what-it-does)
 * [Install](#install)
 * [Set up a model provider](#set-up-a-model-provider)
+* [Bilingual editing](#bilingual-editing)
 * [LaTeX papers](#latex-papers)
 * [An existing Chinese version](#an-existing-chinese-version)
 * [Writing assistant](#writing-assistant)
@@ -36,15 +37,15 @@ the toolbar opens it too.
 
 | Area | What you get |
 |---|---|
-| Bilingual editing | English on the left, Chinese on the right (or the other way round with `EN ⇄ 中`). Only edited paragraphs are translated again, revised from their previous translation. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back byte for byte. |
-| LaTeX | Compiles with your TeX distribution (latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX, as the project's `latexmkrc` or packages ask). The PDF shows in the right pane, a click in the PDF selects the sentence in the source, `⌘⌥J` shows the cursor's place in the PDF, and problems link to their lines. A Chinese PDF is built from the translation. |
-| Your own Chinese version | `paper.tex` with `paper_zh.tex`, or `sections_en/` with `sections_zh/`, pair up paragraph by paragraph. Your Chinese becomes the translation with no requests, and saving writes each edited paragraph into the other file in place. |
-| Writing assistant | Polish, edit by instruction, ask, write figures or tables, or rewrite a paragraph's translation and let the paragraph follow. Jobs run in the background, results come as a diff with the Chinese, and you decide what is applied. |
-| Templates | VLDB (PVLDB 2027), ICLR 2027 and IEEE TII built in. Import a project folder or a `.zip` as a template, export a project as one, open any LaTeX folder. |
-| Model providers | OpenAI-compatible Chat Completions (OpenAI, DeepSeek, Qwen, Kimi, OpenRouter, local servers such as Ollama), the OpenAI Responses API and the Anthropic Messages API, with presets, third-party services such as AnyRouter among them. Translation and the assistant can use different providers. |
-| Key pools | Many named keys per provider, used evenly with a per-key limit, failover on rate limits, import and export to a file. |
-| Request log | Every model request with the model, reasoning effort and service tier that were sent and the ones the server declared, timings, tokens and the key used. |
-| Updates | Any GitHub release can be installed from inside the app, pre-releases (branch builds) and older versions included. |
+| [Bilingual editing](#bilingual-editing) | English on the left, Chinese on the right (or the other way round with `EN ⇄ 中`). Only edited paragraphs are translated again, revised from their previous translation. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back byte for byte. |
+| [LaTeX](#latex-papers) | Compiles with your TeX distribution (latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX, as the project's `latexmkrc` or packages ask). The PDF shows in the right pane, a click in the PDF selects the sentence in the source, `⌘⌥J` shows the cursor's place in the PDF, and problems link to their lines. A Chinese PDF is built from the translation. |
+| [Your own Chinese version](#an-existing-chinese-version) | `paper.tex` with `paper_zh.tex`, or `sections_en/` with `sections_zh/`, pair up paragraph by paragraph. Your Chinese becomes the translation with no requests, and saving writes each edited paragraph into the other file in place. |
+| [Writing assistant](#writing-assistant) | Polish, edit by instruction, ask, write figures or tables, or rewrite a paragraph's translation and let the paragraph follow. Jobs run in the background, results come as a diff with the Chinese, and you decide what is applied. |
+| [Templates](#templates) | VLDB (PVLDB 2027), ICLR 2027 and IEEE TII built in. Import a project folder or a `.zip` as a template, export a project as one, open any LaTeX folder. |
+| [Model providers](#set-up-a-model-provider) | OpenAI-compatible Chat Completions (OpenAI, DeepSeek, Qwen, Kimi, OpenRouter, local servers such as Ollama), the OpenAI Responses API and the Anthropic Messages API, with presets, third-party services such as AnyRouter among them. Translation and the assistant can use different providers. |
+| [Key pools](#key-pools-and-third-party-apis) | Many named keys per provider, used evenly with a per-key limit, failover on rate limits, import and export to a file. |
+| [Request log](#request-log) | Every model request with the model, reasoning effort and service tier that were sent and the ones the server declared, timings, tokens and the key used. |
+| [Updates](#updates) | Any GitHub release can be installed from inside the app, pre-releases (branch builds) and older versions included. |
 
 ## Install
 
@@ -84,6 +85,25 @@ elsewhere can be chosen in Settings, under *LaTeX*.
    (keys × requests per key) or a number you set.
 6. *Language* switches the interface between English and Chinese.
 
+## Bilingual editing
+
+* **Open** (`⌘O`) a `.tex`, `.md` or `.txt` file. Each block on the right is
+  one paragraph, heading or caption of the source. A click on a block moves
+  the cursor to its paragraph and highlights it on both sides.
+* 0.8 seconds after you stop typing, the paragraphs you changed are
+  translated again, revised from their previous translation and streamed as
+  they arrive. Math, citations, references, labels, URLs and comments reach
+  the model as placeholders and come back exactly as they were.
+* `EN ⇄ 中` puts the Chinese on the left to edit, with the English on the
+  right. Only the Chinese paragraphs you change get new English, and the
+  other paragraphs keep your English word for word when you swap back. The
+  swap waits for paragraphs still being translated, and a second press swaps
+  at once with those paragraphs as they are.
+* **Save** (`⌘S`) overwrites the file. While you edit the Chinese, it writes
+  the English composed from the translations. **Save As** (`⌘⇧S`) suggests a
+  name not taken yet, such as `paper-2.tex`, and leaves the original as it
+  was.
+
 ## LaTeX papers
 
 ![A click in the PDF selects the sentence in the source](docs/images/en/pdf-click.jpg)
@@ -104,7 +124,9 @@ elsewhere can be chosen in Settings, under *LaTeX*.
   from the translation with XeLaTeX and `ctex` (paragraphs not translated
   yet stay English). *Save PDF as…* and *Export Chinese .tex…* save copies.
 
-**Templates.** **New** lists the built-in templates (official PVLDB and ICLR
+### Templates
+
+**New** lists the built-in templates (official PVLDB and ICLR
 2027 files, the IEEE TII class with a short skeleton) and your own. *New
 paper…* copies one into a folder you name and opens it. *Import folder…* and
 *Import .zip…* add your own templates, *Export this project…* zips the open
@@ -126,8 +148,7 @@ translating:
   each changed paragraph is replaced in place. The rest of the Chinese file
   stays byte for byte.
 * `EN ⇄ 中` swaps to editing the Chinese file, with the English following
-  the same way. The swap waits for paragraphs still being translated, and a
-  second press swaps at once.
+  the same way.
 * *Save As* saves both files under the new name (`paper-2.tex` and
   `paper_zh-2.tex`) and leaves the originals as they were.
 
