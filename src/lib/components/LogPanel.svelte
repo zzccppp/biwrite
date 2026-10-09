@@ -1,17 +1,9 @@
 <script lang="ts">
+  import { count, type MessageKey, t } from "../i18n.svelte";
   import { errorMessage, logIpc } from "../ipc";
-  import {
-    compare,
-    differs,
-    formatClock,
-    formatCount,
-    formatDuration,
-    STATE_LABELS,
-    summarize,
-    type Comparison,
-  } from "../logFormat";
+  import { compare, differs, formatClock, formatCount, formatDuration, summarize, type Comparison } from "../logFormat";
   import type { RequestLogStore } from "../requestLog.svelte";
-  import type { RequestRecord } from "../types";
+  import type { RecordState, RequestRecord } from "../types";
 
   interface Props {
     log: RequestLogStore;
@@ -71,20 +63,41 @@
 
   /** Label of the declared side of a comparison. */
   function declaredLabel(c: Comparison, declared: string | null): string {
-    if (c === "not_returned") return "not returned";
+    if (c === "not_returned") return t("log.notReturned");
     return declared ?? "";
+  }
+
+  const STATE_LABEL: Record<RecordState, MessageKey> = {
+    in_flight: "log.state.in_flight",
+    ok: "log.state.ok",
+    error: "log.state.error",
+    cancelled: "log.state.cancelled",
+  };
+
+  const PURPOSE_LABEL: Record<string, MessageKey | undefined> = {
+    translate: "log.purpose.translate",
+    polish: "log.purpose.polish",
+    edit: "log.purpose.edit",
+    ask: "log.purpose.ask",
+    figure: "log.purpose.figure",
+  };
+
+  /** A known purpose in the interface language, any other as recorded. */
+  function purposeLabel(purpose: string): string {
+    const key = PURPOSE_LABEL[purpose];
+    return key ? t(key) : purpose;
   }
 
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape") onclose();
   }
 
-  const filters: { value: Filter; label: string }[] = [
-    { value: "all", label: "All" },
-    { value: "translate", label: "Translation" },
-    { value: "assistant", label: "Assistant" },
-    { value: "differs", label: "Differences" },
-    { value: "errors", label: "Errors" },
+  const filters: { value: Filter; label: MessageKey }[] = [
+    { value: "all", label: "log.filter.all" },
+    { value: "translate", label: "log.filter.translate" },
+    { value: "assistant", label: "log.filter.assistant" },
+    { value: "differs", label: "log.filter.differs" },
+    { value: "errors", label: "log.filter.errors" },
   ];
 </script>
 
@@ -95,12 +108,17 @@
   <span
     class="pair"
     data-cmp={c}
-    title={c === "absent" ? "" : `asked for ${requested ?? "(not sent)"} · declared ${declared ?? "(not returned)"}`}
+    title={c === "absent"
+      ? ""
+      : t("log.asked", {
+          requested: requested ?? t("log.notSentParen"),
+          declared: declared ?? t("log.notReturnedParen"),
+        })}
   >
     {#if c === "absent"}
       <span class="faint">—</span>
     {:else}
-      <span class="req">{requested ?? "not sent"}</span>
+      <span class="req">{requested ?? t("log.notSent")}</span>
       {#if c !== "match"}
         <span class="arrow" aria-hidden="true">→</span>
         <span class="decl">{declaredLabel(c, declared)}</span>
@@ -111,27 +129,40 @@
 
 {#snippet details(r: RequestRecord)}
   <dl class="details">
-    <dt>Endpoint</dt>
+    <dt>{t("log.endpoint")}</dt>
     <dd class="mono">{r.endpoint || "—"} <span class="faint">({r.wire})</span></dd>
-    <dt>Key</dt>
-    <dd class="mono">{r.key ? `#${r.key.number} of ${r.key.count} · …${r.key.tail}` : "—"}</dd>
-    <dt>Status</dt>
-    <dd>{r.httpStatus ?? "no response"} · {STATE_LABELS[r.state]}</dd>
-    <dt>Timing</dt>
-    <dd>first text after {formatDuration(r.firstTokenMs)} · total {formatDuration(r.durationMs)}</dd>
-    <dt>Size</dt>
-    <dd>{r.promptChars.toLocaleString()} characters sent · {r.outputChars.toLocaleString()} received</dd>
-    <dt>Tokens</dt>
+    <dt>{t("log.key")}</dt>
+    <dd class="mono">
+      {r.key ? t("log.keyValue", { n: r.key.number, count: r.key.count, tail: r.key.tail }) : "—"}
+    </dd>
+    <dt>{t("log.col.status")}</dt>
+    <dd>{r.httpStatus ?? t("log.noResponse")} · {t(STATE_LABEL[r.state])}</dd>
+    <dt>{t("log.timing")}</dt>
     <dd>
-      in {formatCount(r.usage.inputTokens)} (cached {formatCount(r.usage.cachedTokens)}) · out
-      {formatCount(r.usage.outputTokens)} (reasoning {formatCount(r.usage.reasoningTokens)})
+      {t("log.timingValue", { first: formatDuration(r.firstTokenMs), total: formatDuration(r.durationMs) })}
+    </dd>
+    <dt>{t("log.size")}</dt>
+    <dd>
+      {count(r.promptChars, "log.sizeValue.one", "log.sizeValue.many", {
+        sent: r.promptChars.toLocaleString(),
+        received: r.outputChars.toLocaleString(),
+      })}
+    </dd>
+    <dt>{t("log.tokens")}</dt>
+    <dd>
+      {t("log.tokensValue", {
+        in: formatCount(r.usage.inputTokens),
+        cached: formatCount(r.usage.cachedTokens),
+        out: formatCount(r.usage.outputTokens),
+        reasoning: formatCount(r.usage.reasoningTokens),
+      })}
     </dd>
     {#if r.error}
-      <dt>Error</dt>
+      <dt>{t("log.error")}</dt>
       <dd class="err">{r.error}</dd>
     {/if}
     {#each r.notes as note, i (i)}
-      <dt>{i === 0 ? "Notes" : ""}</dt>
+      <dt>{i === 0 ? t("log.notes") : ""}</dt>
       <dd>{note}</dd>
     {/each}
   </dl>
@@ -140,14 +171,17 @@
 <div class="scrim" role="presentation" onclick={onclose}></div>
 <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="log-title">
   <header>
-    <h2 id="log-title" class="smallcaps">Requests</h2>
+    <h2 id="log-title" class="smallcaps">{t("log.title")}</h2>
     <span class="count">
-      <span>{stats.total} recorded</span>
-      {#if stats.inFlight}<span class="dot">·</span><span class="busy">{stats.inFlight} in flight</span>{/if}
-      {#if stats.differs}<span class="dot">·</span><span class="seal">{stats.differs} differ</span>{/if}
-      {#if stats.errors}<span class="dot">·</span><span class="err">{stats.errors} failed</span>{/if}
+      <span>{t("log.recorded", { n: stats.total })}</span>
+      {#if stats.inFlight}<span class="dot">·</span><span class="busy">{t("log.inFlight", { n: stats.inFlight })}</span
+        >{/if}
+      {#if stats.differs}<span class="dot">·</span><span class="seal"
+          >{count(stats.differs, "log.differ.one", "log.differ.many")}</span
+        >{/if}
+      {#if stats.errors}<span class="dot">·</span><span class="err">{t("log.failed", { n: stats.errors })}</span>{/if}
     </span>
-    <button class="close" onclick={onclose} aria-label="Close the request log">✕</button>
+    <button class="close" onclick={onclose} aria-label={t("log.close")}>✕</button>
   </header>
 
   <div class="tools row">
@@ -156,45 +190,49 @@
       class:on={log.settings.enabled}
       onclick={toggleRecording}
       aria-pressed={log.settings.enabled}
-      title={log.settings.enabled
-        ? "Pause: new requests are not recorded (requests still run)"
-        : "Resume recording new requests"}
+      title={log.settings.enabled ? t("log.pauseTitle") : t("log.resumeTitle")}
     >
-      <span class="led" aria-hidden="true"></span>{log.settings.enabled ? "Recording" : "Paused"}
+      <span class="led" aria-hidden="true"></span>{log.settings.enabled ? t("log.recording") : t("log.paused")}
     </button>
-    <label class="check" title="Append finished records to requests.jsonl (metadata only)">
+    <label class="check" title={t("log.fileTitle")}>
       <input type="checkbox" checked={log.settings.persist} onchange={togglePersist} />
-      <span>Log file</span>
+      <span>{t("log.file")}</span>
     </label>
     <span class="sep" aria-hidden="true"></span>
-    <div class="filters" role="radiogroup" aria-label="Show">
+    <div class="filters" role="radiogroup" aria-label={t("log.show")}>
       {#each filters as f (f.value)}
         <button
           class="mode smallcaps"
           class:on={filter === f.value}
           role="radio"
           aria-checked={filter === f.value}
-          onclick={() => (filter = f.value)}>{f.label}</button
+          onclick={() => (filter = f.value)}>{t(f.label)}</button
         >
       {/each}
     </div>
-    <input class="input search" type="search" placeholder="Search…" bind:value={query} aria-label="Search requests" />
+    <input
+      class="input search"
+      type="search"
+      placeholder={t("log.search")}
+      bind:value={query}
+      aria-label={t("log.searchLabel")}
+    />
     <span class="spacer"></span>
-    <button class="btn" onclick={clear} disabled={log.list.length === 0}>Clear</button>
-    <button class="btn" onclick={reveal} disabled={!log.file}>Show file</button>
+    <button class="btn" onclick={clear} disabled={log.list.length === 0}>{t("log.clear")}</button>
+    <button class="btn" onclick={reveal} disabled={!log.file}>{t("log.reveal")}</button>
   </div>
 
   <div class="table">
     <div class="head smallcaps" aria-hidden="true">
-      <span>Time</span>
-      <span>For</span>
-      <span>Provider · key</span>
-      <span>Model</span>
-      <span>Effort</span>
-      <span>Tier</span>
-      <span>Status</span>
-      <span class="num">Took</span>
-      <span class="num">Tokens in / out</span>
+      <span>{t("log.col.time")}</span>
+      <span>{t("log.col.for")}</span>
+      <span>{t("log.col.provider")}</span>
+      <span>{t("log.col.model")}</span>
+      <span>{t("log.col.effort")}</span>
+      <span>{t("log.col.tier")}</span>
+      <span>{t("log.col.status")}</span>
+      <span class="num">{t("log.col.took")}</span>
+      <span class="num">{t("log.col.tokens")}</span>
     </div>
     {#each shown as r (r.id)}
       <div class="entry" class:open={open === r.id} data-state={r.state}>
@@ -202,11 +240,16 @@
           class="line"
           onclick={() => (open = open === r.id ? null : r.id)}
           aria-expanded={open === r.id}
-          title="Show details"
+          title={t("log.showDetails")}
         >
           <span class="mono faint">{formatClock(r.startedAt)}</span>
-          <span class="smallcaps purpose">{r.purpose}</span>
-          <span class="provider" title={r.key ? `${r.provider} · key #${r.key.number} of ${r.key.count} (…${r.key.tail})` : r.provider}>
+          <span class="smallcaps purpose">{purposeLabel(r.purpose)}</span>
+          <span
+            class="provider"
+            title={r.key
+              ? t("log.providerKey", { provider: r.provider, n: r.key.number, count: r.key.count, tail: r.key.tail })
+              : r.provider}
+          >
             {#if r.key && r.key.count > 1}<span class="keyno mono">#{r.key.number}</span>{/if}{r.provider}
           </span>
           {@render pair(r, r.request.model, r.response.model)}
@@ -217,13 +260,13 @@
               <span class="spinner" aria-hidden="true"></span>
             {/if}
             <span class="mono">{r.httpStatus ?? ""}</span>
-            <span class="smallcaps">{STATE_LABELS[r.state]}</span>
+            <span class="smallcaps">{t(STATE_LABEL[r.state])}</span>
           </span>
           <span class="num mono">{formatDuration(r.durationMs)}</span>
           <span class="num mono">
             {formatCount(r.usage.inputTokens)} / {formatCount(r.usage.outputTokens)}{#if r.usage.reasoningTokens}<span
                 class="faint"
-                title="reasoning tokens"> ({formatCount(r.usage.reasoningTokens)} r)</span
+                title={t("log.reasoningTokens")}> {t("log.reasoningShort", { n: formatCount(r.usage.reasoningTokens) })}</span
               >{/if}
           </span>
         </button>
@@ -234,11 +277,9 @@
     {:else}
       <p class="empty">
         {#if log.list.length === 0}
-          {log.settings.enabled
-            ? "No requests yet. Translations and assistant requests appear here as they are sent."
-            : "Recording is paused. Requests still run but are not recorded."}
+          {log.settings.enabled ? t("log.empty") : t("log.emptyPaused")}
         {:else}
-          No request matches.
+          {t("log.noMatch")}
         {/if}
       </p>
     {/each}
@@ -249,9 +290,13 @@
       {#if error}
         {error}
       {:else}
-        Mean {formatDuration(stats.meanMs)} · {formatCount(stats.inputTokens)} in ({formatCount(stats.cachedTokens)} cached) ·
-        {formatCount(stats.outputTokens)} out ({formatCount(stats.reasoningTokens)} reasoning). Declared values are what the
-        server reports, which can differ from what actually ran. Records hold no text and no keys.
+        {t("log.summary", {
+          mean: formatDuration(stats.meanMs),
+          in: formatCount(stats.inputTokens),
+          cached: formatCount(stats.cachedTokens),
+          out: formatCount(stats.outputTokens),
+          reasoning: formatCount(stats.reasoningTokens),
+        })}
       {/if}
     </p>
   </footer>

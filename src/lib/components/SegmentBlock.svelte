@@ -1,8 +1,8 @@
 <script lang="ts">
   import "katex/dist/katex.min.css";
+  import { type MessageKey, t } from "../i18n.svelte";
   import { type Macros, renderToHtml } from "../math";
-  import type { Mode, SegmentLayout, SegmentState } from "../types";
-  import { SKIP_LABELS } from "../types";
+  import type { Mode, SegmentLayout, SegmentState, SkipReason } from "../types";
 
   interface Props {
     segment: SegmentLayout;
@@ -57,14 +57,26 @@
   const isMath = $derived(kind.type === "skipped" && kind.reason === "math");
   const mathHtml = $derived(isMath && expanded && source ? renderToHtml(source.trim(), mode, macros) : "");
 
-  const statusLabel: Record<string, string> = {
-    translated: "translated",
-    edited: "edited — will retranslate",
-    queued: "queued",
-    stale: "stale — auto-translate paused",
-    translating: "translating",
-    error: "error",
-    skipped: "not translated",
+  const statusLabel: Record<typeof status, MessageKey> = {
+    translated: "segment.status.translated",
+    edited: "segment.status.edited",
+    queued: "segment.status.queued",
+    stale: "segment.status.stale",
+    translating: "segment.status.translating",
+    error: "segment.status.error",
+    skipped: "segment.status.skipped",
+  };
+
+  const skipLabel: Record<SkipReason, MessageKey> = {
+    front_matter: "skip.front_matter",
+    code: "skip.code",
+    rule: "skip.rule",
+    preamble: "skip.preamble",
+    comment: "skip.comment",
+    math: "skip.math",
+    table: "skip.table",
+    float: "skip.float",
+    markup: "skip.markup",
   };
 
   function onclick(): void {
@@ -95,7 +107,7 @@
   data-level={headingLevel || undefined}
   role="button"
   tabindex="-1"
-  title={statusLabel[status]}
+  title={t(statusLabel[status])}
   {onclick}
   {onkeydown}
 >
@@ -108,12 +120,12 @@
           class="toggle"
           class:open={expanded}
           aria-expanded={expanded}
-          aria-label={expanded ? "Collapse equation" : "Show equation"}
-          title={expanded ? "Collapse" : "Show the equation"}
+          aria-label={expanded ? t("segment.collapseEquation") : t("segment.showEquation")}
+          title={expanded ? t("segment.collapse") : t("segment.showEquationTitle")}
           onclick={(e) => (e.stopPropagation(), ontoggle(segment.id))}>▸</button
         >
       {/if}
-      <span class="skip-label smallcaps">{SKIP_LABELS[kind.reason]}</span>
+      <span class="skip-label smallcaps">{t(skipLabel[kind.reason])}</span>
       <span class="skip-preview">{preview}</span>
     </div>
     {#if mathHtml}
@@ -126,6 +138,7 @@
         class:en={lang === "en"}
         class:heading={headingLevel > 0}
         class:caption={kind.type === "caption"}
+        data-label={kind.type === "caption" ? t("segment.caption") : undefined}
         lang={lang === "en" ? "en" : "zh-CN"}
       >
         {@html html}{#if streaming}<span class="caret" aria-hidden="true"></span>{/if}
@@ -133,16 +146,16 @@
     {:else if status === "error"}
       <div class="zh empty">—</div>
     {:else}
-      <div class="skeleton" aria-label="waiting for translation">
+      <div class="skeleton" aria-label={t("segment.waiting")}>
         <span style="width: 92%"></span><span style="width: 74%"></span>
       </div>
     {/if}
     {#if status === "error"}
       <div class="error">
-        <span class="smallcaps">failed</span>
-        <span class="error-msg">{state?.error ?? "unknown error"}</span>
+        <span class="smallcaps">{t("segment.failed")}</span>
+        <span class="error-msg">{state?.error ?? t("segment.unknownError")}</span>
         <button class="retry smallcaps" onclick={(e) => (e.stopPropagation(), onretry(segment.id))}>
-          retry
+          {t("segment.retry")}
         </button>
       </div>
     {/if}
@@ -236,7 +249,7 @@
     color: var(--ink-2);
   }
   .zh.caption::before {
-    content: "caption";
+    content: attr(data-label);
     display: block;
     font-family: var(--font-ui);
     font-variant-caps: all-small-caps;

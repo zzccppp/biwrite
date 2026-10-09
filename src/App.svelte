@@ -14,7 +14,7 @@
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TranslationPane from "./lib/components/TranslationPane.svelte";
   import { SourceEditor } from "./lib/editor/editor";
-  import { t } from "./lib/i18n.svelte";
+  import { count, t } from "./lib/i18n.svelte";
   import { assistIpc, errorMessage, ipc, latexIpc, logIpc, settingsIpc, subscribe, updateIpc } from "./lib/ipc";
   import { LatexStore } from "./lib/latex.svelte";
   import { RequestLogStore } from "./lib/requestLog.svelte";
@@ -329,7 +329,7 @@
       savedDoc = doc;
       session.path = saved.path;
       session.name = saved.name;
-      session.flash(`Saved ${saved.name}`);
+      session.flash(t("doc.saved", { name: saved.name }));
       // Rust marked the file clean; re-report if the user kept typing meanwhile.
       session.dirty = !editor.doc.eq(doc);
       if (session.dirty) setDirty(true);
@@ -355,8 +355,8 @@
       if (!done) return;
       session.flash(
         done.missing > 0
-          ? `Exported ${done.name} — ${done.missing} paragraph${done.missing === 1 ? " is" : "s are"} not translated yet.`
-          : `Exported ${done.name}`,
+          ? count(done.missing, "doc.exportedMissing.one", "doc.exportedMissing.many", { name: done.name })
+          : t("doc.exported", { name: done.name }),
       );
     } catch (err) {
       fail(err);
@@ -387,7 +387,7 @@
       const c = session.counts;
       const waiting = c.pending + c.translating + c.error;
       if (waiting > 0) {
-        session.flash(`Swapping needs every paragraph translated — ${waiting} not ready yet.`);
+        session.flash(t("doc.swapWaiting", { n: waiting }));
         return;
       }
       // Keep the cursor on the same paragraph across the swap.
@@ -398,11 +398,7 @@
       loadView(view);
       session.restoreExpanded(expanded);
       if (at >= 0 && at < session.index.size) editor.focusAt(session.index.rangeAt(at).from, 120);
-      session.flash(
-        view.snapshot.direction === "zh-en"
-          ? "Editing Chinese — the English on the right is what gets saved."
-          : "Editing English again.",
-      );
+      session.flash(view.snapshot.direction === "zh-en" ? t("doc.editingZh") : t("doc.editingEn"));
     } catch (err) {
       fail(err);
     } finally {
@@ -863,7 +859,7 @@
       class="source"
       data-mode={session.mode}
       data-lang={session.direction === "zh-en" ? "zh" : "en"}
-      aria-label="English source"
+      aria-label={t("pane.source")}
       onpointerenter={drive("left")}
       onwheelcapture={scrollManually("left")}
       onkeydowncapture={drive("left")}

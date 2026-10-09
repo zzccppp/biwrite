@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { t } from "../i18n.svelte";
+
   interface Props {
     /** Fraction of the width given to the left pane. */
     ratio: number;
@@ -51,7 +53,7 @@
   aria-valuemin={MIN * 100}
   aria-valuemax={MAX * 100}
   tabindex="0"
-  title="Drag to resize · double-click to reset"
+  title={t("pane.resize")}
   {onpointerdown}
   {onpointermove}
   {onpointerup}

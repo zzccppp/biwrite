@@ -105,7 +105,7 @@
       {#if addingSample}
         <textarea class="textarea" rows="3" bind:value={sampleDraft} placeholder={t("assist.samplePlaceholder")}
         ></textarea>
-        <div class="row"><button class="btn small" onclick={addSample} disabled={!sampleDraft.trim()}>OK</button></div>
+        <div class="row"><button class="btn small" onclick={addSample} disabled={!sampleDraft.trim()}>{t("common.ok")}</button></div>
       {/if}
       {#if store.samples.length || store.attachments.length}
         <ul class="chips">

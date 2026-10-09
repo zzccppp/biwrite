@@ -32,38 +32,38 @@
     <span class="dot">·</span>
     <span class="smallcaps">{eol}</span>
     {#if !session.autoTranslate}
-      <span class="badge smallcaps">auto-translate paused</span>
+      <span class="badge smallcaps">{t("status.paused")}</span>
     {/if}
   </div>
 
   <div class="mid">
     {#if session.error}
-      <button class="msg error" onclick={ondismisserror} title="Dismiss">{session.error} ✕</button>
+      <button class="msg error" onclick={ondismisserror} title={t("status.dismiss")}>{session.error} ✕</button>
     {:else if session.notice}
       <span class="msg notice">{session.notice}</span>
     {:else}
-      <span>{c.translated} translated</span>
-      {#if c.translating}<span class="dot">·</span><span class="busy">{c.translating} in flight</span>{/if}
-      {#if c.pending}<span class="dot">·</span><span>{c.pending} pending</span>{/if}
-      {#if c.error}<span class="dot">·</span><span class="err">{c.error} failed</span>{/if}
-      {#if c.skipped}<span class="dot">·</span><span class="muted">{c.skipped} skipped</span>{/if}
+      <span>{t("status.translated", { n: c.translated })}</span>
+      {#if c.translating}<span class="dot">·</span><span class="busy">{t("status.inFlight", { n: c.translating })}</span>{/if}
+      {#if c.pending}<span class="dot">·</span><span>{t("status.pending", { n: c.pending })}</span>{/if}
+      {#if c.error}<span class="dot">·</span><span class="err">{t("status.failed", { n: c.error })}</span>{/if}
+      {#if c.skipped}<span class="dot">·</span><span class="muted">{t("status.skipped", { n: c.skipped })}</span>{/if}
     {/if}
   </div>
 
-  <div class="right" title="Session usage">
+  <div class="right" title={t("status.usage")}>
     {#if update}
       <button class="update" onclick={onupdate}>{t("updates.available", { version: update })}</button>
       <span class="dot">·</span>
     {/if}
     {#if provider}<span class="provider">{provider}</span><span class="dot">·</span>{/if}
-    <span>{compact(session.usage.requests)} <span class="smallcaps">req</span></span>
+    <span>{compact(session.usage.requests)} <span class="smallcaps">{t("status.requests")}</span></span>
     <span class="dot">·</span>
     <span
-      >{compact(session.usage.inputTokens)} <span class="smallcaps">in</span> / {compact(session.usage.outputTokens)}
-      <span class="smallcaps">out</span></span
+      >{compact(session.usage.inputTokens)} <span class="smallcaps">{t("status.in")}</span> / {compact(session.usage.outputTokens)}
+      <span class="smallcaps">{t("status.out")}</span></span
     >
     <span class="dot">·</span>
-    <span>{compact(session.usage.cacheHits)} <span class="smallcaps">cached</span></span>
+    <span>{compact(session.usage.cacheHits)} <span class="smallcaps">{t("status.cached")}</span></span>
   </div>
 </footer>
 

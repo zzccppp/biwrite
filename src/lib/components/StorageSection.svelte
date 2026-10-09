@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { count, t } from "../i18n.svelte";
   import { errorMessage, settingsIpc } from "../ipc";
   import type { CacheView, Direction } from "../types";
 
@@ -42,7 +43,7 @@
       const cleared = await settingsIpc.clearCache();
       cache = cleared.cache;
       confirming = false;
-      status = `Deleted ${cleared.removed} cached translation${cleared.removed === 1 ? "" : "s"}.`;
+      status = count(cleared.removed, "storage.deleted.one", "storage.deleted.many");
     });
   }
 
@@ -54,11 +55,11 @@
 </script>
 
 <section>
-  <h3 class="smallcaps">Translation cache</h3>
+  <h3 class="smallcaps">{t("storage.cache")}</h3>
   {#if cache}
     <p class="summary">
-      {cache.entries} translation{cache.entries === 1 ? "" : "s"} · {size(cache.bytes)}
-      {#if !cache.location}<span class="warn"> · temporary (the cache file couldn't be opened)</span>{/if}
+      {count(cache.entries, "storage.entries.one", "storage.entries.many")} · {size(cache.bytes)}
+      {#if !cache.location}<span class="warn"> · {t("storage.temporary")}</span>{/if}
     </p>
     {#if cache.groups.length}
       <table>
@@ -75,9 +76,9 @@
     {/if}
     <div class="row actions">
       {#if confirming}
-        <span class="ask">Delete all {cache.entries} cached translations?</span>
-        <button class="btn" onclick={() => (confirming = false)} disabled={busy}>Cancel</button>
-        <button class="btn danger" onclick={clear} disabled={busy}>Delete</button>
+        <span class="ask">{count(cache.entries, "storage.confirm.one", "storage.confirm.many")}</span>
+        <button class="btn" onclick={() => (confirming = false)} disabled={busy}>{t("common.cancel")}</button>
+        <button class="btn danger" onclick={clear} disabled={busy}>{t("common.delete")}</button>
       {:else}
         <button
           class="btn"
@@ -85,32 +86,29 @@
             status = null;
             confirming = true;
           }}
-          disabled={busy || cache.entries === 0}>Clear cache…</button
+          disabled={busy || cache.entries === 0}>{t("storage.clear")}</button
         >
       {/if}
     </div>
   {:else if !error}
-    <p class="summary">Loading…</p>
+    <p class="summary">{t("common.loading")}</p>
   {/if}
   <p class="hint" class:error={!!error}>
-    {error ??
-      status ??
-      "Shared by all documents. After clearing, paragraphs on screen keep their translation; anything else is translated again (new requests) when needed."}
+    {error ?? status ?? t("storage.cacheHint")}
   </p>
   {#if cache?.location}<p class="path" title={cache.location}>{cache.location}</p>{/if}
 </section>
 
 <section>
-  <h3 class="smallcaps">Logs</h3>
+  <h3 class="smallcaps">{t("storage.logs")}</h3>
   <div class="row">
     <p class="hint grow" class:error={!!logError}>
-      {logError ??
-        "One file per day, at most 5 MB each; files older than 7 days are deleted. Never API keys; error messages may quote a short snippet (e.g. a formula)."}
+      {logError ?? t("storage.logsHint")}
     </p>
     <button
       class="btn"
       onclick={() => settingsIpc.revealLogs().catch((e) => (logError = errorMessage(e)))}
-      disabled={!logDir}>Show logs</button
+      disabled={!logDir}>{t("storage.showLogs")}</button
     >
   </div>
   {#if logDir}<p class="path" title={logDir}>{logDir}</p>{/if}

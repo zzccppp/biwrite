@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { t } from "../i18n.svelte";
   import { errorMessage, settingsIpc } from "../ipc";
   import type { Direction, PromptView } from "../types";
 
@@ -23,7 +24,7 @@
     try {
       prompt = await settingsIpc.savePrompt(direction, reset ? "" : text);
       text = prompt.text;
-      status = reset ? "Restored the default." : "Saved. New requests use it.";
+      status = reset ? t("prompt.restored") : t("prompt.saved");
     } catch (err) {
       status = errorMessage(err);
     }
@@ -46,16 +47,17 @@
 
 <textarea class="textarea" rows="7" bind:value={text} spellcheck="false"></textarea>
 <div class="row actions">
-  <button class="btn primary" onclick={() => save()} disabled={!prompt || text === prompt.text}>Save</button>
-  <button class="btn" onclick={() => save(true)} disabled={!prompt || prompt.isDefault}>Default</button>
+  <button class="btn primary" onclick={() => save()} disabled={!prompt || text === prompt.text}>
+    {t("common.save")}
+  </button>
+  <button class="btn" onclick={() => save(true)} disabled={!prompt || prompt.isDefault}>{t("common.default")}</button>
   <span class="spacer"></span>
   <button class="btn" onclick={() => settingsIpc.revealPrompts().catch((e) => (status = errorMessage(e)))}>
-    Show files
+    {t("prompt.reveal")}
   </button>
 </div>
 <p class="hint">
-  {status ??
-    "The system prompt only; BiWrite adds the paragraph, context, glossary and note itself. Cached translations stay — use Retranslate all after changing it."}
+  {status ?? t("prompt.hint")}
 </p>
 
 <style>

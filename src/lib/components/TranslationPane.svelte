@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { language, parts, t } from "../i18n.svelte";
   import type { Session } from "../session.svelte";
   import SegmentBlock from "./SegmentBlock.svelte";
 
@@ -20,6 +21,9 @@
     $props();
 
   let list: HTMLElement;
+
+  /** The empty-state hint is in the interface language. */
+  const hintLang = $derived(language.current === "zh" ? "zh-CN" : "en");
 
   function register(node: HTMLElement, id: number) {
     blocks.set(id, node);
@@ -50,7 +54,7 @@
   });
 </script>
 
-<section class="gloss" bind:this={pane} {onscroll} aria-label="Chinese translation (read-only)">
+<section class="gloss" bind:this={pane} {onscroll} aria-label={t("pane.gloss")}>
   <div class="list" bind:this={list}>
     {#each session.layout as segment, i (segment.id)}
       <SegmentBlock
@@ -74,10 +78,12 @@
       <div class="empty">
         {#if session.direction === "zh-en"}
           <p class="zh-hint en">The English appears here</p>
-          <p class="hint" lang="zh-CN">在左侧用中文写作；保存时写入的是右侧的英文。</p>
+          <p class="hint" lang={hintLang}>{t("pane.writeZhHint")}</p>
         {:else}
           <p class="zh-hint" lang="zh-CN">译文将在此处显示</p>
-          <p class="hint">Open a <em>.tex</em>, <em>.md</em> or <em>.txt</em> file, or start writing on the left.</p>
+          <p class="hint" lang={hintLang}>
+            {#each parts("pane.openHint") as part, j (j)}{#if j % 2}<em>.{part}</em>{:else}{part}{/if}{/each}
+          </p>
         {/if}
       </div>
     {/each}

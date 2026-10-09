@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { count, parts, t } from "../i18n.svelte";
   import { errorMessage, glossaryIpc } from "../ipc";
   import type { GlossaryEntry } from "../types";
 
@@ -49,7 +50,7 @@
   const MAX_SHOWN = 300;
 
   const dirty = $derived(JSON.stringify(toEntries(rows)) !== saved);
-  const count = $derived(toEntries(rows).length);
+  const termCount = $derived(toEntries(rows).length);
   const matching = $derived.by(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return rows;
@@ -93,7 +94,7 @@
     return run(async () => {
       const entries = await glossaryIpc.save(toEntries(rows));
       reset(entries);
-      status = `Saved ${entries.length} term${entries.length === 1 ? "" : "s"}. Paragraphs that use a changed term are translated again.`;
+      status = count(entries.length, "glossary.saved.one", "glossary.saved.many");
     });
   }
 
@@ -113,14 +114,14 @@
         }
       }
       filter = "";
-      status = `Imported ${imported.length} term${imported.length === 1 ? "" : "s"} (${added} new, added at the end). Review them, then Save.`;
+      status = count(imported.length, "glossary.imported.one", "glossary.imported.many", { added });
     });
   }
 
   function exportCsv(): Promise<void> {
     return run(async () => {
       const name = await glossaryIpc.exportCsv();
-      if (name) status = `Exported ${name}.`;
+      if (name) status = t("glossary.exported", { name });
     });
   }
 
@@ -157,29 +158,37 @@
 <div class="scrim" role="presentation" onclick={close}></div>
 <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="glossary-title">
   <header>
-    <h2 id="glossary-title" class="smallcaps">Glossary</h2>
-    <span class="count">{count} term{count === 1 ? "" : "s"}{dirty ? " · unsaved" : ""}</span>
-    <button class="close" onclick={close} aria-label="Close glossary">✕</button>
+    <h2 id="glossary-title" class="smallcaps">{t("glossary.title")}</h2>
+    <span class="count"
+      >{count(termCount, "glossary.terms.one", "glossary.terms.many")}{dirty ? ` · ${t("glossary.unsaved")}` : ""}</span
+    >
+    <button class="close" onclick={close} aria-label={t("glossary.close")}>✕</button>
   </header>
 
   <div class="tools row">
-    <input class="input filter" type="search" placeholder="Filter…" bind:value={filter} aria-label="Filter terms" />
-    <button class="btn" onclick={addRow} disabled={!loaded || busy}>+ Add term</button>
+    <input
+      class="input filter"
+      type="search"
+      placeholder={t("glossary.filter")}
+      bind:value={filter}
+      aria-label={t("glossary.filterLabel")}
+    />
+    <button class="btn" onclick={addRow} disabled={!loaded || busy}>{t("glossary.add")}</button>
     <span class="spacer"></span>
-    <button class="btn" onclick={importCsv} disabled={busy || !loaded}>Import CSV</button>
+    <button class="btn" onclick={importCsv} disabled={busy || !loaded}>{t("glossary.import")}</button>
     <button
       class="btn"
       onclick={exportCsv}
       disabled={busy || dirty || !loaded}
-      title={dirty ? "Save first: the saved glossary is exported" : "Export as term,translation CSV"}>Export CSV</button
+      title={dirty ? t("glossary.exportSaveFirst") : t("glossary.exportTitle")}>{t("glossary.export")}</button
     >
   </div>
 
   <div class="table" bind:this={list}>
     <div class="head smallcaps" aria-hidden="true">
-      <span>English term</span>
+      <span>{t("glossary.colTerm")}</span>
       <span lang="zh-CN" class="zh-head">中文</span>
-      <span class="center" title="Keep the term in English">Keep EN</span>
+      <span class="center" title={t("glossary.colKeepTitle")}>{t("glossary.colKeep")}</span>
       <span></span>
     </div>
     {#each shown as row (row.key)}
@@ -188,8 +197,8 @@
           class="input term"
           bind:value={row.term}
           disabled={busy}
-          placeholder="term"
-          aria-label="English term"
+          placeholder={t("glossary.termPlaceholder")}
+          aria-label={t("glossary.colTerm")}
           spellcheck="false"
         />
         <input
@@ -197,60 +206,63 @@
           lang="zh-CN"
           bind:value={row.translation}
           disabled={row.keep || busy}
-          placeholder={row.keep ? "keep in English" : "译名"}
-          aria-label="Chinese rendering"
+          placeholder={row.keep ? t("glossary.keepPlaceholder") : "译名"}
+          aria-label={t("glossary.zhLabel")}
         />
         <input
           class="keep"
           type="checkbox"
           bind:checked={row.keep}
           disabled={busy}
-          aria-label="Keep {row.term || 'term'} in English"
+          aria-label={t("glossary.keepLabel", { term: row.term || t("glossary.termPlaceholder") })}
         />
-        <button class="remove" onclick={() => removeRow(row.key)} disabled={busy} aria-label="Remove {row.term || 'term'}">✕</button>
+        <button
+          class="remove"
+          onclick={() => removeRow(row.key)}
+          disabled={busy}
+          aria-label={t("glossary.removeLabel", { term: row.term || t("glossary.termPlaceholder") })}>✕</button
+        >
       </div>
     {:else}
       <p class="empty">
         {#if !loaded && error}
-          The glossary could not be loaded.
+          {t("glossary.loadFailed")}
         {:else if !loaded}
-          Loading…
+          {t("common.loading")}
         {:else if filter}
-          No term matches “{filter}”.
+          {t("glossary.noMatch", { filter })}
         {:else}
-          No terms yet. Add one, or import a CSV with the columns <code>term,translation</code>.
+          {#each parts("glossary.empty") as part, i (i)}{#if i % 2}<code>term,translation</code>{:else}{part}{/if}{/each}
         {/if}
       </p>
     {/each}
     {#if matching.length > shown.length}
-      <p class="more">Showing {shown.length} of {matching.length}. Type in the filter to find the others.</p>
+      <p class="more">{t("glossary.more", { shown: shown.length, total: matching.length })}</p>
     {/if}
   </div>
 
   <footer>
     {#if confirmClose}
-      <p class="warn">{error ?? "You have unsaved changes."}</p>
+      <p class="warn">{error ?? t("glossary.unsavedChanges")}</p>
       <div class="row">
-        <button class="btn" onclick={() => (confirmClose = false)}>Keep editing</button>
-        <button class="btn danger" onclick={onclose}>Discard</button>
+        <button class="btn" onclick={() => (confirmClose = false)}>{t("glossary.keepEditing")}</button>
+        <button class="btn danger" onclick={onclose}>{t("glossary.discard")}</button>
         <button
           class="btn primary"
           disabled={busy}
           onclick={async () => {
             await save();
             if (!dirty) onclose();
-          }}>Save & close</button
+          }}>{t("glossary.saveClose")}</button
         >
       </div>
     {:else}
       <p class="hint" class:error={!!error}>
-        {error ??
-          status ??
-          "Terms match whole words, any case, plurals included. Each paragraph is sent only the terms it mentions; when you write Chinese, the Chinese rendering is matched."}
+        {error ?? status ?? t("glossary.hint")}
       </p>
       <div class="row">
-        <button class="btn" onclick={close}>Close</button>
-        <button class="btn primary" onclick={save} disabled={busy || !dirty}>Save</button>
+        <button class="btn" onclick={close}>{t("common.close")}</button>
+        <button class="btn primary" onclick={save} disabled={busy || !dirty}>{t("common.save")}</button>
       </div>
     {/if}
   </footer>

@@ -46,7 +46,15 @@ export function t(key: MessageKey, vars?: Record<string, string | number>): stri
   return text;
 }
 
-/** Plural-aware count for English ("1 key", "3 keys"); Chinese has no plural. */
-export function count(n: number, one: MessageKey, many: MessageKey): string {
-  return t(n === 1 ? one : many, { n });
+/** Plural-aware count for English ("1 key", "3 keys"); Chinese has no plural.
+ * `vars` fills the message's other placeholders. */
+export function count(n: number, one: MessageKey, many: MessageKey, vars?: Record<string, string | number>): string {
+  return t(n === 1 ? one : many, { n, ...vars });
+}
+
+/** The message split at its `{name}` placeholders, so that a template can put
+ * an element (code, emphasis) there. Even items are text, odd items are the
+ * placeholder names. */
+export function parts(key: MessageKey): string[] {
+  return t(key).split(/\{(\w+)\}/);
 }

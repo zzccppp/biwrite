@@ -94,18 +94,6 @@ export const MODE_LABELS: Record<Mode, string> = {
   latex: "LaTeX",
 };
 
-export const SKIP_LABELS: Record<SkipReason, string> = {
-  front_matter: "front matter",
-  code: "code",
-  rule: "rule",
-  preamble: "preamble",
-  comment: "comment",
-  math: "math",
-  table: "table",
-  float: "figure",
-  markup: "markup",
-};
-
 // ── Settings ─────────────────────────────────────────────────────────
 
 export type ProviderKind = "openai_compatible" | "anthropic" | "mock";

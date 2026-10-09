@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Session } from "../session.svelte";
   import type { ThemePref } from "../theme";
-  import { t } from "../i18n.svelte";
+  import { type MessageKey, t } from "../i18n.svelte";
   import { MODE_LABELS, type Mode, type ProjectView } from "../types";
 
   interface Props {
@@ -60,7 +60,11 @@
   const zh = $derived(session.direction === "zh-en");
 
   const modes: Mode[] = ["plain", "markdown", "latex"];
-  const themeLabel: Record<ThemePref, string> = { system: "Auto", light: "Light", dark: "Dark" };
+  const themeLabel: Record<ThemePref, MessageKey> = {
+    system: "toolbar.theme.system",
+    light: "toolbar.theme.light",
+    dark: "toolbar.theme.dark",
+  };
   const mod = navigator.platform.toLowerCase().includes("mac") ? "⌘" : "Ctrl+";
 </script>
 
@@ -70,22 +74,22 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5.5L12 5v8.5H4zM9.5 2.5V5H12M8 7.5v4M6 9.5h4" /></svg>
       <span class="smallcaps">{t("toolbar.new")}</span>
     </button>
-    <button class="tool" onclick={onopen} title="Open… ({mod}O)">
+    <button class="tool" onclick={onopen} title={t("toolbar.openTitle", { key: `${mod}O` })}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z" /></svg>
-      <span class="smallcaps">Open</span>
+      <span class="smallcaps">{t("toolbar.open")}</span>
     </button>
-    <button class="tool" onclick={onsave} title="Save ({mod}S) · Save As ({mod}⇧S)">
+    <button class="tool" onclick={onsave} title={t("toolbar.saveTitle", { save: `${mod}S`, saveAs: `${mod}⇧S` })}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5v3h5v-3M5 13.5v-4h6v4" /></svg>
-      <span class="smallcaps">Save</span>
+      <span class="smallcaps">{t("common.save")}</span>
     </button>
-    <button class="tool secondary" onclick={onexport} title="Export bilingual Markdown: each paragraph in English, then Chinese">
+    <button class="tool secondary" onclick={onexport} title={t("toolbar.exportTitle")}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2.5M5.5 5 8 2.5 10.5 5M3 9v4.5h10V9" /></svg>
-      <span class="smallcaps">Export</span>
+      <span class="smallcaps">{t("toolbar.export")}</span>
     </button>
 
     <span class="sep" aria-hidden="true"></span>
 
-    <div class="modes" role="radiogroup" aria-label="Document mode">
+    <div class="modes" role="radiogroup" aria-label={t("toolbar.mode")}>
       {#each modes as m (m)}
         <button
           class="mode smallcaps"
@@ -103,9 +107,7 @@
       class="swap"
       class:zh
       onclick={onswap}
-      title={zh
-        ? "Editing Chinese; English (saved to the file) follows on the right. Click to edit English again."
-        : "Swap: edit the Chinese and let the English follow. Unchanged paragraphs keep your exact English."}
+      title={zh ? t("toolbar.swapBack") : t("toolbar.swap")}
     >
       <span class="lang" lang={zh ? "zh-CN" : "en"}>{zh ? "中" : "EN"}</span>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5h10l-2.5-2.5M13.5 10.5h-10l2.5 2.5" /></svg>
@@ -124,7 +126,7 @@
             if (next !== project.current) onfile(next);
           }}
         >
-          {#each project.files as f (f)}<option value={f}>{f === project.root ? `${f}  (main)` : f}</option>{/each}
+          {#each project.files as f (f)}<option value={f}>{f === project.root ? t("toolbar.main", { file: f }) : f}</option>{/each}
         </select>
       </label>
     {:else}
@@ -137,39 +139,35 @@
       class="tool secondary"
       onclick={onretranslate}
       disabled={session.activeId === null || zh}
-      title={zh
-        ? "Disabled while editing Chinese: it would replace your English with machine translation"
-        : "Retranslate the segment at the cursor"}
+      title={zh ? t("toolbar.retranslateOff") : t("toolbar.segmentTitle")}
     >
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" /></svg>
-      <span class="smallcaps">Segment</span>
+      <span class="smallcaps">{t("toolbar.segment")}</span>
     </button>
     <button
       class="tool secondary"
       onclick={onretranslateall}
       disabled={zh}
-      title={zh
-        ? "Disabled while editing Chinese: it would replace your English with machine translation"
-        : "Retranslate every segment"}
+      title={zh ? t("toolbar.retranslateOff") : t("toolbar.allTitle")}
     >
       <svg viewBox="0 0 16 16" aria-hidden="true"
         ><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5M6 8h4M8 6v4" /></svg
       >
-      <span class="smallcaps">All</span>
+      <span class="smallcaps">{t("toolbar.all")}</span>
     </button>
     <button
       class="tool"
       class:paused={!session.autoTranslate}
       onclick={ontoggleauto}
       aria-pressed={!session.autoTranslate}
-      title={session.autoTranslate ? "Pause auto-translate" : "Resume auto-translate"}
+      title={session.autoTranslate ? t("toolbar.pauseTitle") : t("toolbar.resumeTitle")}
     >
       {#if session.autoTranslate}
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9" /></svg>
-        <span class="smallcaps">Pause</span>
+        <span class="smallcaps">{t("toolbar.pause")}</span>
       {:else}
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3l8 5-8 5z" /></svg>
-        <span class="smallcaps">Resume</span>
+        <span class="smallcaps">{t("toolbar.resume")}</span>
       {/if}
     </button>
 
@@ -193,34 +191,34 @@
 
     <span class="sep" aria-hidden="true"></span>
 
-    <button class="tool secondary" onclick={onglossary} title="Glossary: preferred translations of terms">
+    <button class="tool secondary" onclick={onglossary} title={t("toolbar.glossaryTitle")}>
       <svg viewBox="0 0 16 16" aria-hidden="true"
         ><path d="M3 2.8h7.5a1.5 1.5 0 0 1 1.5 1.5v9H4.5A1.5 1.5 0 0 1 3 11.8zM3 11.8a1.5 1.5 0 0 1 1.5-1.5H12M6 5.5h3.5" /></svg
       >
-      <span class="smallcaps">Glossary</span>
+      <span class="smallcaps">{t("glossary.title")}</span>
     </button>
-    <button class="tool" onclick={onsettings} title="Settings ({mod},)">
+    <button class="tool" onclick={onsettings} title={t("toolbar.settingsTitle", { key: `${mod},` })}>
       <svg viewBox="0 0 16 16" aria-hidden="true"
         ><circle cx="8" cy="8" r="2.2" /><path
           d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7 3.6 3.6"
         /></svg
       >
-      <span class="smallcaps">Settings</span>
+      <span class="smallcaps">{t("settings.title")}</span>
     </button>
-    <button class="tool secondary" onclick={ontheme} title="Theme: {themeLabel[theme]}">
+    <button class="tool secondary" onclick={ontheme} title={t("toolbar.themeTitle", { theme: t(themeLabel[theme]) })}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" /><path d="M8 3a5 5 0 0 0 0 10z" class="fill" /></svg>
-      <span class="smallcaps">{themeLabel[theme]}</span>
+      <span class="smallcaps">{t(themeLabel[theme])}</span>
     </button>
     <button
       class="tool secondary log"
       onclick={onlog}
-      title="Request log: model, reasoning effort and service tier of every request, as sent and as declared ({mod}⇧L)"
+      title={t("toolbar.logTitle", { key: `${mod}⇧L` })}
     >
       <svg viewBox="0 0 16 16" aria-hidden="true"
         ><path d="M3 3.5h10M3 6.5h10M3 9.5h6M3 12.5h4M11.5 9.5v4M9.5 11.5h4" /></svg
       >
-      <span class="smallcaps">Log</span>
-      {#if inflight > 0}<span class="badge" aria-label="{inflight} in flight">{inflight}</span>{/if}
+      <span class="smallcaps">{t("toolbar.log")}</span>
+      {#if inflight > 0}<span class="badge" aria-label={t("toolbar.inFlight", { n: inflight })}>{inflight}</span>{/if}
     </button>
   </div>
 </header>
