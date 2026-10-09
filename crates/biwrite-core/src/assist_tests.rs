@@ -253,3 +253,34 @@ fn sentences_skip_abbreviations_and_math() {
     let r = sentence_at(zh, Mode::Plain, pos).unwrap();
     assert_eq!(&zh[r], "第二句很短！");
 }
+
+#[test]
+fn mirror_requests_carry_the_new_translation_and_ask_for_a_revision_only() {
+    let skill = Skill::default();
+    let req = Request {
+        action: Action::Mirror,
+        mode: Mode::Latex,
+        target: "We evaluate on four datasets \\cite{a}.",
+        instruction: "我们在五个数据集上评测 \\cite{a}。",
+        ..Request::default()
+    };
+    let p = build(&req, &skill);
+    assert!(p.user.contains("<instruction>\n我们在五个数据集上评测"));
+    assert!(p.user.contains("rewrote the Chinese (Simplified) version"));
+    assert!(!p.user.contains("<translation>"));
+    // The model answers with the masked target, revised.
+    let target = tag(&p.user, "target").unwrap().replace("four", "five");
+    let answer = parse(
+        Action::Mirror,
+        &format!(
+            "<revision>\n{target}\n</revision>\n<changes_zh>\n数据集个数改为五个。\n</changes_zh>"
+        ),
+        &p.protector,
+    )
+    .unwrap();
+    assert_eq!(
+        answer.revision.as_deref(),
+        Some("We evaluate on five datasets \\cite{a}.")
+    );
+    assert!(parse(Action::Mirror, "no tags", &p.protector).is_err());
+}

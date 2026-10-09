@@ -13,8 +13,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use biwrite_core::assist::{paragraph_at, sentence_at};
+use biwrite_core::pair::units;
 use biwrite_core::utf16::{byte_to_utf16, utf16_to_byte};
-use biwrite_core::{Direction, Mode};
+use biwrite_core::{Direction, Mode, SegmentId};
 use biwrite_latex::{
     self as latex, Engine, Issue, Job, MIRROR_DIR, Outcome, PdfBox, Severity, Template, Toolchain,
     templates,
@@ -26,7 +27,7 @@ use tokio::task::AbortHandle;
 use crate::commands;
 use crate::error::{CommandError, CommandResult};
 use crate::files;
-use crate::latex_sync::{Basis, Place, line_start, map_line};
+use crate::latex_sync::{Basis, Place, line_of, line_start, map_line};
 use crate::settings;
 use crate::state::{AppState, SessionView};
 
@@ -65,6 +66,9 @@ pub struct LatexState {
     builds: Mutex<HashMap<Lang, Build>>,
     running: Mutex<HashMap<Lang, (u64, AbortHandle)>>,
     next: AtomicU64,
+    /// The root of the project last opened. A file of its folder that no
+    /// main file inputs (a figure snippet, a table) stays in that project.
+    last_root: Mutex<Option<PathBuf>>,
     /// Templates shipped with the app.
     builtin: PathBuf,
     /// Templates the user imported.
@@ -78,6 +82,7 @@ impl LatexState {
             builds: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
+            last_root: Mutex::new(None),
             builtin,
             user,
         }
@@ -250,9 +255,30 @@ fn project(state: &AppState) -> CommandResult<Project> {
     let path = path
         .filter(|p| is_tex(p))
         .ok_or_else(|| fail("Save the document as a .tex file first."))?;
-    let path = canonical(&path);
-    let root = latex::root_for(&path, &saved).map_err(|e| fail(e.to_string()))?;
-    let root = canonical(&root);
+    project_of(state, &path, saved)
+}
+
+/// The project of the `.tex` file at `path` whose text on disk is `saved`.
+fn project_of(state: &AppState, path: &Path, saved: String) -> CommandResult<Project> {
+    let path = canonical(path);
+    let last = state
+        .latex
+        .last_root
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let root = match latex::root_for(&path, &saved) {
+        Ok(root) => canonical(&root),
+        // Not reached from any main file: the project it was opened from.
+        Err(e) => last
+            .filter(|r| r.is_file() && r.parent().is_some_and(|d| path.starts_with(d)))
+            .ok_or_else(|| fail(e.to_string()))?,
+    };
+    *state
+        .latex
+        .last_root
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(root.clone());
     let root_text = if root == path {
         saved.clone()
     } else {
@@ -431,22 +457,35 @@ pub async fn latex_compile(
     text: String,
 ) -> CommandResult<BuildView> {
     let tc = require_toolchain(&state).await?;
-    let p = project(&state)?;
     if state.engine.text() != text {
         state.engine.update(text.clone());
     }
     let direction = state.engine.direction();
+    // A pair keeps each language in its own files: build the file of this
+    // language as it is on disk.
+    let mirror = {
+        let fs = state.file();
+        fs.pair
+            .as_ref()
+            .filter(|_| lang != source_lang(direction))
+            .map(|pair| (pair.path.clone(), pair.file.text().to_owned()))
+    };
+    let p = match mirror {
+        Some((path, saved)) => project_of(&state, &path, saved)?,
+        None => project(&state)?,
+    };
+    let paired = state.file().pair.is_some();
     let doc_rel = relative(&p.path, &p.dir)
         .ok_or_else(|| fail("The document is outside its project folder."))?;
     let root_rel = relative(&p.root, &p.dir).unwrap_or_default();
     let doc_is_root = p.path == p.root;
     let mut untranslated = 0;
     let (job, doc_file, basis) = match lang {
-        Lang::En => (
+        _ if paired || lang == Lang::En => (
             Job {
                 dir: p.dir.clone(),
                 root: PathBuf::from(&root_rel),
-                engine: latex::engine_for(&p.root_text),
+                engine: latex::project_engine(&p.root, &p.root_text),
                 out_dir: None,
                 timeout: BUILD_TIMEOUT,
             },
@@ -454,11 +493,11 @@ pub async fn latex_compile(
             Basis {
                 compiled: p.saved.clone(),
                 editor: text,
-                same_language: direction == Direction::EnZh,
+                same_language: lang == source_lang(direction),
                 mode: Mode::Latex,
             },
         ),
-        Lang::Zh => {
+        _ => {
             let zh = match direction {
                 Direction::EnZh => {
                     let mirror = state.engine.compose_mirror();
@@ -551,11 +590,73 @@ pub async fn latex_compile(
             pdf: built.pdf,
             dir: p.dir,
             doc_file,
-            doc_path: p.path,
+            doc_path: state
+                .file()
+                .path
+                .as_deref()
+                .map(canonical)
+                .unwrap_or_default(),
             basis,
         },
     );
     Ok(view)
+}
+
+/// The language of the edited text.
+fn source_lang(direction: Direction) -> Lang {
+    match direction {
+        Direction::EnZh => Lang::En,
+        Direction::ZhEn => Lang::Zh,
+    }
+}
+
+/// A line of the paired mirror (as on disk) as the range of the linked
+/// paragraph in the editor's `text`. `None` unless `file` is the mirror.
+fn mirror_hit(state: &AppState, file: &Path, line: usize, text: &str) -> Option<Range16> {
+    let id = {
+        let fs = state.file();
+        let pair = fs.pair.as_ref().filter(|p| canonical(&p.path) == file)?;
+        let mirror = pair.file.text();
+        let at = line_start(mirror, line.saturating_sub(1));
+        let ub = units(mirror, state.engine.mode());
+        let j = ub.iter().rposition(|u| u.range.start <= at).unwrap_or(0);
+        let by_unit: HashMap<usize, SegmentId> =
+            pair.links.iter().map(|(id, u)| (*u, *id)).collect();
+        (0..=j).rev().find_map(|k| by_unit.get(&k).copied())?
+    };
+    if state.engine.text() != text {
+        state.engine.update(text.to_owned());
+    }
+    let snapshot = state.engine.snapshot();
+    let seg = snapshot.layout.iter().find(|s| s.id == id)?;
+    Some(Range16 {
+        from: seg.from,
+        to: seg.to,
+    })
+}
+
+/// The mirror's file and line for the paragraph at `offset` (UTF-16) of
+/// the editor's `text`.
+fn mirror_line(state: &AppState, offset: usize, text: &str) -> Option<(PathBuf, usize)> {
+    if state.engine.text() != text {
+        state.engine.update(text.to_owned());
+    }
+    let snapshot = state.engine.snapshot();
+    let ids: Vec<SegmentId> = snapshot
+        .layout
+        .iter()
+        .filter(|s| s.from <= offset)
+        .map(|s| s.id)
+        .collect();
+    let fs = state.file();
+    let pair = fs.pair.as_ref()?;
+    let unit = ids
+        .iter()
+        .rev()
+        .find_map(|id| pair.links.get(id).copied())?;
+    let mirror = pair.file.text();
+    let u = units(mirror, state.engine.mode()).into_iter().nth(unit)?;
+    Some((canonical(&pair.path), line_of(mirror, u.content.start) + 1))
 }
 
 #[tauri::command]
@@ -667,6 +768,9 @@ pub struct SyncHit {
     pub range: Option<Range16>,
     /// `range` is a whole paragraph (the PDF is in the other language).
     pub paragraph: bool,
+    /// Not in the open document: the project file to open for it
+    /// (relative to the project folder), after which the click resolves.
+    pub open: Option<String>,
 }
 
 /// The source under a click in the PDF: page (1-based) and point in PDF
@@ -696,6 +800,17 @@ pub async fn latex_inverse(
     let line = point.line as usize;
     let click = utf16_to_byte(&span, click);
     let current = state.file().path.as_deref().map(canonical);
+    if let Some(range) = mirror_hit(&state, &file, line, &text) {
+        return Ok(Some(SyncHit {
+            file: file.display().to_string(),
+            line: point.line,
+            here: true,
+            range: Some(range),
+            paragraph: true,
+            open: None,
+        }));
+    }
+    let open = file_to_open(&state, &file);
     let builds = state.latex.builds();
     let Some(build) = builds.get(&lang) else {
         return Ok(None);
@@ -709,6 +824,7 @@ pub async fn latex_inverse(
         here: true,
         range: Some(range),
         paragraph,
+        open: None,
     };
     if file == build.doc_file && current.as_ref() == Some(&build.doc_path) {
         return Ok(match build.basis.to_editor(line, &text) {
@@ -722,7 +838,9 @@ pub async fn latex_inverse(
     }
     // Another file of the project that is open now (the build was made
     // while a different one was): its text on disk is what TeX read.
-    if current.as_ref() == Some(&file) && state.engine.direction() == Direction::EnZh {
+    let same_file_on_disk =
+        state.engine.direction() == Direction::EnZh || state.file().pair.is_some();
+    if current.as_ref() == Some(&file) && same_file_on_disk {
         let saved = state.file().file.text().to_owned();
         let l = map_line(&saved, &text, line);
         let at = latex::locate(&text, l as u32, &span, click);
@@ -734,7 +852,23 @@ pub async fn latex_inverse(
         here: false,
         range: None,
         paragraph: false,
+        open,
     }))
+}
+
+/// The project file to open for a hit in `file`: the file itself, or, for
+/// a file in the other language, its counterpart in the edited language
+/// (which opens paired with it). Relative to the open document's project.
+fn file_to_open(state: &AppState, file: &Path) -> Option<String> {
+    let dir = project(state).ok()?.dir;
+    let editing_zh = state.engine.direction() == Direction::ZhEn;
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let target = if crate::pairing::is_chinese(&text) != editing_zh {
+        crate::pairing::counterpart(file).map(|c| canonical(&c))?
+    } else {
+        file.to_path_buf()
+    };
+    relative(&target, &dir).filter(|r| r.ends_with(".tex"))
 }
 
 /// Where the editor's position `offset` (UTF-16) is in the PDF.
@@ -748,6 +882,14 @@ pub async fn latex_forward(
     let tc = require_toolchain(&state).await?;
     let at = utf16_to_byte(&text, offset);
     let current = state.file().path.as_deref().map(canonical);
+    if lang != source_lang(state.engine.direction())
+        && let Some((input, line)) = mirror_line(&state, offset, &text)
+    {
+        let pdf = pdf_of(&state, lang)?;
+        return latex::synctex::forward(&tc, &pdf, &input, line as u32, 0)
+            .await
+            .map_err(|e| fail(e.to_string()));
+    }
     let (pdf, input, line) = {
         let builds = state.latex.builds();
         let Some(build) = builds.get(&lang) else {
@@ -761,10 +903,12 @@ pub async fn latex_forward(
                 return Ok(Vec::new());
             };
             (pdf, build.doc_file.clone(), line)
-        } else if let Some(path) = current.filter(|_| state.engine.direction() == Direction::EnZh) {
+        } else if let Some(path) = current
+            .filter(|_| state.engine.direction() == Direction::EnZh || state.file().pair.is_some())
+        {
             // Another file of the project: as saved.
             let saved = state.file().file.text().to_owned();
-            let line = map_line(&text, &saved, crate::latex_sync::line_of(&text, at) + 1);
+            let line = map_line(&text, &saved, line_of(&text, at) + 1);
             (pdf, path, line)
         } else {
             return Ok(Vec::new());

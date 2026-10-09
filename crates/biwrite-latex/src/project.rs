@@ -155,6 +155,67 @@ pub fn engine_for(text: &str) -> Engine {
     }
 }
 
+/// The engine of a project: the root's magic comment, else the project's
+/// latexmkrc (`$pdf_mode`), else the packages its preamble loads, including
+/// preamble files it `\input`s.
+pub fn project_engine(root: &Path, text: &str) -> Engine {
+    if let Some(e) = magic(text).program {
+        return e;
+    }
+    let dir = root.parent().unwrap_or(Path::new("."));
+    for rc in ["latexmkrc", ".latexmkrc"] {
+        if let Some(e) = fs::read_to_string(dir.join(rc))
+            .ok()
+            .and_then(|t| rc_engine(&t))
+        {
+            return e;
+        }
+    }
+    let mut pre = preamble(text).to_owned();
+    for name in inputs(&uncommented(preamble(text))) {
+        let path = dir.join(if name.ends_with(".tex") {
+            name.clone()
+        } else {
+            format!("{name}.tex")
+        });
+        if let Ok(more) = fs::read_to_string(path) {
+            pre.push('\n');
+            pre.push_str(&more);
+        }
+    }
+    engine_for(&format!("{pre}\n\\begin{{document}}"))
+}
+
+/// `$pdf_mode = 5;` in a latexmkrc.
+fn rc_engine(rc: &str) -> Option<Engine> {
+    let line = uncommented(rc)
+        .lines()
+        .map(str::trim)
+        .rfind(|l| l.starts_with("$pdf_mode"))?
+        .to_owned();
+    let value = line.split('=').nth(1)?.trim().trim_end_matches(';').trim();
+    match value {
+        "1" => Some(Engine::Pdflatex),
+        "4" => Some(Engine::Lualatex),
+        "5" => Some(Engine::Xelatex),
+        _ => None,
+    }
+}
+
+/// Arguments of `\input{..}` and `\include{..}` in `text`.
+fn inputs(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for cmd in ["\\input{", "\\include{", "\\subfile{"] {
+        for (i, _) in text.match_indices(cmd) {
+            let arg = &text[i + cmd.len()..];
+            if let Some(end) = arg.find('}') {
+                out.push(arg[..end].trim().to_owned());
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ProjectError {
     #[error(
@@ -275,28 +336,23 @@ pub fn root_for(file: &Path, text: &str) -> Result<PathBuf, ProjectError> {
     if is_main(text) {
         return Ok(file.to_path_buf());
     }
-    // A main file nearby that pulls this one in.
-    let stem = file
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut search = vec![dir.to_path_buf()];
-    if let Some(parent) = dir.parent() {
-        search.push(parent.to_path_buf());
-    }
-    for d in search {
-        let Ok(entries) = fs::read_dir(&d) else {
+    // A main file in this folder or up to three above it that pulls this
+    // one in, directly or through the files it inputs.
+    for d in dir.ancestors().take(4) {
+        let Ok(entries) = fs::read_dir(d) else {
             continue;
         };
-        for e in entries.filter_map(Result::ok) {
-            let p = e.path();
-            if p == file || p.extension().is_none_or(|x| x != "tex") {
-                continue;
-            }
+        let mut mains: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p != file && p.extension().is_some_and(|x| x == "tex"))
+            .collect();
+        mains.sort();
+        for p in mains {
             let Ok(main) = fs::read_to_string(&p) else {
                 continue;
             };
-            if is_main(&main) && includes(&uncommented(&main), &stem) {
+            if is_main(&main) && reaches(&p, &main, file) {
                 return Ok(p);
             }
         }
@@ -306,23 +362,98 @@ pub fn root_for(file: &Path, text: &str) -> Result<PathBuf, ProjectError> {
     })
 }
 
-/// `\input{…stem}` or `\include{…stem}` (with or without `.tex`, any folder).
-fn includes(text: &str, stem: &str) -> bool {
-    ["\\input{", "\\include{", "\\subfile{"].iter().any(|cmd| {
-        text.match_indices(cmd).any(|(i, _)| {
-            let arg = &text[i + cmd.len()..];
-            let Some(end) = arg.find('}') else {
-                return false;
+/// The main file at `main` (text `text`) inputs `file`, directly or
+/// through the files it inputs. Paths in every included file are relative
+/// to the main file's folder, as TeX reads them.
+fn reaches(main: &Path, text: &str, file: &Path) -> bool {
+    let dir = main.parent().unwrap_or(Path::new("."));
+    let target = clean(file);
+    let mut seen: Vec<PathBuf> = vec![clean(main)];
+    let mut queue: Vec<(String, usize)> = vec![(uncommented(text), 0)];
+    while let Some((body, depth)) = queue.pop() {
+        for name in inputs(&body) {
+            let name = if name.ends_with(".tex") {
+                name
+            } else {
+                format!("{name}.tex")
             };
-            let name = arg[..end].trim().trim_end_matches(".tex");
-            name == stem || name.ends_with(&format!("/{stem}"))
-        })
-    })
+            let path = clean(&dir.join(name));
+            if path == target {
+                return true;
+            }
+            if depth < 5 && seen.len() < 200 && !seen.contains(&path) {
+                seen.push(path.clone());
+                if let Ok(more) = fs::read_to_string(&path) {
+                    queue.push((uncommented(&more), depth + 1));
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sibling_folders_with_the_same_file_names_get_their_own_main() {
+        let dir = temp("siblings");
+        fs::create_dir_all(dir.join("sections_en")).unwrap();
+        fs::create_dir_all(dir.join("sections_zh")).unwrap();
+        let main = |sub: &str| {
+            format!(
+                "\\documentclass{{article}}\n\\begin{{document}}\n\\input{{{sub}/intro}}\n\\end{{document}}\n"
+            )
+        };
+        fs::write(dir.join("paper.tex"), main("sections_en")).unwrap();
+        fs::write(dir.join("paper_zh.tex"), main("sections_zh")).unwrap();
+        let en = dir.join("sections_en/intro.tex");
+        let zh = dir.join("sections_zh/intro.tex");
+        fs::write(&en, "Text.").unwrap();
+        fs::write(&zh, "文字。").unwrap();
+        assert_eq!(root_for(&en, "Text.").unwrap(), dir.join("paper.tex"));
+        assert_eq!(root_for(&zh, "文字。").unwrap(), dir.join("paper_zh.tex"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_input_by_inputs_find_their_main() {
+        let dir = temp("nested");
+        fs::create_dir_all(dir.join("sections_zh")).unwrap();
+        fs::create_dir_all(dir.join("tables")).unwrap();
+        fs::write(
+            dir.join("paper_zh.tex"),
+            "\\documentclass{article}\n\\begin{document}\n\\input{sections_zh/05_experiments}\n\\end{document}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("sections_zh/05_experiments.tex"),
+            "实验。\n\\input{tables/table0_zh}\n",
+        )
+        .unwrap();
+        let table = dir.join("tables/table0_zh.tex");
+        fs::write(&table, "\\begin{table}\\end{table}").unwrap();
+        assert_eq!(
+            root_for(&table, "\\begin{table}\\end{table}").unwrap(),
+            dir.join("paper_zh.tex")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn latexmkrc_and_preamble_files_choose_the_engine() {
+        let dir = temp("engine");
+        let root = dir.join("paper.tex");
+        let text = "\\documentclass{article}\n\\input{preamble_shared.tex}\n\\begin{document}\nx\n\\end{document}\n";
+        assert_eq!(project_engine(&root, text), Engine::Pdflatex);
+        fs::write(dir.join("preamble_shared.tex"), "\\usepackage{fontspec}\n").unwrap();
+        assert_eq!(project_engine(&root, text), Engine::Xelatex);
+        fs::remove_file(dir.join("preamble_shared.tex")).unwrap();
+        fs::write(dir.join("latexmkrc"), "# xelatex\n$pdf_mode = 4;\n").unwrap();
+        assert_eq!(project_engine(&root, text), Engine::Lualatex);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn paths_are_cleaned() {

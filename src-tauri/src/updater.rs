@@ -175,7 +175,9 @@ fn pick_asset(assets: &[GhAsset]) -> Option<&GhAsset> {
     let arm = cfg!(target_arch = "aarch64");
     if cfg!(target_os = "macos") {
         find(&|n| n.ends_with("_universal.dmg"))
-            .or_else(|| find(&|n| n.ends_with(".dmg") && n.contains(if arm { "aarch64" } else { "x64" })))
+            .or_else(|| {
+                find(&|n| n.ends_with(".dmg") && n.contains(if arm { "aarch64" } else { "x64" }))
+            })
             .or_else(|| find(&|n| n.ends_with(".dmg")))
     } else if cfg!(windows) {
         find(&|n| n.ends_with("-setup.exe") && n.contains(if arm { "arm64" } else { "x64" }))
@@ -201,10 +203,19 @@ fn view(r: &GhRelease, asset: Option<&GhAsset>) -> ReleaseView {
     };
     ReleaseView {
         tag: r.tag_name.clone(),
-        name: r.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| r.tag_name.clone()),
+        name: r
+            .name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| r.tag_name.clone()),
         version,
         prerelease: r.prerelease,
-        date: r.published_at.as_deref().and_then(|d| d.get(..10)).unwrap_or("").to_owned(),
+        date: r
+            .published_at
+            .as_deref()
+            .and_then(|d| d.get(..10))
+            .unwrap_or("")
+            .to_owned(),
         notes: r.body.clone().unwrap_or_default(),
         relation,
         asset: asset.map(|a| AssetView {
@@ -316,7 +327,13 @@ pub async fn relaunch(app: AppHandle, state: State<'_, AppState>) -> CommandResu
 
 fn safe_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -349,7 +366,8 @@ async fn download(app: &AppHandle, tag: &str, asset: &GhAsset, file: &Path) -> C
                 return Err(fail("the installer is unexpectedly large"));
             }
             hash.update(&chunk);
-            out.write_all(&chunk).map_err(|e| CommandError::io(&part, e))?;
+            out.write_all(&chunk)
+                .map_err(|e| CommandError::io(&part, e))?;
             if reported.elapsed() > Duration::from_millis(120) {
                 reported = Instant::now();
                 let _ = app.emit(
@@ -373,7 +391,9 @@ async fn download(app: &AppHandle, tag: &str, asset: &GhAsset, file: &Path) -> C
         if let Some(want) = sha256_of(asset.digest.as_deref())
             && want != got
         {
-            return Err(fail("the download does not match the checksum GitHub reports"));
+            return Err(fail(
+                "the download does not match the checksum GitHub reports",
+            ));
         }
         std::fs::rename(&part, file).map_err(|e| CommandError::io(file, e))
     }
@@ -435,11 +455,20 @@ fn replace_bundle(dmg: &Path) -> CommandResult<PathBuf> {
         .filter(|p| p.extension().is_some_and(|x| x == "app"))
         .map(Path::to_path_buf)
         .ok_or_else(|| fail("only an installed BiWrite.app can update itself"))?;
-    let parent = bundle.parent().unwrap_or(Path::new("/Applications")).to_path_buf();
+    let parent = bundle
+        .parent()
+        .unwrap_or(Path::new("/Applications"))
+        .to_path_buf();
     let mount = dmg.with_extension("mount");
     let _ = std::fs::create_dir_all(&mount);
     let attach = Command::new("/usr/bin/hdiutil")
-        .args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"])
+        .args([
+            "attach",
+            "-nobrowse",
+            "-readonly",
+            "-noautoopen",
+            "-mountpoint",
+        ])
         .arg(&mount)
         .arg(dmg)
         .output()
@@ -504,7 +533,9 @@ async fn install(
     version: String,
 ) -> CommandResult<InstalledView> {
     if state.is_dirty() {
-        return Err(fail("Save or discard the changes first: BiWrite quits to install."));
+        return Err(fail(
+            "Save or discard the changes first: BiWrite quits to install.",
+        ));
     }
     std::process::Command::new(file)
         .spawn()
@@ -549,8 +580,14 @@ mod tests {
         assert_eq!(compare_versions("0.2.0", "0.1.1"), Ordering::Greater);
         assert_eq!(compare_versions("v0.2.0", "0.2.0"), Ordering::Equal);
         assert_eq!(compare_versions("0.2.0-beta.1", "0.2.0"), Ordering::Less);
-        assert_eq!(compare_versions("0.2.0-beta.2", "0.2.0-beta.10"), Ordering::Less);
-        assert_eq!(compare_versions("0.2.0-beta", "0.2.0-alpha"), Ordering::Greater);
+        assert_eq!(
+            compare_versions("0.2.0-beta.2", "0.2.0-beta.10"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_versions("0.2.0-beta", "0.2.0-alpha"),
+            Ordering::Greater
+        );
         assert_eq!(compare_versions("1.0", "0.9.9"), Ordering::Greater);
         assert!(parse_version("latest").is_none());
     }

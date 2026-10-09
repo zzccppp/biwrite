@@ -240,6 +240,63 @@ impl Engine {
         snapshot
     }
 
+    /// Replace the document, with known translations for some segments:
+    /// `known` maps an index of `segment(text, mode)` to its translation
+    /// (from a mirror file). Those segments start translated, exactly as
+    /// given, and are revised from there when edited. The rest are
+    /// translated as usual.
+    pub fn load_known(
+        &self,
+        text: String,
+        mode: Mode,
+        direction: Direction,
+        known: Vec<(usize, String)>,
+    ) -> Snapshot {
+        let mut st = self.inner.lock();
+        st.cancel_all();
+        st.meta.clear();
+        st.direction = direction;
+        st.seeds.clear();
+        st.doc = biwrite_core::DocumentModel::new(st.doc.next_id());
+        st.doc.apply(text, mode);
+        let segments: Vec<(SegmentId, biwrite_core::ContentHash)> =
+            st.doc.segments().iter().map(|s| (s.id, s.hash)).collect();
+        for (index, translation) in known {
+            let Some(&(id, hash)) = segments.get(index) else {
+                continue;
+            };
+            let mut meta = SegMeta::new();
+            meta.seed = Some((hash, translation));
+            st.meta.insert(id, meta);
+        }
+        self.inner.reconcile(&mut st, &HashSet::new());
+        self.inner.pump(&mut st);
+        st.revision += 1;
+        let snapshot = st.snapshot(true);
+        self.inner.release(st);
+        snapshot
+    }
+
+    /// Each translatable segment with text, in order: its id and its
+    /// translation if up to date (`None` while one is pending).
+    pub fn translations(&self) -> Vec<(SegmentId, Option<String>)> {
+        let st = self.inner.lock();
+        let text = st.doc.text();
+        st.doc
+            .segments()
+            .iter()
+            .filter(|s| s.kind().is_translatable() && !s.segment.content(text).trim().is_empty())
+            .map(|s| {
+                let current = st
+                    .meta
+                    .get(&s.id)
+                    .filter(|m| m.translated_hash == Some(s.hash))
+                    .and_then(|m| m.translation.clone());
+                (s.id, current)
+            })
+            .collect()
+    }
+
     /// New text from the editor (after debounce).
     pub fn update(&self, text: String) -> Snapshot {
         self.apply(text, None)

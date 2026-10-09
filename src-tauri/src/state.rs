@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::assist_commands::AssistState;
 use crate::error::CommandError;
 use crate::latex_commands::LatexState;
+use crate::pairing::{PairState, PairView};
 use crate::request_log::RequestLog;
 use crate::secrets::SecretStore;
 use crate::settings::{AppSettings, Paths};
@@ -28,6 +29,8 @@ pub struct FileState {
     pub file: TextFile,
     /// Editor content differs from what is on disk (reported by the frontend).
     pub dirty: bool,
+    /// The file in the other language this one is paired with.
+    pub pair: Option<PairState>,
 }
 
 impl FileState {
@@ -126,24 +129,21 @@ impl AppState {
 
     /// Load a file synchronously (startup only, before the UI exists).
     pub fn load_path_blocking(&self, path: PathBuf) -> Result<(), CommandError> {
-        let bytes = std::fs::read(&path).map_err(|e| CommandError::io(&path, e))?;
-        let file = TextFile::decode(bytes).map_err(|source| CommandError::Decode {
-            path: path.display().to_string(),
-            source,
-        })?;
-        self.engine.set_doc_note(Some(self.note_for(Some(&path))));
-        self.engine
-            .load(file.text().to_owned(), Mode::from_path(&path));
-        log::info!("opened {}", display_name(Some(&path)));
-        *self.file() = FileState {
-            path: Some(path),
-            file,
-            dirty: false,
+        let read = |path: &PathBuf| -> Result<TextFile, CommandError> {
+            let bytes = std::fs::read(path).map_err(|e| CommandError::io(path, e))?;
+            TextFile::decode(bytes).map_err(|source| CommandError::Decode {
+                path: path.display().to_string(),
+                source,
+            })
         };
+        let file = read(&path)?;
+        let mirror = crate::pairing::counterpart(&path).and_then(|m| read(&m).ok().map(|f| (m, f)));
+        crate::pairing::open(self, path, file, mirror);
         Ok(())
     }
 
     pub fn session_view(&self, snapshot: Snapshot) -> SessionView {
+        let units = self.engine.translations().len();
         let fs = self.file();
         let settings = self.engine.settings();
         SessionView {
@@ -154,6 +154,7 @@ impl AppState {
             auto_translate: settings.auto_translate,
             line_ending: fs.file.line_ending(),
             bom: fs.file.has_bom(),
+            pair: fs.pair.as_ref().map(|p| crate::pairing::view(p, units)),
             snapshot,
         }
     }
@@ -170,6 +171,8 @@ pub struct SessionView {
     pub auto_translate: bool,
     pub line_ending: LineEnding,
     pub bom: bool,
+    /// The paired file in the other language.
+    pub pair: Option<PairView>,
     pub snapshot: Snapshot,
 }
 
@@ -181,4 +184,6 @@ pub struct SavedView {
     pub name: String,
     /// Mode implied by the (possibly new) file extension.
     pub suggested_mode: Mode,
+    /// What happened to the paired file.
+    pub mirror: Option<crate::pairing::MirrorSaved>,
 }

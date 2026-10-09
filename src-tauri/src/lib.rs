@@ -9,6 +9,7 @@ mod latex_commands;
 mod latex_sync;
 mod log_commands;
 mod logging;
+mod pairing;
 mod provider_state;
 mod request_log;
 mod secrets;
@@ -148,6 +149,8 @@ pub fn run() {
             settings_commands::delete_provider,
             settings_commands::set_api_key,
             settings_commands::add_api_keys,
+            settings_commands::export_api_keys,
+            settings_commands::import_api_keys,
             settings_commands::remove_api_key,
             settings_commands::clear_api_key,
             settings_commands::key_status,
@@ -205,6 +208,9 @@ pub fn run() {
             latex_commands::latex_export_template,
             latex_commands::latex_delete_template,
             latex_commands::latex_reveal_templates,
+            pairing::import_mirror,
+            pairing::close_mirror,
+            pairing::write_mirror,
             updater::list_releases,
             updater::install_release,
             updater::relaunch,

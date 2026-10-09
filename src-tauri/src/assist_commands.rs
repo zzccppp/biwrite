@@ -224,6 +224,11 @@ pub async fn assist_start(
     let a = utf16_to_byte(text, request.from);
     let b = utf16_to_byte(text, request.to);
     let target = resolve(text, mode, request.action, a, b).map_err(CommandError::Settings)?;
+    if request.action == Action::Mirror && request.instruction.trim().is_empty() {
+        return Err(CommandError::Settings(
+            "write the new translation of the paragraph first".into(),
+        ));
+    }
     let model = state.assistant_model()?;
     let (skill, info) = state.skill()?;
 
@@ -288,6 +293,7 @@ pub async fn assist_start(
         id,
         action: request.action,
         original: target.text,
+        instruction: request.instruction.clone(),
         protector: prompt.protector,
         model,
         chat,
@@ -305,6 +311,8 @@ struct Job {
     id: u64,
     action: Action,
     original: String,
+    /// The instruction (for `Mirror`, the author's new translation).
+    instruction: String,
     protector: Protector,
     model: Arc<dyn ChatModel>,
     chat: ChatRequest,
@@ -344,11 +352,17 @@ async fn run(job: Job) {
                 id: job.id,
                 message: e.to_string(),
             },
-            Ok(answer) => {
+            Ok(mut answer) => {
+                if job.action == Action::Mirror && answer.revision.is_some() {
+                    // The author's own text is the paragraph's translation.
+                    answer.translation = Some(job.instruction.trim().to_owned());
+                    answer.translation_matches = true;
+                }
                 let diff = match (&answer.revision, job.action) {
-                    (Some(revision), Action::Polish | Action::Edit | Action::Ask) => {
-                        assist::diff(&job.original, revision)
-                    }
+                    (
+                        Some(revision),
+                        Action::Polish | Action::Edit | Action::Ask | Action::Mirror,
+                    ) => assist::diff(&job.original, revision),
                     _ => Vec::new(),
                 };
                 AssistEvent::Done {

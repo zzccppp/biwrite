@@ -229,6 +229,97 @@ pub async fn add_api_keys(
     update_key_count(&state, &id, count)
 }
 
+/// Largest key file read on import.
+const MAX_KEY_FILE_BYTES: u64 = 256 * 1024;
+
+/// The pool as text: a header naming the provider, then each key's name
+/// on one line and the key on the next (the shape the importer reads).
+fn pool_text(provider: &ProviderEntry, keys: &[String]) -> String {
+    let c = &provider.config;
+    let mut out = format!(
+        "# BiWrite key pool · {}\n# {} · {} · {}\n# Secret API keys: share them only with people you trust.\n",
+        c.name,
+        c.wire_label(),
+        c.base_url,
+        c.model
+    );
+    for (i, key) in keys.iter().enumerate() {
+        let name = provider
+            .key_names
+            .get(&key_fingerprint(key))
+            .cloned()
+            .unwrap_or_else(|| format!("key {}", i + 1));
+        out.push_str(&format!("{name}\n{key}\n"));
+    }
+    out
+}
+
+/// Save the provider's keys (with their names) to a file the user picks,
+/// to move them to another computer or share them. The keys go from the
+/// keychain to the file without passing through the window.
+#[tauri::command]
+pub async fn export_api_keys(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<Option<String>> {
+    let provider = state
+        .settings()
+        .provider(&id)
+        .cloned()
+        .ok_or_else(|| not_found(&id))?;
+    let store = state.secrets.clone();
+    let account = id.clone();
+    let keys = blocking(move || secrets::get_keys(store.as_ref(), &account)).await?;
+    if keys.is_empty() {
+        return Err(CommandError::Settings(
+            "this provider has no keys to export".into(),
+        ));
+    }
+    let stem: String = provider
+        .config
+        .name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let name = format!("{}-keys.txt", stem.trim_matches('-'));
+    let Some(dest) =
+        crate::files::pick_save_kind(&app, &window, "Key pool", &["txt"], None, &name).await
+    else {
+        return Ok(None);
+    };
+    let text = pool_text(&provider, &keys);
+    crate::files::write_file_atomic(dest.clone(), text.into_bytes()).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600));
+    }
+    log::info!("exported {} keys of {}", keys.len(), provider.config.name);
+    Ok(Some(dest.display().to_string()))
+}
+
+/// Add the keys of a file (an exported pool, or any text with keys) to the
+/// provider's pool.
+#[tauri::command]
+pub async fn import_api_keys(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<Option<SettingsView>> {
+    let Some(path) =
+        crate::files::pick_open_kind(&app, &window, "Key pool", &["txt", "csv", "json", "md"])
+            .await
+    else {
+        return Ok(None);
+    };
+    let bytes = crate::files::read_small_file(path, MAX_KEY_FILE_BYTES).await?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    add_api_keys(state, id, text).await.map(Some)
+}
+
 /// One key of a pool as the key manager shows it (never the key itself).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -370,7 +461,10 @@ pub async fn set_match_pool(state: State<'_, AppState>, on: bool) -> CommandResu
 
 /// Look for a newer release at startup, or not.
 #[tauri::command]
-pub async fn set_check_updates(state: State<'_, AppState>, on: bool) -> CommandResult<SettingsView> {
+pub async fn set_check_updates(
+    state: State<'_, AppState>,
+    on: bool,
+) -> CommandResult<SettingsView> {
     {
         let mut s = state.settings();
         s.check_updates = on;

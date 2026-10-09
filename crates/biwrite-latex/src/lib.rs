@@ -18,7 +18,8 @@ pub use locate::locate;
 pub use log::{Issue, Severity};
 pub use mirror::{MIRROR_DIR, redirect_include, with_chinese};
 pub use project::{
-    Engine, ProjectError, clean, engine_for, find_main, is_main, root_for, tex_files,
+    Engine, ProjectError, clean, engine_for, find_main, is_main, project_engine, root_for,
+    tex_files,
 };
 pub use synctex::{PdfBox, SourcePoint, SyncError};
 pub use templates::{Manifest, Template, TemplateError};

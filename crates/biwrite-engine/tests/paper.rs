@@ -396,3 +396,64 @@ async fn a_translation_that_breaks_the_structure_is_left_out_of_the_mirror() {
     assert!(mirror.text.contains("译文：Third paragraph."));
     assert!(!mirror.text.contains("Injected"));
 }
+
+#[tokio::test(start_paused = true)]
+async fn known_translations_start_translated_and_are_revised_when_edited() {
+    let h = harness(EngineSettings::default());
+    let first = "Tabular foundation models learn new tasks from a handful of labelled rows supplied in context.";
+    let text = format!("\\section{{Intro}}\n{first}\n\nSecond paragraph.\n\nThird paragraph.\n");
+    // Segment indices: 0 heading, 1 to 3 the paragraphs.
+    let known = vec![
+        (0, "引言".to_owned()),
+        (
+            1,
+            "表格基础模型能从上下文中少量带标签的行学习新任务。".to_owned(),
+        ),
+    ];
+    h.engine
+        .load_known(text.clone(), Mode::Latex, Direction::EnZh, known);
+    settle(&h.engine).await;
+    // Only the two paragraphs without a known translation were requested.
+    assert_eq!(h.translator.calls(), 2);
+    let all = h.engine.translations();
+    assert_eq!(all.len(), 4);
+    assert_eq!(all[0].1.as_deref(), Some("引言"));
+    assert_eq!(
+        all[1].1.as_deref(),
+        Some("表格基础模型能从上下文中少量带标签的行学习新任务。")
+    );
+    assert!(all.iter().all(|(_, t)| t.is_some()));
+
+    // Editing a paragraph with a known translation revises that translation.
+    h.engine.update(text.replacen("a handful of", "a few", 1));
+    assert!(h.engine.translations()[1].1.is_none());
+    settle(&h.engine).await;
+    assert_eq!(h.translator.calls(), 3);
+    let last = h.translator.requests().pop().unwrap();
+    let revision = last.revision.expect("a revision request");
+    assert_eq!(
+        revision.old_translation,
+        "表格基础模型能从上下文中少量带标签的行学习新任务。"
+    );
+    assert_eq!(revision.old_source, first);
+}
+
+#[tokio::test(start_paused = true)]
+async fn swapping_early_keeps_untranslated_paragraphs_and_restores_them() {
+    let h = harness(EngineSettings::default());
+    h.engine.load(PAPER.to_owned(), Mode::Latex);
+    // Nothing translated yet: a plain swap refuses, an early one goes ahead.
+    assert!(h.engine.swap(PAPER.to_owned()).is_err());
+    let swapped = h
+        .engine
+        .swap_keeping_untranslated(PAPER.to_owned())
+        .unwrap();
+    assert_eq!(h.engine.direction(), Direction::ZhEn);
+    assert_eq!(swapped.text, PAPER);
+    settle(&h.engine).await;
+    // Swapping back restores the English exactly, without requests.
+    let calls = h.translator.calls();
+    let back = h.engine.swap(swapped.text).unwrap();
+    assert_eq!(back.text, PAPER);
+    assert_eq!(h.translator.calls(), calls);
+}

@@ -51,6 +51,39 @@ fn compose_current(st: &State) -> Result<Composed, ComposeError> {
     compose(&st.doc, |seg| current(&st.meta, seg))
 }
 
+/// Like [`compose_current`], with each paragraph lacking a translation (or
+/// whose translation would change the structure) kept as it is.
+fn compose_keeping(st: &State) -> Result<Composed, ComposeError> {
+    let index: HashMap<SegmentId, usize> = st
+        .doc
+        .segments()
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.id, i))
+        .collect();
+    let mut keep: HashSet<usize> = HashSet::new();
+    loop {
+        let composed = compose(&st.doc, |seg| {
+            let pinned = index.get(&seg.id).is_some_and(|i| keep.contains(i));
+            current(&st.meta, seg)
+                .filter(|_| !pinned)
+                .or_else(|| Some(Insert::exact(seg.segment.content(st.doc.text()))))
+        });
+        match composed {
+            Err(ComposeError::Structure { index }) => {
+                let last = index.min(st.doc.segments().len().saturating_sub(1));
+                match (0..=last).rev().find(|i| !keep.contains(i)) {
+                    Some(i) => {
+                        keep.insert(i);
+                    }
+                    None => return composed,
+                }
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Attach each original to the segment it was spliced into. `compose`
 /// verified that the k-th translated segment of the new document holds
 /// exactly the k-th inserted text, so this is positional, not by hash:
@@ -90,9 +123,25 @@ impl Engine {
     /// Fails with [`EngineError::NotReady`] if any paragraph lacks an
     /// up-to-date translation, so no half-translated document is produced.
     pub fn swap(&self, text: String) -> Result<Swapped, EngineError> {
+        self.swap_with(text, false)
+    }
+
+    /// Swap now, before every paragraph is translated: paragraphs without
+    /// an up-to-date translation keep their text and come back unchanged
+    /// when swapping back.
+    pub fn swap_keeping_untranslated(&self, text: String) -> Result<Swapped, EngineError> {
+        self.swap_with(text, true)
+    }
+
+    fn swap_with(&self, text: String, keep: bool) -> Result<Swapped, EngineError> {
         let mut st = self.inner.lock();
         self.apply_locked(&mut st, text, None);
-        let composed = match compose_current(&st) {
+        let composed = if keep {
+            compose_keeping(&st)
+        } else {
+            compose_current(&st)
+        };
+        let composed = match composed {
             Ok(c) => c,
             Err(e) => {
                 self.emit_touched(st);

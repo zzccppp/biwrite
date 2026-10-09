@@ -20,6 +20,7 @@ pub mod glossary;
 pub mod hash;
 pub mod lang;
 pub mod mode;
+pub mod pair;
 pub mod protect;
 pub mod segment;
 pub mod textfile;

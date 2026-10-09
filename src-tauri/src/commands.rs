@@ -9,7 +9,8 @@ use tauri::{AppHandle, State, WebviewWindow};
 
 use crate::error::CommandResult;
 use crate::files;
-use crate::state::{AppState, FileState, SavedView, SessionView, display_name};
+use crate::pairing;
+use crate::state::{AppState, SavedView, SessionView, display_name};
 
 /// Cosmetic, so a failure is logged rather than failing the command (which
 /// could leave frontend and backend on different documents).
@@ -51,17 +52,12 @@ pub(crate) async fn load(
     path: PathBuf,
 ) -> CommandResult<SessionView> {
     let file = files::read_text_file(path.clone()).await?;
-    // The note must be in place before `load` starts the first requests.
-    state.engine.set_doc_note(Some(state.note_for(Some(&path))));
-    let snapshot = state
-        .engine
-        .load(file.text().to_owned(), Mode::from_path(&path));
-    log::info!("opened {} ({:?})", display_name(Some(&path)), snapshot.mode);
-    *state.file() = FileState {
-        path: Some(path),
-        file,
-        dirty: false,
+    // A file in the other language by the same name is its mirror.
+    let mirror = match pairing::counterpart(&path) {
+        Some(m) => files::read_text_file(m.clone()).await.ok().map(|f| (m, f)),
+        None => None,
     };
+    let snapshot = pairing::open(state, path, file, mirror);
     refresh_title(window, state);
     Ok(state.session_view(snapshot))
 }
@@ -74,7 +70,7 @@ pub async fn save_file(
     state: State<'_, AppState>,
     text: String,
 ) -> CommandResult<Option<SavedView>> {
-    let english = english_text(&state, text)?;
+    let english = saved_text(&state, text)?;
     let current = state.file().path.clone();
     let path = match current {
         Some(path) => path,
@@ -94,7 +90,7 @@ pub async fn save_file_as(
     state: State<'_, AppState>,
     text: String,
 ) -> CommandResult<Option<SavedView>> {
-    let english = english_text(&state, text)?;
+    let english = saved_text(&state, text)?;
     let current = state.file().path.clone();
     let Some(path) = files::pick_save(&app, &window, current.as_deref()).await else {
         return Ok(None);
@@ -102,9 +98,18 @@ pub async fn save_file_as(
     save_to(&window, &state, path, english).await.map(Some)
 }
 
-/// The file is always English. While editing Chinese, it is composed from
-/// the current translations (and refused if any paragraph is still pending).
-fn english_text(state: &AppState, editor_text: String) -> CommandResult<String> {
+/// What is written to the open file. Without a pair the file is always
+/// English: while editing Chinese, it is composed from the current
+/// translations (and refused if any paragraph is still pending). With a
+/// pair, each file holds its own language: the editor's text is written,
+/// and the mirror follows.
+fn saved_text(state: &AppState, editor_text: String) -> CommandResult<String> {
+    if state.file().pair.is_some() {
+        if state.engine.text() != editor_text {
+            state.engine.update(editor_text.clone());
+        }
+        return Ok(editor_text);
+    }
     match state.engine.direction() {
         Direction::EnZh => Ok(editor_text),
         Direction::ZhEn => {
@@ -141,23 +146,37 @@ async fn save_to(
     }
     refresh_title(window, state);
     log::info!("saved {}", display_name(Some(&path)));
+    let mirror = pairing::save_mirror(state).await?;
     Ok(SavedView {
         name: display_name(Some(&path)),
         suggested_mode: Mode::from_path(&path),
         path: path.display().to_string(),
+        mirror,
     })
 }
 
 /// Swap languages: the translations become the editable text and the
 /// current text becomes their translation. Unchanged paragraphs round-trip
-/// exactly. Fails if any paragraph is not translated yet.
+/// exactly. Fails if any paragraph is not translated yet, unless `keep`
+/// asks to swap now with those paragraphs unchanged.
 #[tauri::command]
 pub async fn swap_languages(
     window: WebviewWindow,
     state: State<'_, AppState>,
     text: String,
+    keep: Option<bool>,
 ) -> CommandResult<SessionView> {
-    let swapped = state.engine.swap(text.clone())?;
+    if state.file().pair.is_some() {
+        let view = pairing::swap(&state, text)?;
+        refresh_title(&window, &state);
+        return Ok(view);
+    }
+    // `keep`: swap now; untranslated paragraphs keep their text.
+    let swapped = if keep.unwrap_or(false) {
+        state.engine.swap_keeping_untranslated(text.clone())?
+    } else {
+        state.engine.swap(text.clone())?
+    };
     log::info!(
         "swapped languages: now {}",
         swapped.snapshot.direction.as_str()

@@ -34,6 +34,9 @@ pub enum Action {
     Ask,
     /// Write a figure or table (LaTeX or Markdown) to insert at the target.
     Figure,
+    /// The author rewrote the paragraph's translation (the instruction):
+    /// bring the paragraph in line with it.
+    Mirror,
 }
 
 impl Action {
@@ -44,13 +47,14 @@ impl Action {
             Self::Edit => "edit",
             Self::Ask => "ask",
             Self::Figure => "figure",
+            Self::Mirror => "mirror",
         }
     }
 
     /// The skill files the task's system prompt is built from, in order.
     pub fn skill_files(self) -> &'static [&'static str] {
         match self {
-            Self::Polish | Self::Edit => &["writing-deai.md", "writing-playbook.md"],
+            Self::Polish | Self::Edit | Self::Mirror => &["writing-deai.md", "writing-playbook.md"],
             Self::Ask => &[
                 "writing-playbook.md",
                 "knowledge/paper-anatomy.md",
@@ -245,6 +249,9 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
             "Answer the question in <instruction> about the text in <target>{}. Be concrete: quote the words you would change and say how. Answer in the language of the question.",
             if req.document.is_some() { " and the document" } else { "" }
         ),
+        Action::Mirror => format!(
+            "The author rewrote the {other} version of the text in <target>; the new {other} version is in <instruction>. Revise <target>, {kind} written in {src}, so that it says what the new {other} version says. Keep every part the new version does not change word for word, with its terms, commands, citations and math, and follow the rules in the wording you write."
+        ),
         Action::Figure => match req.mode {
             Mode::Latex => "Write the LaTeX for the figure or table that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>. Use only common packages (tikz, pgfplots, booktabs, graphicx), give it a caption and a \\label, and make it compile on its own inside the document.".to_owned(),
             _ => format!("Write the {kind} table or figure description that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>."),
@@ -264,7 +271,12 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
         user.push_str(" The attached images are references the author chose: follow their layout and style where the task allows.");
     }
     if masked.contains('⟦') {
-        user.push_str(" Each ⟦n⟧ in <target> stands for protected text such as math, a citation or a reference: keep every one in <revision> and <translation> unchanged, unless the instruction asks to remove it, and never invent a new one.");
+        let blocks = if action == Action::Mirror {
+            "<revision>"
+        } else {
+            "<revision> and <translation>"
+        };
+        user.push_str(&format!(" Each ⟦n⟧ in <target> stands for protected text such as math, a citation or a reference: keep every one in {blocks} unchanged, unless the instruction asks to remove it, and never invent a new one."));
     }
     match req.mode {
         Mode::Latex => user.push_str(
@@ -274,6 +286,9 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
         Mode::Plain => {}
     }
     let format = match action {
+        Action::Mirror => format!(
+            "\n\nReply in exactly this form:\n<revision>\nthe revised text in {src}, ready to replace <target>\n</revision>\n<changes_zh>\nat most three short lines in Chinese on what changed\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
+        ),
         Action::Polish | Action::Edit => format!(
             "\n\nReply in exactly this form:\n<revision>\nthe revised text in {src}, ready to replace <target>\n</revision>\n<translation>\na faithful {other} translation of the revised text\n</translation>\n<changes_zh>\nat most three short lines in Chinese on what changed and why\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>\nIf nothing should change, return the text unchanged in <revision> and say so in the change notes."
         ),
@@ -395,7 +410,11 @@ fn placeholder_counts(text: &str) -> BTreeMap<usize, usize> {
 pub fn parse(action: Action, text: &str, protector: &Protector) -> Result<Answer, AssistError> {
     let revision_raw = tag(text, "revision");
     let translation_raw = tag(text, "translation");
-    if matches!(action, Action::Polish | Action::Edit | Action::Figure) && revision_raw.is_none() {
+    if matches!(
+        action,
+        Action::Polish | Action::Edit | Action::Figure | Action::Mirror
+    ) && revision_raw.is_none()
+    {
         return Err(AssistError::NoRevision);
     }
     let mut answer = Answer {

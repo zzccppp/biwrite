@@ -90,6 +90,10 @@ pub fn parse_named_keys(text: &str) -> Result<Vec<NamedKey>, String> {
     let mut out: Vec<NamedKey> = Vec::new();
     let mut pending_name: Option<String> = None;
     for line in text.lines() {
+        // Comments (the header of an exported pool).
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
         let tokens: Vec<&str> = line
             .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '='))
             .map(|t| t.trim().trim_matches(['"', '\'']).trim_end_matches(':'))
