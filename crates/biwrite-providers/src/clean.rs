@@ -146,16 +146,13 @@ impl ThinkFilter {
                 return None; // could still become a think tag
             }
             match THINK_TAGS.iter().find(|(open, _)| t.starts_with(open)) {
-                Some((_, close)) => match t.find(close) {
-                    Some(end) => {
-                        let after = lead + end + close.len();
-                        let skip_ws =
-                            self.raw[after..].len() - self.raw[after..].trim_start().len();
-                        self.emitted = after + skip_ws;
-                        self.decided = true;
-                    }
-                    None => return None,
-                },
+                Some((_, close)) => {
+                    let end = t.find(close)?;
+                    let after = lead + end + close.len();
+                    let skip_ws = self.raw[after..].len() - self.raw[after..].trim_start().len();
+                    self.emitted = after + skip_ws;
+                    self.decided = true;
+                }
                 None => self.decided = true,
             }
         }

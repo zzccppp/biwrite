@@ -107,6 +107,9 @@ impl Translator for Scripted {
                 return Err(err);
             }
             let mut text = (self.transform)(&request.source);
+            // `try_update` replaces this name only from Rust 1.95 on, above the
+            // workspace's minimum version (1.85).
+            #[allow(deprecated)]
             let drop = self
                 .drop_placeholders
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
