@@ -40,6 +40,9 @@ const NEEDS: &[(&str, &str)] = &[
     ("\\scalebox", "graphicx"),
     ("\\multirow", "multirow"),
     ("\\makecell", "makecell"),
+    // Colours such as gray!20 are xcolor's, loaded before colortbl.
+    ("\\cellcolor", "xcolor"),
+    ("\\rowcolor", "xcolor"),
     ("\\cellcolor", "colortbl"),
     ("\\rowcolor", "colortbl"),
     ("\\textcolor", "xcolor"),
@@ -214,12 +217,12 @@ mod tests {
     fn a_snippet_names_what_it_needs() {
         let table = "\\begin{table}\\centering\\begin{tabular}{lr}\\toprule A & \\multirow{2}{*}{x}\\\\\
                      \\midrule\\cellcolor{gray}B & 1\\\\\\bottomrule\\end{tabular}\\end{table}";
-        assert_eq!(required(table), ["booktabs", "multirow", "colortbl"]);
+        assert_eq!(required(table), ["booktabs", "multirow", "xcolor", "colortbl"]);
         let plot = "\\begin{tikzpicture}\\begin{axis}\\addplot coordinates {(0,1)};\\end{axis}\\end{tikzpicture}";
         assert_eq!(required(plot), ["pgfplots"]);
         assert!(required("% \\includegraphics{x}\nplain").is_empty());
 
-        let have: BTreeSet<String> = ["booktabs".to_owned()].into();
+        let have: BTreeSet<String> = ["booktabs".to_owned(), "xcolor".to_owned()].into();
         assert_eq!(missing(table, &have), ["multirow", "colortbl"]);
         let have: BTreeSet<String> = ["pgfplots".to_owned(), "tikz".to_owned()].into();
         assert!(missing(plot, &have).is_empty());

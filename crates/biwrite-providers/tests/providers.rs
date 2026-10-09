@@ -521,3 +521,64 @@ async fn stream_cut_mid_event_is_a_retryable_early_end() {
     assert!(matches!(err, TranslateError::Network(_)), "{err:?}");
     assert!(err.is_retryable());
 }
+
+/// A figure in the style of a reference image: the image reaches the model
+/// with the text, in each API's own form.
+#[tokio::test]
+async fn reference_images_reach_the_model_in_each_api() {
+    use biwrite_providers::{ChatModel, ChatRequest, ImageInput, NoObserver, build_http};
+    let image = ImageInput {
+        media_type: "image/png".into(),
+        data: "iVBORw0KGgo=".into(),
+    };
+    let chat = |images: Vec<ImageInput>| ChatRequest {
+        purpose: "figure".into(),
+        system: "Rules.".into(),
+        user: "<instruction>bars like the image</instruction>".into(),
+        images,
+    };
+
+    // OpenAI-compatible Chat Completions: text first, then image_url parts.
+    let server = MockServer::start().await;
+    server.push(openai_ok(&["<revision>x</revision>"]));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let p = build_http(
+        &config(ProviderKind::OpenaiCompatible, &format!("{}/v1", server.base), "gpt-x"),
+        key_fn(calls),
+        Arc::new(DefaultPrompts),
+        Arc::new(NoObserver),
+    )
+    .unwrap();
+    let model: Arc<dyn ChatModel> = p;
+    model.complete(&chat(vec![image.clone()]), &|_| {}).await.unwrap();
+    let body = server.requests()[0].json();
+    let content = &body["messages"][1]["content"];
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[1]["type"], "image_url");
+    assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,iVBORw0KGgo=");
+    // Without images, the content stays a plain string.
+    server.push(openai_ok(&["<revision>x</revision>"]));
+    model.complete(&chat(Vec::new()), &|_| {}).await.unwrap();
+    assert!(server.requests()[1].json()["messages"][1]["content"].is_string());
+
+    // Anthropic Messages: images first, as base64 sources, then the text.
+    let server = MockServer::start().await;
+    server.push(anthropic_ok(&["<revision>x</revision>"], "end_turn"));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let p = build_http(
+        &config(ProviderKind::Anthropic, &server.base, "claude-x"),
+        key_fn(calls),
+        Arc::new(DefaultPrompts),
+        Arc::new(NoObserver),
+    )
+    .unwrap();
+    let model: Arc<dyn ChatModel> = p;
+    model.complete(&chat(vec![image]), &|_| {}).await.unwrap();
+    let body = server.requests()[0].json();
+    let content = &body["messages"][0]["content"];
+    assert_eq!(content[0]["type"], "image");
+    assert_eq!(content[0]["source"]["type"], "base64");
+    assert_eq!(content[0]["source"]["media_type"], "image/png");
+    assert_eq!(content[0]["source"]["data"], "iVBORw0KGgo=");
+    assert_eq!(content[1]["type"], "text");
+}

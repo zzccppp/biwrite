@@ -64,8 +64,17 @@ function chineseText(): string {
     const from = PAPER.indexOf(b, at);
     at = from + b.length;
     const kind = latexKind(b, body >= 0 && from < body);
-    return kind.type === "paragraph" ? (sampleChinese(b) ?? b) : b;
+    return kind.type === "paragraph" ? inPlace(b) : b;
   }).join("\n\n");
+}
+
+/** The block with each known English text replaced by its Chinese, its
+ * LaTeX structure (\\section{…}, environments, labels) kept. */
+function inPlace(block: string): string {
+  const pairs = Object.entries(PAPER_ZH as Record<string, string>).sort((a, b) => b[0].length - a[0].length);
+  let out = block;
+  for (const [en, zh] of pairs) if (out.includes(en)) out = out.split(en).join(zh);
+  return out;
 }
 
 /** Indices (in `EN_BLOCKS`) of the sample paper's paragraphs. */
@@ -173,6 +182,8 @@ const state = {
   records: [] as RequestRecord[],
   /** Translations the assistant handed over (for UI tests). */
   offers: [] as { source: string; translation: string }[],
+  /** The last assistant request (for UI tests). */
+  lastAssist: null as Record<string, unknown> | null,
 };
 
 /** Paragraphs separated by blank lines (LaTeX blocks get a rough kind). */
@@ -219,9 +230,11 @@ function snapshot(full = true): Snapshot {
     const index = segs.indexOf(s);
     // The Chinese file's own language is Chinese: its translation is English.
     const chineseSource = state.direction === "zh-en";
-    const shown = chineseSource
-      ? (EN_BLOCKS[index] ?? source)
-      : ((LATEX ? sampleChinese(source) : null) ?? fakeChinese(source));
+    // A translation the assistant handed over wins.
+    const offered = state.offers.find((o) => o.source.trim() === source.trim())?.translation;
+    const shown =
+      offered ??
+      (chineseSource ? (EN_BLOCKS[index] ?? source) : ((LATEX ? sampleChinese(source) : null) ?? fakeChinese(source)));
     const waiting = !chineseSource && state.pending.has(index);
     const filling = chineseSource && state.kept.has(index);
     return {
@@ -415,6 +428,11 @@ We present UniClean, a cleaning system that composes operators into a pipeline a
 const TABLE =
   "\\begin{table}[t]\n  \\centering\n  \\caption{Accuracy on four benchmarks (\\%).}\n  \\label{tab:accuracy}\n  \\begin{tabular}{lrrrr}\n    \\toprule\n    Method & Cora & CiteSeer & PubMed & arXiv \\\\\n    \\midrule\n    Fine-tuned GNN & 81.5 & 70.3 & 79.0 & 71.7 \\\\\n    Prompt graph (ours) & 80.9 & 69.8 & 78.6 & 70.9 \\\\\n    \\bottomrule\n  \\end{tabular}\n\\end{table}";
 
+const TABLE_NOTES = {
+  zh: ["三线表，两行方法对比四个基准，数值取自第 5 节。"],
+  en: ["A booktabs table: two methods on four benchmarks, numbers from Section 5."],
+};
+
 function emitLater(delay: number, payload: unknown): void {
   setTimeout(() => void emit("assist", clone(payload)), delay);
 }
@@ -487,8 +505,11 @@ const handlers: Record<string, (args: Args) => unknown> = {
   },
   latex_choose_bin: () => handlers.latex_status({}),
   latex_reset_bin: () => handlers.latex_status({}),
-  latex_project: () =>
-    LATEX ? { folder: "gnn-icl", root: "paper.tex", current: "paper.tex", engine: "pdflatex", files: ["paper.tex", "sections/appendix.tex"] } : null,
+  latex_project: () => {
+    if (!LATEX) return null;
+    const main = ZH_FILE ? "paper_zh.tex" : "paper.tex";
+    return { folder: "gnn-icl", root: main, current: main, engine: ZH_FILE ? "xelatex" : "pdflatex", files: [main, "sections/appendix.tex"] };
+  },
   latex_open: () => session(),
   latex_open_folder: () => session(),
   latex_compile: async (a): Promise<BuildView> => {
@@ -580,6 +601,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   latex_reveal_templates: () => null,
   assist_start: (a) => {
     const req = a.request as { action: string; text: string; from: number; to: number; instruction: string };
+    state.lastAssist = clone(a.request) as Record<string, unknown>;
     const id = nextJob++;
     let [from, to] = req.from === req.to ? paragraphAround(req.text, req.from) : [req.from, req.to];
     const insert = req.action === "figure" || req.action === "write";
@@ -609,8 +631,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
               : req.action === "ask"
                 ? null
                 : p.translation,
-        changesZh: req.action === "ask" ? [] : req.action === "write" ? WRITTEN.zh : p.zh,
-        changesEn: req.action === "ask" ? [] : req.action === "write" ? WRITTEN.en : p.en,
+        changesZh:
+          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.zh : req.action === "figure" ? TABLE_NOTES.zh : p.zh,
+        changesEn:
+          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.en : req.action === "figure" ? TABLE_NOTES.en : p.en,
         answer:
           req.action === "ask"
             ? "第二句的“seems important”没有给出依据。建议改为指向结果的陈述，例如写明消息传递带来的准确率提升，并引用对应的表。"

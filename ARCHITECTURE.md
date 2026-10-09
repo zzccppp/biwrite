@@ -459,6 +459,40 @@ resolve to their target and permissions are preserved.
 * **Interface language** (`src/lib/messages.ts`, `i18n.svelte.ts`). Every
   string has English and Chinese, and `t()` follows the reactive language.
 
+## Version 0.2.2
+
+* **The file's own language** (`FileState::home`). The direction in which
+  the editor holds the open file's text: `EnZh` for an English file, `ZhEn`
+  for a Chinese one, judged on opening by `biwrite_core::lang::written_in`
+  (translatable paragraphs, protected spans masked, Chinese must prevail).
+  Saving (`commands::home_text`), both PDFs, the exported `.tex` and SyncTeX
+  follow it. While the other language is edited, the file's text is
+  composed from the translations. `retarget_language` reads the file as the other
+  language, from the file's own text.
+* **Fills** (`SegMeta::fill`, `State::fill`, the `segment-fills` event). A
+  swap made before every paragraph is translated keeps those paragraphs in
+  the file's language and marks them. Each is translated the other way
+  round (from the cache when it can, its own batches otherwise, never
+  streamed to the right pane) and sent to the editor, which replaces the
+  paragraph if it still reads as before. Its translation stays the exact
+  original through a seed on the new text's hash.
+  `Engine::continue_translation` takes up failed and paused paragraphs and,
+  swapped, paragraphs still in the other language.
+* **PDF clicks** (`latex_commands::checked_point`). The words under a click
+  are checked against the line SyncTeX names. When they are not there (a
+  line-number ruler drawn over the page), `biwrite_latex::find_words` finds
+  them in the document as compiled and the project's other files.
+* **Writing and figures** (`Action::Write`, `biwrite_latex::packages`).
+  Write inserts new paragraphs after the target in the manner of reference
+  texts, which can be files (`load_reference` keeps a `.tex` body without
+  comments). Figures are told the packages the document loads, and the
+  packages their code still needs are added before `\begin{document}` on
+  insert when the open file holds the preamble.
+* **Tray** (`src-tauri/src/tray.rs`). Closing the window hides it when the
+  setting is on, the icon's menu shows it or quits (asking about unsaved
+  changes), and a second launch on Windows shows the running window
+  (single-instance plugin).
+
 ## Milestones
 
 | | Scope | Status |
@@ -469,6 +503,7 @@ resolve to their target and permissions are preserved.
 | M4 | Placeholder protection, glossary, revise prompts, scroll-sync polish, KaTeX math on the right, bilingual Markdown export | done |
 | M5 | macOS then Windows packaging | done |
 | 0.2 | LaTeX PDF with SyncTeX and templates, pairs with a hand-made translation, writing assistant on research-builder, key pools, request log, updates, Chinese interface | done |
+| 0.2.2 | The file's own language, early swaps filled in, continue, writing in the manner of a reference paper, figure packages, PDF clicks through rulers, tray | done |
 
 Revise prompting (M4 tuning): a glossary-only change (same source, new
 entries) sends just `<previous_translation>` with "revise it minimally so it

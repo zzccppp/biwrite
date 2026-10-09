@@ -342,3 +342,24 @@ fn figures_are_told_which_packages_the_document_loads() {
     assert!(!p.user.contains("<loaded_packages>"));
     assert!(p.user.contains("compile on its own"));
 }
+
+#[test]
+fn a_figure_with_a_reference_image_imitates_its_style() {
+    let req = Request {
+        action: Action::Figure,
+        mode: Mode::Latex,
+        target: "We compare the methods.",
+        instruction: "Accuracy on four benchmarks, like the attached chart.",
+        images: 1,
+        ..Default::default()
+    };
+    let p = build(&req, &skill());
+    assert!(p.user.contains("show the figure to imitate"));
+    assert!(p.user.contains("layout, colour scheme, marks, line styles, fonts and legend placement"));
+    assert!(p.user.contains("in TikZ or pgfplots"));
+    assert!(p.user.contains("Never take numbers or labels from the image"));
+    // Other tasks keep the general wording.
+    let edit = build(&Request { action: Action::Edit, ..req }, &skill());
+    assert!(edit.user.contains("follow their layout and style"));
+    assert!(!edit.user.contains("figure to imitate"));
+}

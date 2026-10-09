@@ -222,7 +222,7 @@
     </button>
     <div class="menu-host" bind:this={allMenu}>
       <button
-        class="tool secondary"
+        class="tool"
         class:on={allOpen}
         onclick={() => (allOpen = !allOpen)}
         aria-haspopup="menu"

@@ -517,9 +517,13 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
 /// a sentence of each section file is found in the PDF, and a click on it
 /// there selects it in the section.
 #[tokio::test]
-#[ignore = "needs a TeX distribution and BIWRITE_REAL_PAPER"]
+#[ignore = "needs a TeX distribution; uses BIWRITE_REAL_PAPER"]
 async fn workflow_clicks_in_a_real_paper_land_in_its_sections() {
-    let main = PathBuf::from(std::env::var("BIWRITE_REAL_PAPER").unwrap());
+    let Ok(main) = std::env::var("BIWRITE_REAL_PAPER") else {
+        eprintln!("skipped: BIWRITE_REAL_PAPER names no paper (a copy of its main file)");
+        return;
+    };
+    let main = PathBuf::from(main);
     let root = main.parent().unwrap().to_owned();
     let dir = temp("real");
     let app = tauri::test::mock_app();
@@ -579,4 +583,142 @@ async fn workflow_clicks_in_a_real_paper_land_in_its_sections() {
     }
     assert!(checked >= 3, "only {checked} sections checked");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What models write for "Figure": a grouped bar chart, a pipeline diagram
+/// with its own TikZ libraries, a table with merged and coloured cells, and
+/// two subfigures of an image in the project.
+const FIGURES: &str = r"\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}
+    \begin{axis}[ybar, bar width=8pt, width=0.9\linewidth, height=4.5cm,
+        symbolic x coords={Cora,CiteSeer,PubMed,arXiv}, xtick=data,
+        ylabel={Accuracy (\%)}, ymin=60, ymax=90,
+        legend style={at={(0.5,1.03)}, anchor=south, legend columns=-1},
+        nodes near coords, every node near coord/.append style={font=\tiny}]
+      \addplot coordinates {(Cora,81.5) (CiteSeer,70.3) (PubMed,79.0) (arXiv,71.7)};
+      \addplot coordinates {(Cora,80.9) (CiteSeer,69.8) (PubMed,78.6) (arXiv,70.9)};
+      \legend{Fine-tuned GNN, Prompt graph}
+    \end{axis}
+  \end{tikzpicture}
+  \caption{Accuracy on four benchmarks.}
+  \label{fig:bars}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \usetikzlibrary{arrows.meta,positioning}
+  \begin{tikzpicture}[node distance=6mm, box/.style={draw, rounded corners, inner sep=3pt}]
+    \node[box] (q) {Query node};
+    \node[box, right=of q] (p) {Prompt graph};
+    \node[box, right=of p] (g) {Frozen GNN};
+    \draw[-{Stealth}] (q) -- (p);
+    \draw[-{Stealth}] (p) -- (g);
+  \end{tikzpicture}
+  \caption{The prompt graph pipeline.}
+  \label{fig:pipeline}
+\end{figure}
+
+\begin{table}[t]
+  \centering
+  \caption{Accuracy (\%) by setting.}
+  \label{tab:settings}
+  \begin{tabular}{llrr}
+    \toprule
+    Setting & Method & Cora & PubMed \\
+    \midrule
+    \multirow{2}{*}{5-shot} & Fine-tuned & 81.5 & 79.0 \\
+     & \cellcolor{gray!15}Ours & \cellcolor{gray!15}80.9 & \cellcolor{gray!15}78.6 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}{0.45\linewidth}
+    \includegraphics[width=\linewidth]{figures/sample.png}
+    \caption{Before.}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}{0.45\linewidth}
+    \includegraphics[width=\linewidth]{figures/sample.png}
+    \caption{After.}
+  \end{subfigure}
+  \caption{Two subfigures.}
+  \label{fig:sub}
+\end{figure}";
+
+/// A 1 x 1 PNG.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+    0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+    0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+fn errors(issues: &[crate::latex_commands::IssueView]) -> Vec<String> {
+    issues
+        .iter()
+        .filter(|i| i.severity == biwrite_latex::Severity::Error)
+        .map(|i| i.message.clone())
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn workflow_figures_the_assistant_writes_compile_in_every_template() {
+    for id in ["iclr2027", "pvldb", "ieee-tii"] {
+        let dir = temp(&format!("figures-{id}"));
+        let app = tauri::test::mock_app();
+        let (state, _, _) = workflow_state(&dir);
+        app.manage(state);
+        let state = app.state::<AppState>();
+        let (project, main, text) = new_paper(&state, &dir, id).await;
+        std::fs::create_dir_all(project.join("figures")).unwrap();
+        std::fs::write(project.join("figures/sample.png"), PNG).unwrap();
+        let before = latex_compile(state.clone(), Lang::En, text.clone()).await.unwrap();
+        assert!(before.has_pdf, "{id}: {}", before.output);
+        let before_zh = latex_compile(state.clone(), Lang::Zh, text.clone()).await.unwrap();
+
+        // Inserted as the window does: after a paragraph, with the missing
+        // packages before \begin{document}.
+        let (loaded, here) = crate::latex_commands::document_packages(&state, &text).unwrap();
+        assert!(here, "{id}: the main file holds the preamble");
+        let missing = biwrite_latex::packages::missing(FIGURES, &loaded);
+        let after_para = text.find("We assign one").unwrap();
+        let end = after_para + text[after_para..].find("\n\n").unwrap();
+        let mut with = text.clone();
+        with.insert_str(end, &format!("\n\n{FIGURES}"));
+        let at = with.find("\\begin{document}").unwrap();
+        let lines: String = missing.iter().map(|p| format!("\\usepackage{{{p}}}\n")).collect();
+        with.insert_str(at, &lines);
+        state.engine.update(with.clone());
+        settle(&state).await;
+        write_document(&state, main.clone(), with.clone(), None).await.unwrap();
+
+        let after = latex_compile(state.clone(), Lang::En, with.clone()).await.unwrap();
+        assert!(after.has_pdf, "{id}: {}", after.output);
+        let new: Vec<String> = errors(&after.issues)
+            .into_iter()
+            .filter(|e| !errors(&before.issues).contains(e))
+            .collect();
+        assert!(new.is_empty(), "{id}: the figures add errors {new:?} (packages added {missing:?})");
+        let (loaded, _) = crate::latex_commands::document_packages(&state, &with).unwrap();
+        assert!(biwrite_latex::packages::missing(FIGURES, &loaded).is_empty(), "{id}");
+
+        // The Chinese PDF carries them too.
+        let zh = latex_compile(state.clone(), Lang::Zh, with).await.unwrap();
+        assert!(zh.has_pdf, "{id} Chinese: {}", zh.output);
+        let zh_new: Vec<String> = errors(&zh.issues)
+            .into_iter()
+            .filter(|e| !errors(&before_zh.issues).contains(e))
+            .collect();
+        assert!(
+            errors(&zh.issues).len() <= errors(&before_zh.issues).len(),
+            "{id} Chinese: more errors with the figures"
+        );
+        assert!(zh_new.is_empty(), "{id} Chinese: {zh_new:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

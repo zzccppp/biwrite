@@ -296,7 +296,9 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
     } else if !req.references.is_empty() {
         user.push_str(" The <reference_text> blocks show the style to follow (wording, sentence length, structure). Do not copy their content.");
     }
-    if req.images > 0 {
+    if req.images > 0 && action == Action::Figure {
+        user.push_str(" The attached images show the figure to imitate. Draw the same kind of chart or diagram with the same layout, colour scheme, marks, line styles, fonts and legend placement, in TikZ or pgfplots, with the data and labels the instruction and the paper give. Never take numbers or labels from the image unless the instruction says so.");
+    } else if req.images > 0 {
         user.push_str(" The attached images are references the author chose: follow their layout and style where the task allows.");
     }
     if masked.contains('⟦') {

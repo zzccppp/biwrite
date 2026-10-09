@@ -7,14 +7,16 @@ once. You write on the left (LaTeX, Markdown or plain text). The right pane
 shows the other language, one block per paragraph, and only the paragraphs
 you change are translated again. A LaTeX paper compiles into a PDF beside
 the source, a click on a sentence in the PDF selects it in the source, and a
-writing assistant polishes, edits or answers questions on the selection with
-the rules of the [research-builder](https://github.com/qzkinhit/research-builder)
-skill. The interface is in English or Chinese.
+writing assistant polishes, edits, answers questions, writes new paragraphs in
+the manner of a published paper and writes figures, with the rules of the
+[research-builder](https://github.com/qzkinhit/research-builder) skill. The
+interface is in English or Chinese.
 
-The illustrated user guide covers every feature step by step:
-[User guide (PDF)](src-tauri/resources/docs/BiWrite-Manual-en.pdf) ·
-[使用说明（PDF）](src-tauri/resources/docs/BiWrite-Manual-zh.pdf). The **Guide** button in
-the toolbar opens it too.
+The illustrated user guide follows one paper from a template to submission and
+then covers every feature step by step:
+[User guide (PDF)](docs/manual/BiWrite-Manual-en.pdf) ·
+[使用说明（PDF）](docs/manual/BiWrite-Manual-zh.pdf). The **Guide** button in
+the toolbar opens it on GitHub.
 
 ![Writing in English with the Chinese beside it](docs/images/en/editor.jpg)
 
@@ -37,15 +39,16 @@ the toolbar opens it too.
 
 | Area | What you get |
 |---|---|
-| [Bilingual editing](#bilingual-editing) | English on the left, Chinese on the right (or the other way round with `EN ⇄ 中`). Only edited paragraphs are translated again, revised from their previous translation. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back byte for byte. |
+| [Bilingual editing](#bilingual-editing) | English on the left, Chinese on the right (or the other way round with `EN ⇄ 中`). Only edited paragraphs are translated again, revised from their previous translation. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back byte for byte. A Chinese file opens as the Chinese side, and swapping before everything is translated fills in the rest as it arrives. |
 | [LaTeX](#latex-papers) | Compiles with your TeX distribution (latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX, as the project's `latexmkrc` or packages ask). The PDF shows in the right pane, a click in the PDF selects the sentence in the source, `⌘⌥J` shows the cursor's place in the PDF, and problems link to their lines. A Chinese PDF is built from the translation. |
 | [Your own Chinese version](#an-existing-chinese-version) | `paper.tex` with `paper_zh.tex`, or `sections_en/` with `sections_zh/`, pair up paragraph by paragraph. Your Chinese becomes the translation with no requests, and saving writes each edited paragraph into the other file in place. |
-| [Writing assistant](#writing-assistant) | Polish, edit by instruction, ask, write figures or tables, or rewrite a paragraph's translation and let the paragraph follow. Jobs run in the background, results come as a diff with the Chinese, and you decide what is applied. |
+| [Writing assistant](#writing-assistant) | Polish, edit by instruction, ask, write new paragraphs in the manner of a reference paper (add its `.tex`), write figures or tables (with the packages they need), or rewrite a paragraph's translation and let the paragraph follow. Jobs run in the background, and you decide what is applied. |
 | [Templates](#templates) | VLDB (PVLDB 2027), ICLR 2027 and IEEE TII built in. Import a project folder or a `.zip` as a template, export a project as one, open any LaTeX folder. |
 | [Model providers](#set-up-a-model-provider) | OpenAI-compatible Chat Completions (OpenAI, DeepSeek, Qwen, Kimi, OpenRouter, local servers such as Ollama), the OpenAI Responses API and the Anthropic Messages API, with presets, third-party services such as AnyRouter among them. Translation and the assistant can use different providers. |
 | [Key pools](#key-pools-and-third-party-apis) | Many named keys per provider, used evenly with a per-key limit, failover on rate limits, import and export to a file. |
 | [Request log](#request-log) | Every model request with the model, reasoning effort and service tier that were sent and the ones the server declared, timings, tokens and the key used. |
 | [Updates](#updates) | Any GitHub release can be installed from inside the app, pre-releases (branch builds) and older versions included. |
+| [Window](#install) | Closing the window keeps BiWrite in the menu bar or notification area with the document open. Settings turns this off. |
 
 ## Install
 
@@ -63,6 +66,10 @@ first launch needs your approval:
   /Applications/BiWrite.app` does the same.
 * **Windows.** When SmartScreen shows *Windows protected your PC*, click
   *More info*, then *Run anyway*.
+
+Closing the window keeps BiWrite running in the menu bar (macOS) or the
+notification area (Windows), where its icon shows the window again or quits.
+Settings, *Window*, turns this off.
 
 LaTeX support needs a TeX distribution: MacTeX on macOS, TeX Live or MiKTeX
 on Windows and Linux. BiWrite finds it in the usual places. One installed
@@ -98,11 +105,20 @@ elsewhere can be chosen in Settings, under *LaTeX*.
   right. Only the Chinese paragraphs you change get new English, and the
   other paragraphs keep your English word for word when you swap back. The
   swap waits for paragraphs still being translated, and a second press swaps
-  at once with those paragraphs as they are.
-* **Save** (`⌘S`) overwrites the file. While you edit the Chinese, it writes
-  the English composed from the translations. **Save As** (`⌘⇧S`) suggests a
-  name not taken yet, such as `paper-2.tex`, and leaves the original as it
-  was.
+  at once. Those paragraphs keep their text for the moment and are filled in
+  on the left as their translations arrive.
+* **All** opens a menu with *Retranslate every paragraph*, *Continue with the
+  rest* (failed paragraphs, paragraphs waiting while translation is paused,
+  and paragraphs still in the other language after an early swap) and *Read
+  the document as Chinese* (or as English).
+* A Chinese file opens as the Chinese side and is translated into English.
+  The PDFs and the exported `.tex` follow the file's language. A mixed
+  document taken for the wrong language is set right from the **All** menu,
+  or with `EN ⇄ 中` when the text plainly is the other language.
+* **Save** (`⌘S`) overwrites the file with its own language, composed from
+  the translations while you edit the other one. **Save As** (`⌘⇧S`)
+  suggests a name not taken yet, such as `paper-2.tex`, and leaves the
+  original as it was.
 
 ## LaTeX papers
 
@@ -162,15 +178,22 @@ paragraph at the cursor:
 * **Polish** (`⌘⇧P` polishes the paragraph at the cursor) applies the
   writing rules. It removes AI-style phrasing and dashes or semicolons that
   splice sentences, and keeps claims, numbers, citations and formulas.
-* **Edit** follows your instruction, **Ask** answers a question about the
-  text or the whole paper (with follow-up questions), **Figure** writes a
-  figure or table to insert after the paragraph.
+* **Edit** follows your instruction, and **Ask** answers a question about
+  the text or the whole paper (with follow-up questions).
+* **Write** writes new paragraphs after the paragraph at the cursor, as your
+  instruction says. Add a published paper with *+ File* under *References*
+  (a `.tex` file gives its body without comments) and the new text follows
+  its manner, never its sentences, claims, numbers or citations. The
+  paragraphs come with their Chinese.
+* **Figure** writes a figure or table to insert after the paragraph. The
+  model is told which packages the document loads, and packages the code
+  still needs are added to the preamble on insert.
 * **Via translation** fills the box with the paragraph's Chinese. Rewrite the
   Chinese, run it, and the English is revised to say the same, with as little
   change as possible. The pencil on every translated paragraph starts it.
 * *Context* sends the paragraph alone, with its neighbours, or with the whole
-  paper. *References to imitate* takes text samples or images (a figure whose
-  style to follow).
+  paper. *References* takes passages, files (`.tex`, `.md`, `.txt`) or
+  images (a figure whose style to follow).
 
 Every job runs in the background. The result shows the changes as a diff,
 the Chinese of the revision and the reasons in both languages. *Accept*
@@ -263,6 +286,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 npm run check                   # svelte-check, fails on warnings
 npm test                        # frontend unit tests
 cargo test -p biwrite-latex --test tex -- --ignored   # builds with your TeX
+cargo test -p biwrite --lib -- --ignored workflow      # a paper from each template, every step, with your TeX
 ```
 
 The code is split into crates without Tauri (`biwrite-core` for segments,
