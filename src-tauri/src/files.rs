@@ -105,6 +105,44 @@ pub async fn pick_save_kind<R: Runtime>(
     rx.await.ok().flatten().and_then(|p| p.into_path().ok())
 }
 
+/// Native folder picker. `None` if cancelled.
+pub async fn pick_folder<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+    title: &str,
+) -> Option<PathBuf> {
+    let (tx, rx) = oneshot::channel();
+    app.dialog()
+        .file()
+        .set_parent(window)
+        .set_title(title)
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+}
+
+/// Native "Save" dialog naming a new folder (for a new paper). `None` if
+/// cancelled.
+pub async fn pick_new_folder<R: Runtime>(
+    app: &AppHandle<R>,
+    window: &WebviewWindow<R>,
+    title: &str,
+    suggested: &str,
+) -> Option<PathBuf> {
+    let (tx, rx) = oneshot::channel();
+    app.dialog()
+        .file()
+        .set_parent(window)
+        .set_title(title)
+        .set_can_create_directories(true)
+        .set_file_name(suggested)
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+}
+
 /// Read a small file whole (blocking IO off the async runtime), refusing
 /// anything over `max_bytes`.
 pub async fn read_small_file(path: PathBuf, max_bytes: u64) -> CommandResult<Vec<u8>> {
@@ -182,6 +220,24 @@ pub fn reveal(dir: &Path) -> CommandResult<()> {
         .spawn()
         .map(|_| ())
         .map_err(|e| CommandError::io(dir, e))
+}
+
+/// Show a file selected in Finder / Explorer (its folder elsewhere).
+pub fn reveal_file(path: &Path) -> CommandResult<()> {
+    let spawned = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()
+    } else {
+        let dir = path.parent().unwrap_or(Path::new("."));
+        std::process::Command::new("xdg-open").arg(dir).spawn()
+    };
+    spawned.map(|_| ()).map_err(|e| CommandError::io(path, e))
 }
 
 /// Links the webview may ask to open in the browser, by name. The webview

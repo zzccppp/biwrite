@@ -1,0 +1,7 @@
+{
+  "name": "VLDB (PVLDB Vol. 20, 2027)",
+  "description": "Official PVLDB template: acmart v2.19 (sigconf) with pvldb.sty, ACM reference format.",
+  "main": "main.tex",
+  "engine": "pdflatex",
+  "source": "https://github.com/vldbproceedings/VLDB-Template"
+}

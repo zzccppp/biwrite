@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::assist_commands::AssistState;
 use crate::error::CommandError;
+use crate::latex_commands::LatexState;
 use crate::request_log::RequestLog;
 use crate::secrets::SecretStore;
 use crate::settings::{AppSettings, Paths};
@@ -66,9 +67,11 @@ pub struct AppState {
     pub(crate) assistant_http: Mutex<HttpInUse>,
     pub assist: AssistState,
     pub skills: SkillStore,
+    pub latex: LatexState,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         engine: Engine,
         cache: Arc<dyn TranslationCache>,
@@ -77,6 +80,7 @@ impl AppState {
         secrets: Arc<dyn SecretStore>,
         request_log: Arc<RequestLog>,
         skills: SkillStore,
+        latex: LatexState,
     ) -> Self {
         Self {
             engine,
@@ -96,6 +100,7 @@ impl AppState {
             assistant_http: Mutex::new(None),
             assist: AssistState::default(),
             skills,
+            latex,
         }
     }
 

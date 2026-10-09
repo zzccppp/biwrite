@@ -7,7 +7,7 @@
 //! translates back to its exact original wording, so swapping back (or
 //! saving the English while editing Chinese) changes only edited paragraphs.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use biwrite_core::{
     Bilingual, ComposeError, Composed, ContentHash, DocSegment, DocumentModel, Insert, SegmentId,
@@ -17,6 +17,14 @@ use biwrite_core::{
 use crate::engine::{Engine, EngineError};
 use crate::events::Snapshot;
 use crate::state::{SegMeta, State};
+
+/// Result of [`Engine::compose_mirror`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct Mirror {
+    pub text: String,
+    /// Paragraphs that kept their source text.
+    pub untranslated: usize,
+}
 
 /// Result of [`Engine::swap`].
 #[derive(Debug)]
@@ -116,6 +124,60 @@ impl Engine {
     pub fn compose_target(&self) -> Result<String, EngineError> {
         let st = self.inner.lock();
         Ok(compose_current(&st)?.text)
+    }
+
+    /// The document in the other language for previewing it (the Chinese
+    /// PDF): paragraphs without an up-to-date translation, and translations
+    /// that would change the document's structure, keep the source text.
+    /// Returns the text and how many paragraphs kept their source.
+    pub fn compose_mirror(&self) -> Mirror {
+        let st = self.inner.lock();
+        let index: HashMap<SegmentId, usize> = st
+            .doc
+            .segments()
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.id, i))
+            .collect();
+        let mut keep: HashSet<usize> = HashSet::new();
+        // Each failed attempt pins one more paragraph to its source.
+        for _ in 0..=st.doc.segments().len() {
+            let mut kept = 0;
+            let composed = compose(&st.doc, |seg| {
+                let source = seg.segment.content(st.doc.text());
+                let pinned = index.get(&seg.id).is_some_and(|i| keep.contains(i));
+                match current(&st.meta, seg).filter(|_| !pinned) {
+                    Some(insert) => Some(insert),
+                    None => {
+                        kept += 1;
+                        Some(Insert::exact(source))
+                    }
+                }
+            });
+            match composed {
+                Ok(c) => {
+                    return Mirror {
+                        text: c.text,
+                        untranslated: kept,
+                    };
+                }
+                // The paragraph named, else the closest one before it.
+                Err(ComposeError::Structure { index }) => {
+                    let last = index.min(st.doc.segments().len().saturating_sub(1));
+                    match (0..=last).rev().find(|i| !keep.contains(i)) {
+                        Some(i) => {
+                            keep.insert(i);
+                        }
+                        None => break,
+                    }
+                }
+                Err(ComposeError::NotReady { .. }) => break,
+            }
+        }
+        Mirror {
+            text: st.doc.text().to_owned(),
+            untranslated: st.doc.segments().len(),
+        }
     }
 
     /// Bilingual Markdown: each paragraph in English, then in Chinese.

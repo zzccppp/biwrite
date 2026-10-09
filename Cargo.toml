@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["src-tauri", "crates/biwrite-core", "crates/biwrite-engine", "crates/biwrite-providers"]
+members = [
+    "src-tauri",
+    "crates/biwrite-core",
+    "crates/biwrite-engine",
+    "crates/biwrite-providers",
+    "crates/biwrite-latex",
+]
 
 [workspace.package]
 version = "0.1.1"
@@ -12,6 +18,7 @@ license = "MIT"
 biwrite-core = { path = "crates/biwrite-core" }
 biwrite-engine = { path = "crates/biwrite-engine" }
 biwrite-providers = { path = "crates/biwrite-providers" }
+biwrite-latex = { path = "crates/biwrite-latex" }
 blake3 = "1.8.7"
 serde = { version = "1.0.229", features = ["derive"] }
 keyring = "4.2.0"

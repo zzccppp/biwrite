@@ -1,0 +1,64 @@
+\documentclass[journal,twoside,web]{ieeecolor}
+\usepackage{generic}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{booktabs}
+\markboth{\journalname, VOL. XX, NO. XX, XXXX}
+{Author \MakeLowercase{\textit{et al.}}: Title of the Paper}
+
+\begin{document}
+\title{Title of the Paper}
+\author{First A. Author, \IEEEmembership{Member, IEEE}, and Second B. Author
+\thanks{Manuscript received Month DD, YYYY. (Corresponding author: First A. Author.)}
+\thanks{First A. Author and Second B. Author are with the Department of Computer Science, University Name, City 000000, Country (e-mail: first@university.edu; second@university.edu).}}
+
+\maketitle
+
+\begin{abstract}
+The abstract states the problem, the method and the main result in a single paragraph of 150 to 250 words. It contains no citations, no displayed equations and no abbreviations that the abstract does not define.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Data quality, industrial informatics, machine learning.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:introduction}
+\IEEEPARstart{T}{his} skeleton follows the format of the IEEE Transactions on Industrial Informatics. Replace each paragraph with the text of the paper and keep one paragraph per source line, so that every paragraph is translated and polished as one unit. Typesetting conventions follow the \TeX{} literature~\cite{knuth1984,lamport1994}.
+
+\section{Method}
+\label{sec:method}
+Equation~\eqref{eq:decision} shows the format of a numbered display equation.
+\begin{equation}
+  \hat{y} = \arg\max_{y \in \mathcal{Y}} p(y \mid x).
+  \label{eq:decision}
+\end{equation}
+
+\section{Experiments}
+\label{sec:experiments}
+Table~\ref{tab:results} shows the format of a results table.
+\begin{table}[t]
+  \centering
+  \caption{Accuracy on Two Datasets}
+  \label{tab:results}
+  \begin{tabular}{lcc}
+    \toprule
+    Method & Dataset A & Dataset B \\
+    \midrule
+    Baseline & 0.81 & 0.74 \\
+    Proposed & \textbf{0.86} & \textbf{0.79} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Conclusion}
+\label{sec:conclusion}
+The conclusion restates the contribution and the evidence for it in a few sentences.
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

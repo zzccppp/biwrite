@@ -1,0 +1,20 @@
+[package]
+name = "biwrite-latex"
+description = "LaTeX support for BiWrite: TeX toolchain, compiling, SyncTeX, log parsing, paper templates. No Tauri dependency."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "time", "io-util", "rt"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "time"] }
+
+[lints]
+workspace = true

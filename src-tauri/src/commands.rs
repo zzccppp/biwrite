@@ -40,6 +40,16 @@ pub async fn open_file(
     let Some(path) = files::pick_open(&app, &window).await else {
         return Ok(None);
     };
+    load(&window, &state, path).await.map(Some)
+}
+
+/// Make `path` the open document (the caller has dealt with unsaved
+/// changes).
+pub(crate) async fn load(
+    window: &WebviewWindow,
+    state: &AppState,
+    path: PathBuf,
+) -> CommandResult<SessionView> {
     let file = files::read_text_file(path.clone()).await?;
     // The note must be in place before `load` starts the first requests.
     state.engine.set_doc_note(Some(state.note_for(Some(&path))));
@@ -52,8 +62,8 @@ pub async fn open_file(
         file,
         dirty: false,
     };
-    refresh_title(&window, &state);
-    Ok(Some(state.session_view(snapshot)))
+    refresh_title(window, state);
+    Ok(state.session_view(snapshot))
 }
 
 /// Save to the current path (asks for one if the document is untitled).

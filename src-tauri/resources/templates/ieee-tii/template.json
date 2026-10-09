@@ -1,0 +1,7 @@
+{
+  "name": "IEEE TII (Transactions on Industrial Informatics)",
+  "description": "IEEE TII article class (ieeecolor with the TII header) and IEEEtran references, with a short skeleton paper.",
+  "main": "main.tex",
+  "engine": "pdflatex",
+  "source": "https://www.ieee-ies.org/pubs/transactions-on-industrial-informatics"
+}

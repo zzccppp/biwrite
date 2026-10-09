@@ -26,7 +26,7 @@ pub use events::{
 pub use mock::MockTranslator;
 pub use sqlite_cache::SqliteCache;
 pub use state::{EngineSettings, MAX_BATCH};
-pub use swap::Swapped;
+pub use swap::{Mirror, Swapped};
 pub use translator::{
     BatchOutput, BatchPartialFn, BoxFuture, GlossaryEntry, PartialFn, Revision, TokenUsage,
     TranslateError, TranslationOutput, TranslationRequest, Translator,

@@ -296,12 +296,14 @@ dependencies = [
  "base64 0.23.1",
  "biwrite-core",
  "biwrite-engine",
+ "biwrite-latex",
  "biwrite-providers",
  "keyring",
  "log",
  "reqwest",
  "serde",
  "serde_json",
+ "similar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -331,6 +333,17 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "biwrite-latex"
+version = "0.1.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "zip",
 ]
 
 [[package]]
@@ -4270,6 +4283,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

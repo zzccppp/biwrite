@@ -64,6 +64,7 @@ async fn key_never_appears_in_views_or_settings_file() {
         secrets,
         log,
         crate::skills::SkillStore::new(None, None),
+        crate::latex_commands::LatexState::new(dir.join("templates"), dir.join("user-templates")),
     );
     state.apply_active_provider().unwrap();
     let snapshot = state.engine.load("Hello world.".into(), Mode::Plain);

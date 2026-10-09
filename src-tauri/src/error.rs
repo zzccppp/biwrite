@@ -23,6 +23,11 @@ pub enum CommandError {
     Task(String),
     #[error("{0}")]
     Settings(String),
+    #[error("{0}")]
+    Latex(String),
+    /// A newer request replaced this one (a build, for example).
+    #[error("cancelled")]
+    Cancelled,
     /// Provider errors are already redacted at the source.
     #[error(transparent)]
     Provider(#[from] TranslateError),

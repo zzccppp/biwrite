@@ -5,6 +5,8 @@ mod commands;
 mod error;
 mod files;
 mod glossary_commands;
+mod latex_commands;
+mod latex_sync;
 mod log_commands;
 mod logging;
 mod provider_state;
@@ -91,7 +93,26 @@ pub fn run() {
                     .ok()
                     .map(|d| d.join("skills/research-builder")),
             );
-            let state = AppState::new(engine, cache, settings, paths, secrets, request_log, skills);
+            let latex = latex_commands::LatexState::new(
+                app.path()
+                    .resource_dir()
+                    .map(|d| d.join("resources/templates"))
+                    .unwrap_or_default(),
+                app.path()
+                    .app_data_dir()
+                    .map(|d| d.join("templates"))
+                    .unwrap_or_default(),
+            );
+            let state = AppState::new(
+                engine,
+                cache,
+                settings,
+                paths,
+                secrets,
+                request_log,
+                skills,
+                latex,
+            );
             state.set_translation_http(active_id, built.http);
             if let Some(path) = std::env::args_os().nth(1).map(std::path::PathBuf::from) {
                 // `biwrite paper.tex`: open a file from the command line.
@@ -161,6 +182,28 @@ pub fn run() {
             assist_commands::choose_skill_folder,
             assist_commands::reset_skill_folder,
             assist_commands::reveal_skill,
+            latex_commands::latex_status,
+            latex_commands::latex_set_compile_on_save,
+            latex_commands::latex_choose_bin,
+            latex_commands::latex_reset_bin,
+            latex_commands::latex_project,
+            latex_commands::latex_open,
+            latex_commands::latex_open_folder,
+            latex_commands::latex_compile,
+            latex_commands::latex_cancel,
+            latex_commands::latex_pdf,
+            latex_commands::latex_reveal_pdf,
+            latex_commands::latex_save_pdf,
+            latex_commands::latex_inverse,
+            latex_commands::latex_forward,
+            latex_commands::latex_locate,
+            latex_commands::latex_goto,
+            latex_commands::latex_templates,
+            latex_commands::latex_new_paper,
+            latex_commands::latex_import_template,
+            latex_commands::latex_export_template,
+            latex_commands::latex_delete_template,
+            latex_commands::latex_reveal_templates,
             log_commands::get_request_log,
             log_commands::set_request_log,
             log_commands::clear_request_log,

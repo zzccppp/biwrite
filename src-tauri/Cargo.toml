@@ -18,6 +18,7 @@ tauri-build = { version = "2.7.1", features = [] }
 base64 = "0.23"
 biwrite-core.workspace = true
 biwrite-engine.workspace = true
+biwrite-latex.workspace = true
 biwrite-providers.workspace = true
 keyring.workspace = true
 # Both are already part of the build (via keyring and tauri); `local-offset`
@@ -26,6 +27,7 @@ log = "0.4.34"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+similar.workspace = true
 thiserror.workspace = true
 tauri = { version = "2.12.2", features = [] }
 tauri-plugin-dialog = "2.8.1"

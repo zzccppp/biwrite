@@ -61,6 +61,26 @@ pub struct AppSettings {
     /// downloaded research-builder skill.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skill_folder: Option<String>,
+    pub latex: LatexSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LatexSettings {
+    /// Build the PDF after each save of a `.tex` file.
+    pub compile_on_save: bool,
+    /// The folder with the TeX programs, when it is not found by itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tex_bin: Option<String>,
+}
+
+impl Default for LatexSettings {
+    fn default() -> Self {
+        Self {
+            compile_on_save: true,
+            tex_bin: None,
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -76,6 +96,7 @@ impl Default for AppSettings {
             batch_size: 1,
             match_pool: true,
             skill_folder: None,
+            latex: LatexSettings::default(),
         }
     }
 }
@@ -267,6 +288,7 @@ pub struct SettingsView {
     pub match_pool: bool,
     /// Parallel requests in effect (see `AppSettings::effective_concurrency`).
     pub effective_concurrency: usize,
+    pub latex: LatexSettings,
 }
 
 pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> SettingsView {
@@ -298,6 +320,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         batch_size: settings.batch_size,
         match_pool: settings.match_pool,
         effective_concurrency: settings.effective_concurrency(),
+        latex: settings.latex.clone(),
     }
 }
 

@@ -1,0 +1,7 @@
+{
+  "name": "ICLR 2027",
+  "description": "Official ICLR 2027 conference template with natbib and the ICLR math commands.",
+  "main": "iclr2027_conference.tex",
+  "engine": "pdflatex",
+  "source": "https://github.com/ICLR/Master-Template"
+}

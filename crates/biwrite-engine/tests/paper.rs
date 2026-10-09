@@ -349,3 +349,50 @@ async fn bilingual_export_is_the_same_from_either_side() {
     assert_eq!(h.engine.bilingual_markdown().text, english_side);
     assert!(!swapped.text.is_empty());
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_mirror_keeps_untranslated_paragraphs_in_the_source() {
+    let h = harness(EngineSettings::default());
+    h.engine.load(PAPER.to_owned(), Mode::Latex);
+    // Nothing translated yet: the mirror is the source itself.
+    let mirror = h.engine.compose_mirror();
+    assert_eq!(mirror.text, PAPER);
+    assert_eq!(mirror.untranslated, TRANSLATABLE as usize);
+
+    settle(&h.engine).await;
+    let full = h.engine.compose_mirror();
+    assert_eq!(full.untranslated, 0);
+    assert_eq!(full.text, h.engine.compose_target().unwrap());
+
+    // An edited paragraph waits for its translation: only it stays English,
+    // and every line keeps its place.
+    let edited = PAPER.replacen("Future work", "In future work", 1);
+    h.engine.update(edited);
+    let partial = h.engine.compose_mirror();
+    assert_eq!(partial.untranslated, 1);
+    assert!(partial.text.contains("In future work"));
+    assert_eq!(partial.text.lines().count(), full.text.lines().count());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_translation_that_breaks_the_structure_is_left_out_of_the_mirror() {
+    // The "translation" of the second paragraph opens a new section.
+    let translator = Scripted::mapping(std::time::Duration::from_millis(10), |s| {
+        if s.starts_with("Second") {
+            "第二段。\n\\section{Injected}\n更多。".to_owned()
+        } else {
+            format!("译文：{s}")
+        }
+    });
+    let engine = engine_with(translator);
+    let text = "\\section{One}\nFirst paragraph.\n\nSecond paragraph.\n\nThird paragraph.\n";
+    engine.load(text.to_owned(), Mode::Latex);
+    settle(&engine).await;
+    assert!(engine.compose_target().is_err());
+    let mirror = engine.compose_mirror();
+    assert_eq!(mirror.untranslated, 1);
+    assert!(mirror.text.contains("译文：First paragraph."));
+    assert!(mirror.text.contains("\nSecond paragraph.\n"));
+    assert!(mirror.text.contains("译文：Third paragraph."));
+    assert!(!mirror.text.contains("Injected"));
+}
