@@ -18,6 +18,7 @@
     swapWaiting: boolean;
     onopen: () => void;
     onsave: () => void;
+    onsaveas: () => void;
     onexport: () => void;
     onmode: (mode: Mode) => void;
     onretranslate: () => void;
@@ -48,6 +49,7 @@
     swapWaiting,
     onopen,
     onsave,
+    onsaveas,
     onexport,
     onmode,
     onretranslate,
@@ -89,6 +91,10 @@
     <button class="tool" onclick={onsave} title={t("toolbar.saveTitle", { save: `${mod}S`, saveAs: `${mod}⇧S` })}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5v3h5v-3M5 13.5v-4h6v4" /></svg>
       <span class="smallcaps">{t("common.save")}</span>
+    </button>
+    <button class="tool secondary" onclick={onsaveas} title={t("toolbar.saveAsTitle", { mod })}>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5v3h5v-3M8 8.5v4M6 10.5h4" /></svg>
+      <span class="smallcaps">{t("toolbar.saveAs")}</span>
     </button>
     <button class="tool secondary" onclick={onexport} title={t("toolbar.exportTitle")}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2.5M5.5 5 8 2.5 10.5 5M3 9v4.5h10V9" /></svg>

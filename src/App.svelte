@@ -998,6 +998,7 @@
     onfile={(file) => openProjectFile(file)}
     onopen={open}
     onsave={() => save(false)}
+    onsaveas={() => save(true)}
     onexport={exportBilingual}
     onmode={changeMode}
     onretranslate={retranslateActive}

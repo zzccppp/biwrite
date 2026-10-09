@@ -79,7 +79,9 @@ pub async fn save_file(
             None => return Ok(None),
         },
     };
-    save_to(&window, &state, path, english).await.map(Some)
+    save_to(&window, &state, path, english, None)
+        .await
+        .map(Some)
 }
 
 /// Save under a new name.
@@ -95,7 +97,19 @@ pub async fn save_file_as(
     let Some(path) = files::pick_save(&app, &window, current.as_deref()).await else {
         return Ok(None);
     };
-    save_to(&window, &state, path, english).await.map(Some)
+    // A pair keeps its old files: the mirror follows under the new name.
+    let mirror_to = {
+        let fs = state.file();
+        match (&current, fs.pair.as_ref()) {
+            (Some(old), Some(pair)) if *old != path => {
+                Some(pairing::mirror_path_for(old, &path, &pair.path))
+            }
+            _ => None,
+        }
+    };
+    save_to(&window, &state, path, english, mirror_to)
+        .await
+        .map(Some)
 }
 
 /// What is written to the open file. Without a pair the file is always
@@ -125,6 +139,7 @@ async fn save_to(
     state: &AppState,
     path: PathBuf,
     text: String,
+    mirror_to: Option<PathBuf>,
 ) -> CommandResult<SavedView> {
     let _one_save_at_a_time = state.save_lock.lock().await;
     let note = state.doc_note();
@@ -146,7 +161,10 @@ async fn save_to(
     }
     refresh_title(window, state);
     log::info!("saved {}", display_name(Some(&path)));
-    let mirror = pairing::save_mirror(state).await?;
+    let mirror = match mirror_to {
+        Some(dest) => pairing::save_mirror_as(state, dest).await?,
+        None => pairing::save_mirror(state).await?,
+    };
     Ok(SavedView {
         name: display_name(Some(&path)),
         suggested_mode: Mode::from_path(&path),

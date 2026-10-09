@@ -394,6 +394,11 @@ export const messages = {
     en: "New paper from a template, open a LaTeX folder, manage templates",
     zh: "从模板新建论文、打开 LaTeX 文件夹、管理模板",
   },
+  "toolbar.saveAs": { en: "Save As", zh: "另存为" },
+  "toolbar.saveAsTitle": {
+    en: "Save under a new name ({mod}⇧S). A paired translation is saved under the matching new name, and the old files stay as they were.",
+    zh: "以新文件名保存（{mod}⇧S）。配对的译文文件按对应的新名字一起另存，原来的文件保持不变。",
+  },
   "toolbar.swapWaiting": {
     en: "Swapping as soon as every paragraph is translated. Click again to swap now: untranslated paragraphs stay as they are.",
     zh: "所有段落译完后自动切换。再点一次立即切换，未译完的段落保持原文。",

@@ -49,7 +49,8 @@ pub async fn pick_save<R: Runtime>(
             if let Some(dir) = path.parent() {
                 dialog = dialog.set_directory(dir);
             }
-            if let Some(name) = path.file_name() {
+            // A name not taken yet, so keeping it never replaces a file.
+            if let Some(name) = fresh_path(path).file_name() {
                 dialog = dialog.set_file_name(name.to_string_lossy());
             }
         }
@@ -59,6 +60,31 @@ pub async fn pick_save<R: Runtime>(
         let _ = tx.send(path);
     });
     rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+}
+
+/// `path` itself if free, else the first free `stem-2.ext`, `stem-3.ext`, …
+pub fn fresh_path(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_path_buf();
+    }
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // `paper-2` saved as again becomes `paper-3`, not `paper-2-2`.
+    let base = match stem.rsplit_once('-') {
+        Some((head, n)) if !head.is_empty() && n.parse::<u32>().is_ok() => head.to_owned(),
+        _ => stem.clone(),
+    };
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    (2..10_000)
+        .map(|n| dir.join(format!("{base}-{n}{ext}")))
+        .find(|p| !p.exists())
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Native "Open" dialog for one kind of file (CSV, ...). `None` if cancelled.
@@ -321,6 +347,22 @@ fn sync_dir(_dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_names_count_up() {
+        let dir = std::env::temp_dir().join(format!("biwrite-fresh-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("paper.tex");
+        assert_eq!(fresh_path(&a), a);
+        fs::write(&a, "x").unwrap();
+        assert_eq!(fresh_path(&a), dir.join("paper-2.tex"));
+        fs::write(dir.join("paper-2.tex"), "x").unwrap();
+        assert_eq!(
+            fresh_path(&dir.join("paper-2.tex")),
+            dir.join("paper-3.tex")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn atomic_write_replaces_content_byte_for_byte() {

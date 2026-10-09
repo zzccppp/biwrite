@@ -390,6 +390,66 @@ pub async fn save_mirror(state: &AppState) -> CommandResult<Option<MirrorSaved>>
     }))
 }
 
+/// Where the mirror goes when the document is saved as `new_source`: the
+/// same change of name (`paper` → `paper-2` makes `paper_zh` → `paper_zh-2`),
+/// in the mirror's folder, never an existing file.
+pub fn mirror_path_for(old_source: &Path, new_source: &Path, old_mirror: &Path) -> PathBuf {
+    let stem = |p: &Path| {
+        p.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let (os, ns, ms) = (stem(old_source), stem(new_source), stem(old_mirror));
+    let new_stem = match (ns.strip_prefix(&os), ms.strip_prefix(&os)) {
+        (Some(suffix), _) => format!("{ms}{suffix}"),
+        (None, Some(tag)) => format!("{ns}{tag}"),
+        (None, None) => format!("{ns}_{}", if is_chinese(&ms) { "zh" } else { "mirror" }),
+    };
+    let ext = old_mirror
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let dir = old_mirror.parent().unwrap_or(Path::new("."));
+    files::fresh_path(&dir.join(format!("{new_stem}{ext}")))
+}
+
+/// Write the mirror to `dest` (a Save As of the document): the pair moves
+/// there, and the old mirror stays as it was.
+pub async fn save_mirror_as(state: &AppState, dest: PathBuf) -> CommandResult<Option<MirrorSaved>> {
+    let (text, links, changed, pending, bytes) = {
+        let fs = state.file();
+        let Some(pair) = fs.pair.as_ref() else {
+            return Ok(None);
+        };
+        let (text, links, changed, pending) = match patched(state, pair) {
+            Ok((t, l, c)) => (t, Some(l), c, 0),
+            // Paragraphs still on their way follow once translated.
+            Err(p) => (pair.text.clone(), None, 0, p),
+        };
+        let bytes = pair.file.encode(&text);
+        (text, links, changed, pending, bytes)
+    };
+    files::write_file_atomic(dest.clone(), bytes.clone()).await?;
+    {
+        let mut fs = state.file();
+        if let Some(pair) = fs.pair.as_mut() {
+            pair.path = dest.clone();
+            pair.file = pair.file.saved(text.clone(), bytes);
+            pair.text = text;
+            if let Some(links) = links {
+                pair.links = links;
+            }
+        }
+    }
+    log::info!("saved the mirror as {}", display_name(Some(&dest)));
+    Ok(Some(MirrorSaved {
+        name: display_name(Some(&dest)),
+        written: true,
+        pending,
+        changed,
+    }))
+}
+
 /// Pair the open document with a mirror the user picks.
 #[tauri::command]
 pub async fn import_mirror(
@@ -567,6 +627,26 @@ mod tests {
             Some(dir.join("sections_en/intro.tex"))
         );
         assert_eq!(counterpart(&dir.join("lone.tex")), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saved_as_mirrors_follow_the_new_name() {
+        let dir = temp("saveas");
+        let p = |n: &str| dir.join(n);
+        assert_eq!(
+            mirror_path_for(&p("paper.tex"), &p("paper-2.tex"), &p("paper_zh.tex")),
+            p("paper_zh-2.tex")
+        );
+        assert_eq!(
+            mirror_path_for(&p("paper.tex"), &p("draft.tex"), &p("paper_zh.tex")),
+            p("draft_zh.tex")
+        );
+        std::fs::write(p("draft_zh.tex"), "x").unwrap();
+        assert_eq!(
+            mirror_path_for(&p("paper.tex"), &p("draft.tex"), &p("paper_zh.tex")),
+            p("draft_zh-2.tex")
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
