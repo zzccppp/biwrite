@@ -109,6 +109,10 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
     if tc.latexmk {
         let mut args = vec![
             job.engine.latexmk_flag().to_owned(),
+            // Go on past errors: XeLaTeX writes no PDF otherwise (latexmk
+            // stops before xdvipdfmx), and a PDF with the errors listed beats
+            // none.
+            "-f".to_owned(),
             "-synctex=1".to_owned(),
             "-interaction=nonstopmode".to_owned(),
             "-file-line-error".to_owned(),

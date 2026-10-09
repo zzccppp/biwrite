@@ -200,6 +200,24 @@ async fn errors_are_reported_with_their_line() {
 
 #[tokio::test]
 #[ignore = "needs a TeX distribution"]
+async fn xelatex_writes_a_pdf_despite_errors() {
+    let tc = toolchain().await;
+    let dir = scratch("xe-errors");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "\\documentclass{article}\n\\usepackage{graphicx}\n\\usepackage[UTF8]{ctex}\n\\begin{document}\n中文段落。\n\\includegraphics{missing.pdf}\n\\end{document}\n",
+    )
+    .unwrap();
+    let built = compile(&tc, &job(&dir, "main.tex", Engine::Xelatex)).await.unwrap();
+    assert_eq!(built.outcome, Outcome::Errors, "{}", built.output);
+    assert!(built.pdf.is_some());
+    assert!(built.issues.iter().any(|i| i.severity == Severity::Error && i.line == Some(6)));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
 async fn a_build_that_never_ends_is_stopped() {
     let tc = toolchain().await;
     let dir = scratch("loop");
