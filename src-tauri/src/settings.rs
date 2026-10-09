@@ -57,6 +57,10 @@ pub struct AppSettings {
     /// With a per-key limit, run as many requests as the pool carries
     /// (keys × limit) instead of `concurrency`.
     pub match_pool: bool,
+    /// A skill folder of the author's own, used instead of the bundled or
+    /// downloaded research-builder skill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_folder: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -71,6 +75,7 @@ impl Default for AppSettings {
             request_log: LogSettings::default(),
             batch_size: 1,
             match_pool: true,
+            skill_folder: None,
         }
     }
 }

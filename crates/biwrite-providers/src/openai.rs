@@ -4,6 +4,7 @@
 use biwrite_engine::{PartialFn, TokenUsage, TranslateError};
 use serde_json::{Value, json};
 
+use crate::chat::ImageInput;
 use crate::clean::ThinkFilter;
 use crate::http::{Core, Flow, describe_stream_error, invalid, read_sse, stream_error_object};
 use crate::observe::{Declared, Tap, UsageDetail};
@@ -18,14 +19,27 @@ pub(crate) const DROPPABLE: &[(&str, &[&str])] = &[
 ];
 
 /// Request body and the optional parameters it includes.
-pub(crate) fn body(core: &Core, system: &str, user: &str) -> Body {
+pub(crate) fn body(core: &Core, system: &str, user: &str, images: &[ImageInput]) -> Body {
     let config = &core.config;
     let mut sent = Vec::new();
+    // Plain text stays a string (what every compatible server accepts);
+    // images need the content-part form.
+    let user_content = if images.is_empty() {
+        json!(user)
+    } else {
+        let mut parts = vec![json!({"type": "text", "text": user})];
+        parts.extend(
+            images
+                .iter()
+                .map(|i| json!({"type": "image_url", "image_url": {"url": i.data_url()}})),
+        );
+        json!(parts)
+    };
     let mut json = json!({
         "model": config.model,
         "messages": [
             {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role": "user", "content": user_content},
         ],
         "stream": true,
     });

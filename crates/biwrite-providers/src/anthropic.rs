@@ -10,6 +10,7 @@ use biwrite_engine::{PartialFn, TokenUsage, TranslateError};
 use reqwest::RequestBuilder;
 use serde_json::{Value, json};
 
+use crate::chat::ImageInput;
 use crate::clean::ThinkFilter;
 use crate::http::{Core, Flow, invalid, read_sse, redact, status_error};
 use crate::observe::{Declared, Tap, UsageDetail};
@@ -56,14 +57,27 @@ pub(crate) fn uses_fallbacks(model: &str, base_url: &str) -> bool {
 }
 
 /// Request body and the optional parameters it includes.
-pub(crate) fn body(core: &Core, system: &str, user: &str) -> Body {
+pub(crate) fn body(core: &Core, system: &str, user: &str, images: &[ImageInput]) -> Body {
     let config = &core.config;
     let mut sent = Vec::new();
+    // Images go before the text, as the Messages API recommends.
+    let content = if images.is_empty() {
+        json!(user)
+    } else {
+        let mut parts: Vec<Value> = images
+            .iter()
+            .map(|i| {
+                json!({"type": "image", "source": {"type": "base64", "media_type": i.media_type, "data": i.data}})
+            })
+            .collect();
+        parts.push(json!({"type": "text", "text": user}));
+        json!(parts)
+    };
     let mut json = json!({
         "model": config.model,
         "max_tokens": MAX_TOKENS,
         "system": system,
-        "messages": [{"role": "user", "content": user}],
+        "messages": [{"role": "user", "content": content}],
         "stream": true,
     });
     if sends_temperature(&config.model) && !core.is_dropped("temperature") {

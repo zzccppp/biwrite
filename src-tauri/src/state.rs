@@ -9,10 +9,12 @@ use biwrite_engine::{Engine, Snapshot, TranslationCache};
 use biwrite_providers::HttpProvider;
 use serde::Serialize;
 
+use crate::assist_commands::AssistState;
 use crate::error::CommandError;
 use crate::request_log::RequestLog;
 use crate::secrets::SecretStore;
 use crate::settings::{AppSettings, Paths};
+use crate::skills::SkillStore;
 
 /// An HTTP provider in use, with the id of its settings entry.
 pub type HttpInUse = Option<(String, Arc<HttpProvider>)>;
@@ -62,6 +64,8 @@ pub struct AppState {
     pub(crate) translation_http: Mutex<HttpInUse>,
     /// The provider the writing assistant uses, built on first use.
     pub(crate) assistant_http: Mutex<HttpInUse>,
+    pub assist: AssistState,
+    pub skills: SkillStore,
 }
 
 impl AppState {
@@ -72,6 +76,7 @@ impl AppState {
         paths: Paths,
         secrets: Arc<dyn SecretStore>,
         request_log: Arc<RequestLog>,
+        skills: SkillStore,
     ) -> Self {
         Self {
             engine,
@@ -89,6 +94,8 @@ impl AppState {
             request_log,
             translation_http: Mutex::new(None),
             assistant_http: Mutex::new(None),
+            assist: AssistState::default(),
+            skills,
         }
     }
 

@@ -17,7 +17,7 @@ use reqwest::RequestBuilder;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde_json::Value;
 
-use crate::chat::{ChatModel, ChatOutput, ChatRequest};
+use crate::chat::{ChatModel, ChatOutput, ChatRequest, ImageInput};
 use crate::clean::{clean_output, strip_reasoning};
 use crate::config::{ProviderConfig, ProviderKind, WireApi};
 use crate::http::{Core, error_from_response, invalid, send};
@@ -126,11 +126,18 @@ impl HttpProvider {
         }
     }
 
-    fn body(&self, system: &str, user: &str, purpose: &str, route: u64) -> Body {
+    fn body(
+        &self,
+        system: &str,
+        user: &str,
+        images: &[ImageInput],
+        purpose: &str,
+        route: u64,
+    ) -> Body {
         match self.wire {
-            Wire::Chat => openai::body(&self.core, system, user),
-            Wire::Responses => responses::body(&self.core, system, user, purpose, route),
-            Wire::Anthropic => anthropic::body(&self.core, system, user),
+            Wire::Chat => openai::body(&self.core, system, user, images),
+            Wire::Responses => responses::body(&self.core, system, user, images, purpose, route),
+            Wire::Anthropic => anthropic::body(&self.core, system, user, images),
         }
     }
 
@@ -176,6 +183,7 @@ impl HttpProvider {
         purpose: &str,
         system: &str,
         user: &str,
+        images: &[ImageInput],
         on_partial: PartialFn<'_>,
     ) -> Result<Streamed, TranslateError> {
         let droppable = self.droppable();
@@ -183,7 +191,7 @@ impl HttpProvider {
         let mut key_retries = 0;
         loop {
             let lease = self.core.keys.acquire().await?;
-            let body = self.body(system, user, purpose, lease.route);
+            let body = self.body(system, user, images, purpose, lease.route);
             let mut tap = Tap::start(
                 &self.core.observer,
                 RequestRecord {
@@ -194,6 +202,11 @@ impl HttpProvider {
                     key: Some(lease.key_use()),
                     request: body.declared.clone(),
                     prompt_chars: system.chars().count() + user.chars().count(),
+                    notes: if images.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![format!("{} image(s) attached", images.len())]
+                    },
                     ..Default::default()
                 },
             );
@@ -243,7 +256,7 @@ impl HttpProvider {
     ) -> Result<TranslationOutput, TranslateError> {
         let messages = prompt::build(req, self.core.prompts.system_prompt(req.direction));
         let out = self
-            .exchange(TRANSLATE, &messages.system, &messages.user, on_partial)
+            .exchange(TRANSLATE, &messages.system, &messages.user, &[], on_partial)
             .await?;
         let cleaned = clean_output(&out.text, &req.source);
         if cleaned.is_empty() {
@@ -276,7 +289,7 @@ impl HttpProvider {
             }
         };
         let out = self
-            .exchange(TRANSLATE, &messages.system, &messages.user, &show)
+            .exchange(TRANSLATE, &messages.system, &messages.user, &[], &show)
             .await?;
         let texts = prompt::parse_batch(&out.text, reqs.len())
             .into_iter()
@@ -298,7 +311,13 @@ impl HttpProvider {
         on_partial: PartialFn<'_>,
     ) -> Result<ChatOutput, TranslateError> {
         let out = self
-            .exchange(&req.purpose, &req.system, &req.user, on_partial)
+            .exchange(
+                &req.purpose,
+                &req.system,
+                &req.user,
+                &req.images,
+                on_partial,
+            )
             .await?;
         let text = strip_reasoning(&out.text).trim().to_owned();
         if text.is_empty() {

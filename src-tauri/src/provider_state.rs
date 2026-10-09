@@ -4,11 +4,14 @@
 use std::path::Path;
 use std::sync::{Arc, MutexGuard, PoisonError};
 
+use biwrite_core::assist::Skill;
 use biwrite_engine::{MockTranslator, Translator};
 use biwrite_providers::{
-    HttpProvider, KeyFn, KeyStatus, PromptFiles, PromptSource, ProviderKind, RequestObserver,
-    build_http,
+    DefaultPrompts, HttpProvider, KeyFn, KeyStatus, PromptFiles, PromptSource, ProviderKind,
+    RequestObserver, build_http,
 };
+
+use crate::skills::SkillInfo;
 
 use crate::error::{CommandError, CommandResult};
 use crate::secrets::{self, SecretStore};
@@ -97,6 +100,56 @@ impl AppState {
             .translation_http
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = http.map(|h| (id, h));
+    }
+
+    /// The writing assistant's model. When the assistant uses the
+    /// translation provider, it shares that provider's key pool, so per-key
+    /// limits hold across both.
+    pub fn assistant_model(&self) -> CommandResult<Arc<HttpProvider>> {
+        let entry = self.settings().assistant().clone();
+        if entry.config.kind == ProviderKind::Mock {
+            return Err(CommandError::Settings(
+                "choose a model for the writing assistant in Settings (the offline mock cannot write)".into(),
+            ));
+        }
+        let shared = self
+            .translation_http
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .filter(|(id, _)| *id == entry.config.id);
+        if let Some((_, http)) = shared {
+            return Ok(http);
+        }
+        let mut cached = self
+            .assistant_http
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((id, http)) = cached.as_ref()
+            && *id == entry.config.id
+        {
+            return Ok(Arc::clone(http));
+        }
+        let http = build_http(
+            &entry.config,
+            key_fn(&self.secrets, &entry.config.id),
+            Arc::new(DefaultPrompts),
+            self.request_log.clone(),
+        )?;
+        *cached = Some((entry.config.id.clone(), Arc::clone(&http)));
+        Ok(http)
+    }
+
+    /// The skill the assistant follows.
+    pub fn skill(&self) -> CommandResult<(Arc<Skill>, SkillInfo)> {
+        let folder = self
+            .settings()
+            .skill_folder
+            .clone()
+            .map(std::path::PathBuf::from);
+        self.skills.current(folder.as_deref()).ok_or_else(|| {
+            CommandError::Settings("the writing skill is missing from this installation".into())
+        })
     }
 
     /// Drop the assistant's provider, so the next request builds it again

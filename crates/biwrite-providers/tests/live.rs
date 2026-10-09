@@ -301,3 +301,93 @@ async fn anyrouter_translates_three_paragraphs_in_one_request() {
     }
     assert!(last.is_none(), "{last:?}");
 }
+
+/// The bundled research-builder files, as the app loads them.
+fn bundled_skill() -> biwrite_core::assist::Skill {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../src-tauri/resources/skills/research-builder");
+    let files = ["writing-deai.md", "writing-playbook.md"]
+        .iter()
+        .map(|f| {
+            (
+                (*f).to_owned(),
+                std::fs::read_to_string(root.join(f)).unwrap(),
+            )
+        })
+        .collect();
+    biwrite_core::assist::Skill {
+        name: "research-builder".into(),
+        source: "https://github.com/qzkinhit/research-builder".into(),
+        version: "d227e92".into(),
+        files,
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs BIWRITE_LIVE_ANYROUTER_KEYS and network access"]
+async fn anyrouter_polishes_with_the_research_builder_rules() {
+    use biwrite_core::assist::{self, Action};
+    let Some(keys) = pool_keys() else {
+        eprintln!("BIWRITE_LIVE_ANYROUTER_KEYS is not set; skipping");
+        return;
+    };
+    let provider = build_http(
+        &anyrouter_config("live-assist"),
+        Arc::new(move || Ok(keys.clone())),
+        Arc::new(DefaultPrompts),
+        Arc::new(Records::default()),
+    )
+    .unwrap();
+    let target = "It is worth noting that our method — which leverages a novel pipeline — significantly outperforms \\citet{smith2020}; it achieves $92.4\\%$ accuracy on \\textsc{Hospital}, which is crucially important.";
+    let prompt = assist::build(
+        &assist::Request {
+            action: Action::Polish,
+            mode: biwrite_core::Mode::Latex,
+            target,
+            ..Default::default()
+        },
+        &bundled_skill(),
+    );
+    println!("system prompt: {} chars", prompt.system.chars().count());
+    let request = biwrite_providers::ChatRequest {
+        purpose: "polish".into(),
+        system: prompt.system,
+        user: prompt.user,
+        images: Vec::new(),
+    };
+    let mut out = None;
+    for attempt in 0..8u32 {
+        match biwrite_providers::ChatModel::complete(provider.as_ref(), &request, &|_| {}).await {
+            Ok(o) => {
+                out = Some(o);
+                break;
+            }
+            Err(e) if e.is_retryable() => {
+                println!("attempt {attempt}: {e}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    let out = out.expect("an answer");
+    let answer = assist::parse(Action::Polish, &out.text, &prompt.protector).unwrap();
+    println!("revision: {}", answer.revision.as_deref().unwrap_or(""));
+    println!(
+        "translation: {}",
+        answer.translation.as_deref().unwrap_or("")
+    );
+    println!("changes_zh: {:?}", answer.changes_zh);
+    println!("changes_en: {:?}", answer.changes_en);
+    println!(
+        "removed: {:?} translation_matches: {}",
+        answer.removed, answer.translation_matches
+    );
+    let revision = answer.revision.unwrap();
+    assert!(revision.contains("\\citet{smith2020}"));
+    assert!(revision.contains("$92.4\\%$"));
+    assert!(
+        !revision.contains('—') && !revision.contains(';'),
+        "{revision}"
+    );
+    assert!(answer.translation.is_some());
+}

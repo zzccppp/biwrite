@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use biwrite_engine::{MockTranslator, TranslateError, Translator};
 
-pub use chat::{ChatModel, ChatOutput, ChatRequest};
+pub use chat::{ChatModel, ChatOutput, ChatRequest, ImageInput};
 pub use config::{
     ConfigError, Effort, Preset, ProviderConfig, ProviderKind, ServiceTier, WireApi, presets,
 };

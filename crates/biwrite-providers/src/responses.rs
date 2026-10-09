@@ -16,6 +16,7 @@ use biwrite_core::ContentHash;
 use biwrite_engine::{PartialFn, TokenUsage, TranslateError};
 use serde_json::{Value, json};
 
+use crate::chat::ImageInput;
 use crate::clean::ThinkFilter;
 use crate::http::{Core, Flow, describe_stream_error, invalid, read_sse, stream_error_object};
 use crate::keys::random_u64;
@@ -57,16 +58,29 @@ fn prompt_cache_key(core: &Core, purpose: &str, route: u64) -> String {
     format!("biwrite-{purpose}-{}-{:08x}", &id[..8], route as u32)
 }
 
-pub(crate) fn body(core: &Core, system: &str, user: &str, purpose: &str, route: u64) -> Body {
+pub(crate) fn body(
+    core: &Core,
+    system: &str,
+    user: &str,
+    images: &[ImageInput],
+    purpose: &str,
+    route: u64,
+) -> Body {
     let config = &core.config;
     let mut sent = Vec::new();
+    let mut content = vec![json!({"type": "input_text", "text": user})];
+    content.extend(
+        images
+            .iter()
+            .map(|i| json!({"type": "input_image", "image_url": i.data_url()})),
+    );
     let mut json = json!({
         "model": config.model,
         "instructions": system,
         "input": [{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": user}],
+            "content": content,
         }],
         "stream": true,
         "store": false,

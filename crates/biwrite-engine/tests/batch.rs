@@ -231,3 +231,25 @@ async fn the_batch_size_can_change_at_any_time() {
     engine.set_batch_size(99);
     assert_eq!(engine.settings().batch_size, biwrite_engine::MAX_BATCH);
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_offered_translation_is_used_without_a_request() {
+    let t = Batcher::new(Duration::from_millis(700));
+    let (engine, _) = engine(t.clone(), 1, 4);
+    let mut paras = paragraphs(2);
+    engine.load(join(&paras), Mode::Plain);
+    settle(&engine).await;
+    let calls = t.singles.load(Ordering::SeqCst);
+    // The assistant's approved revision of paragraph 1, with its translation.
+    let revised = "An entirely new first paragraph written by the assistant.";
+    engine.offer_translation(revised, "助手给出的译文。");
+    paras[0] = revised.into();
+    engine.update(join(&paras));
+    settle(&engine).await;
+    let id = engine.snapshot().layout[0].id;
+    assert_eq!(
+        state_of(&engine, id).text.as_deref(),
+        Some("助手给出的译文。")
+    );
+    assert_eq!(t.singles.load(Ordering::SeqCst), calls, "no new request");
+}

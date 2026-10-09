@@ -167,6 +167,30 @@ impl Protector {
         }
     }
 
+    /// Put the protected texts back without failing on count mismatches:
+    /// the writing assistant may legitimately drop or repeat a citation when
+    /// asked to. Returns the text and what differs from the source.
+    /// Placeholders that were never sent cannot be restored, so they are an
+    /// error.
+    pub fn restore_lenient(&self, text: &str) -> Result<(String, RestoreReport), PlaceholderError> {
+        let (out, counts, unknown) = self.substitute(text);
+        if !unknown.is_empty() {
+            return Err(PlaceholderError {
+                mismatched: Vec::new(),
+                unknown,
+            });
+        }
+        let mut report = RestoreReport::default();
+        for (span, found) in self.spans.iter().zip(counts) {
+            if found < span.expected {
+                report.missing.push(span.text.clone());
+            } else if found > span.expected {
+                report.added.push(span.text.clone());
+            }
+        }
+        Ok((out, report))
+    }
+
     /// Restore streamed output for display: complete placeholders are
     /// replaced, a trailing incomplete one is hidden, nothing is validated.
     pub fn restore_partial(&self, partial: &str) -> String {
@@ -249,6 +273,20 @@ fn escape_percent(text: &str) -> String {
 /// Only spaces and digits after `⟦`: a placeholder still being streamed.
 fn is_incomplete(after_open: &str) -> bool {
     after_open.chars().all(|c| c == ' ' || c.is_ascii_digit())
+}
+
+/// Protected texts that a lenient restore found fewer or more times than
+/// they were sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RestoreReport {
+    pub missing: Vec<String>,
+    pub added: Vec<String>,
+}
+
+impl RestoreReport {
+    pub fn is_clean(&self) -> bool {
+        self.missing.is_empty() && self.added.is_empty()
+    }
 }
 
 /// A placeholder that came back a different number of times than it was sent.

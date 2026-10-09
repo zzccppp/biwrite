@@ -1,5 +1,6 @@
 //! BiWrite desktop app: wires the engine to Tauri (commands, events, dialogs).
 
+mod assist_commands;
 mod commands;
 mod error;
 mod files;
@@ -12,6 +13,7 @@ mod secrets;
 mod settings;
 mod settings_commands;
 mod sink;
+mod skills;
 mod state;
 mod storage_commands;
 
@@ -79,7 +81,17 @@ pub fn run() {
             );
             engine.set_glossary(settings.glossary.clone());
             let active_id = settings.active().config.id.clone();
-            let state = AppState::new(engine, cache, settings, paths, secrets, request_log);
+            let skills = skills::SkillStore::new(
+                app.path()
+                    .resource_dir()
+                    .ok()
+                    .map(|d| d.join("resources/skills/research-builder")),
+                app.path()
+                    .app_data_dir()
+                    .ok()
+                    .map(|d| d.join("skills/research-builder")),
+            );
+            let state = AppState::new(engine, cache, settings, paths, secrets, request_log, skills);
             state.set_translation_http(active_id, built.http);
             if let Some(path) = std::env::args_os().nth(1).map(std::path::PathBuf::from) {
                 // `biwrite paper.tex`: open a file from the command line.
@@ -138,6 +150,16 @@ pub fn run() {
             glossary_commands::import_glossary,
             glossary_commands::export_glossary,
             glossary_commands::export_bilingual,
+            assist_commands::assist_start,
+            assist_commands::assist_cancel,
+            assist_commands::assist_offer,
+            assist_commands::attach_image,
+            assist_commands::drop_attachment,
+            assist_commands::get_skill,
+            assist_commands::update_skill,
+            assist_commands::choose_skill_folder,
+            assist_commands::reset_skill_folder,
+            assist_commands::reveal_skill,
             log_commands::get_request_log,
             log_commands::set_request_log,
             log_commands::clear_request_log,

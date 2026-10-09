@@ -11,6 +11,7 @@
 //! - [`textfile`]: byte-exact file round-tripping (BOM, line endings).
 //! - [`utf16`]: byte offsets to editor (UTF-16) offsets.
 
+pub mod assist;
 pub mod bilingual;
 pub mod compose;
 pub mod csv;
@@ -31,6 +32,6 @@ pub use glossary::GlossaryEntry;
 pub use hash::ContentHash;
 pub use lang::Direction;
 pub use mode::Mode;
-pub use protect::{PlaceholderError, Protector};
+pub use protect::{PlaceholderError, Protector, RestoreReport};
 pub use segment::{Segment, SegmentKind, SkipReason};
 pub use textfile::{DecodeError, LineEnding, TextFile};

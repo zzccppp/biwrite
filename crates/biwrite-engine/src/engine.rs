@@ -369,6 +369,24 @@ impl Engine {
         self.emit_touched(st);
     }
 
+    /// Store `translation` as the translation of a paragraph whose content
+    /// will be `source` (in the language being edited), under the current
+    /// provider, direction and glossary. Used before applying an approved
+    /// assistant revision: when the edit arrives, reconciling finds the
+    /// approved translation in the cache instead of sending a request.
+    pub fn offer_translation(&self, source: &str, translation: &str) {
+        let translation = translation.trim();
+        if source.trim().is_empty() || translation.is_empty() {
+            return;
+        }
+        let mut st = self.inner.lock();
+        let key = st.cache_key(ContentHash::of(source), st.glossary_fp(source));
+        if let Err(e) = self.inner.cache.put(&key, translation) {
+            st.notices.push(e.to_string());
+        }
+        self.inner.release(st);
+    }
+
     /// Segments sent together in one request (1: one per request). Only
     /// fresh translations are combined.
     pub fn set_batch_size(&self, n: usize) {

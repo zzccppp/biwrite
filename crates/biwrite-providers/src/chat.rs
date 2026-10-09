@@ -4,6 +4,21 @@
 
 use biwrite_engine::{BoxFuture, PartialFn, TokenUsage, TranslateError};
 
+/// An image sent with a request (a reference the author attached).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageInput {
+    /// `image/png`, `image/jpeg`, `image/webp` or `image/gif`.
+    pub media_type: String,
+    /// Base64 of the file.
+    pub data: String,
+}
+
+impl ImageInput {
+    pub fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.media_type, self.data)
+    }
+}
+
 /// One assistant request.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChatRequest {
@@ -12,6 +27,8 @@ pub struct ChatRequest {
     pub purpose: String,
     pub system: String,
     pub user: String,
+    /// Images that go with the user text.
+    pub images: Vec<ImageInput>,
 }
 
 /// The model's answer, with any leading reasoning block removed.

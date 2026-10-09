@@ -352,6 +352,10 @@ async fn the_assistant_call_strips_reasoning_and_names_its_purpose() {
                 purpose: "polish".into(),
                 system: "Rules.".into(),
                 user: "<target>x</target>".into(),
+                images: vec![biwrite_providers::ImageInput {
+                    media_type: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                }],
             },
             &|_| {},
         )
@@ -360,6 +364,11 @@ async fn the_assistant_call_strips_reasoning_and_names_its_purpose() {
     assert_eq!(out.text, "答复");
     let body = server.requests()[0].json();
     assert_eq!(body["instructions"], "Rules.");
+    assert_eq!(body["input"][0]["content"][1]["type"], "input_image");
+    assert_eq!(
+        body["input"][0]["content"][1]["image_url"],
+        "data:image/png;base64,iVBORw0KGgo="
+    );
     assert!(
         body["prompt_cache_key"]
             .as_str()

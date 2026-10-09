@@ -56,7 +56,15 @@ async fn key_never_appears_in_views_or_settings_file() {
         Some(dir.join("requests.jsonl")),
         Arc::new(NoSink),
     ));
-    let state = AppState::new(engine, cache, settings, paths.clone(), secrets, log);
+    let state = AppState::new(
+        engine,
+        cache,
+        settings,
+        paths.clone(),
+        secrets,
+        log,
+        crate::skills::SkillStore::new(None, None),
+    );
     state.apply_active_provider().unwrap();
     let snapshot = state.engine.load("Hello world.".into(), Mode::Plain);
 

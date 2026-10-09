@@ -14,6 +14,8 @@ path = "src/lib.rs"
 tauri-build = { version = "2.7.1", features = [] }
 
 [dependencies]
+# Already in the build (via tauri); encodes reference images for requests.
+base64 = "0.23"
 biwrite-core.workspace = true
 biwrite-engine.workspace = true
 biwrite-providers.workspace = true
@@ -29,6 +31,8 @@ tauri = { version = "2.12.2", features = [] }
 tauri-plugin-dialog = "2.8.1"
 time = { version = "0.3.45", features = ["local-offset"] }
 tokio = { workspace = true, features = ["sync"] }
+# Skill and template archives; deflate only.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 time = { version = "0.3.45", features = ["macros"] }
