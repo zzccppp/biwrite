@@ -368,6 +368,17 @@ pub async fn set_match_pool(state: State<'_, AppState>, on: bool) -> CommandResu
     Ok(state.settings_view())
 }
 
+/// Look for a newer release at startup, or not.
+#[tauri::command]
+pub async fn set_check_updates(state: State<'_, AppState>, on: bool) -> CommandResult<SettingsView> {
+    {
+        let mut s = state.settings();
+        s.check_updates = on;
+        state.persist(&s)?;
+    }
+    Ok(state.settings_view())
+}
+
 /// Remove key `number` (1-based) of the pool, if it still ends in `tail`.
 #[tauri::command]
 pub async fn remove_api_key(

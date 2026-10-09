@@ -2,11 +2,15 @@
   import type { Session } from "../session.svelte";
   import type { ThemePref } from "../theme";
   import { t } from "../i18n.svelte";
-  import { MODE_LABELS, type Mode } from "../types";
+  import { MODE_LABELS, type Mode, type ProjectView } from "../types";
 
   interface Props {
     session: Session;
     theme: ThemePref;
+    /** The open document's LaTeX project (for switching files). */
+    project: ProjectView | null;
+    onnew: () => void;
+    onfile: (file: string) => void;
     onopen: () => void;
     onsave: () => void;
     onexport: () => void;
@@ -31,6 +35,9 @@
   let {
     session,
     theme,
+    project,
+    onnew,
+    onfile,
     onopen,
     onsave,
     onexport,
@@ -59,6 +66,10 @@
 
 <header class="toolbar">
   <div class="group">
+    <button class="tool" onclick={onnew} title={t("toolbar.newTitle")}>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5.5L12 5v8.5H4zM9.5 2.5V5H12M8 7.5v4M6 9.5h4" /></svg>
+      <span class="smallcaps">{t("toolbar.new")}</span>
+    </button>
     <button class="tool" onclick={onopen} title="Open… ({mod}O)">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z" /></svg>
       <span class="smallcaps">Open</span>
@@ -100,7 +111,25 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5h10l-2.5-2.5M13.5 10.5h-10l2.5 2.5" /></svg>
       <span class="lang" lang={zh ? "en" : "zh-CN"}>{zh ? "EN" : "中"}</span>
     </button>
-    <span class="name" class:dirty={session.dirty}>{session.name}</span>
+    {#if project && project.files.length > 1}
+      <label class="files" class:dirty={session.dirty} title={t("toolbar.files")}>
+        <span class="name">{project.current}</span>
+        <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5 8 10l3.5-3.5" /></svg>
+        <select
+          value={project.current}
+          aria-label={t("toolbar.files")}
+          onchange={(e) => {
+            const next = e.currentTarget.value;
+            e.currentTarget.value = project.current;
+            if (next !== project.current) onfile(next);
+          }}
+        >
+          {#each project.files as f (f)}<option value={f}>{f === project.root ? `${f}  (main)` : f}</option>{/each}
+        </select>
+      </label>
+    {:else}
+      <span class="name" class:dirty={session.dirty}>{session.name}</span>
+    {/if}
   </div>
 
   <div class="group">
@@ -272,6 +301,38 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .files {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .files .name {
+    pointer-events: none;
+  }
+  .files.dirty .name::before {
+    content: "●";
+    margin-right: 7px;
+    font-style: normal;
+    font-size: 9px;
+    vertical-align: 2px;
+    color: var(--seal);
+  }
+  .files .chev {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    color: var(--muted);
+  }
+  .files select {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    font: inherit;
   }
   .name.dirty::before {
     content: "●";

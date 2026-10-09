@@ -1,14 +1,18 @@
 <script lang="ts">
+  import { t } from "../i18n.svelte";
   import type { Session } from "../session.svelte";
 
   interface Props {
     session: Session;
     /** Active provider, e.g. "DeepSeek · deepseek-chat". */
     provider: string;
+    /** A newer release, found at startup. */
+    update: string | null;
+    onupdate: () => void;
     ondismisserror: () => void;
   }
 
-  let { session, provider, ondismisserror }: Props = $props();
+  let { session, provider, update, onupdate, ondismisserror }: Props = $props();
 
   function compact(n: number): string {
     if (n < 1000) return String(n);
@@ -47,6 +51,10 @@
   </div>
 
   <div class="right" title="Session usage">
+    {#if update}
+      <button class="update" onclick={onupdate}>{t("updates.available", { version: update })}</button>
+      <span class="dot">·</span>
+    {/if}
     {#if provider}<span class="provider">{provider}</span><span class="dot">·</span>{/if}
     <span>{compact(session.usage.requests)} <span class="smallcaps">req</span></span>
     <span class="dot">·</span>
@@ -60,6 +68,18 @@
 </footer>
 
 <style>
+  .update {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .update:hover {
+    text-decoration: underline;
+  }
   .status {
     display: grid;
     grid-template-columns: 1fr auto 1fr;

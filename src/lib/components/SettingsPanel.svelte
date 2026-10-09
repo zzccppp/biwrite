@@ -1,20 +1,32 @@
 <script lang="ts">
-  import { language, t } from "../i18n.svelte";
+  import { onMount } from "svelte";
+  import { count, language, t } from "../i18n.svelte";
   import { errorMessage, settingsIpc } from "../ipc";
-  import type { Preset, ProviderView, SettingsView } from "../types";
+  import type { LatexStore } from "../latex.svelte";
+  import type { Preset, ProviderView, SettingsView, SkillInfo } from "../types";
   import { KIND_LABELS } from "../types";
+  import LatexSection from "./LatexSection.svelte";
   import PromptEditor from "./PromptEditor.svelte";
   import ProviderForm from "./ProviderForm.svelte";
+  import SkillSection from "./SkillSection.svelte";
   import StorageSection from "./StorageSection.svelte";
+  import UpdateSection from "./UpdateSection.svelte";
 
   interface Props {
     settings: SettingsView;
+    latex: LatexStore;
+    /** Unsaved changes in the open document. */
+    dirty: boolean;
+    /** Scroll to a section when opening (e.g. "updates"). */
+    focus?: string | null;
     onchange: (view: SettingsView) => void;
+    onskill: (skill: SkillInfo) => void;
     onclose: () => void;
     onglossary: () => void;
   }
 
-  let { settings, onchange, onclose, onglossary }: Props = $props();
+  let { settings, latex, dirty, focus = null, onchange, onskill, onclose, onglossary }: Props = $props();
+  let body = $state<HTMLElement>();
 
   let selectedId = $state<string | null>(null);
   let draftNew = $state<ProviderView | null>(null);
@@ -94,18 +106,22 @@
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape") onclose();
   }
+
+  onMount(() => {
+    if (focus) requestAnimationFrame(() => body?.querySelector(`#${focus}`)?.scrollIntoView({ block: "start" }));
+  });
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
 <div class="scrim" role="presentation" onclick={onclose}></div>
-<aside class="drawer" aria-label="Settings">
+<aside class="drawer" aria-label={t("settings.title")}>
   <header>
-    <h2 class="smallcaps">Settings</h2>
-    <button class="close" onclick={onclose} aria-label="Close settings">✕</button>
+    <h2 class="smallcaps">{t("settings.title")}</h2>
+    <button class="close" onclick={onclose} aria-label={t("common.close")}>✕</button>
   </header>
 
-  <div class="body">
+  <div class="body" bind:this={body}>
     <section>
       <h3 class="smallcaps">{t("settings.language")}</h3>
       <div class="row">
@@ -131,15 +147,15 @@
     </section>
 
     <section>
-      <h3 class="smallcaps">Translation provider</h3>
-      <ul class="providers" role="radiogroup" aria-label="Active provider">
+      <h3 class="smallcaps">{t("settings.provider")}</h3>
+      <ul class="providers" role="radiogroup" aria-label={t("settings.provider")}>
         {#each settings.providers as p (p.id)}
           <li class:selected={!draftNew && editing?.id === p.id}>
             <input
               type="radio"
               name="active-provider"
               checked={settings.activeProvider === p.id}
-              aria-label="Use {p.name}"
+              aria-label={t("settings.useProvider", { name: p.name })}
               onchange={() => run(() => settingsIpc.setActive(p.id))}
             />
             <button
@@ -151,16 +167,16 @@
             >
               <span class="name">{p.name}</span>
               <span class="meta">
-                {p.builtin ? "offline" : describe(p)}
-                {#if p.needsKey && !p.hasKey}<span class="nokey"> · no key</span>{:else if p.keyCount > 1}
-                  · {p.keyCount} keys{/if}
+                {p.builtin ? t("settings.offline") : describe(p)}
+                {#if p.needsKey && !p.hasKey}<span class="nokey"> · {t("settings.noKey")}</span>{:else if p.keyCount > 1}
+                  · {count(p.keyCount, "keys.count.one", "keys.count.many")}{/if}
               </span>
             </button>
           </li>
         {/each}
       </ul>
-      <select class="select add" onchange={onPreset} aria-label="Add a provider">
-        <option value="" selected>+ Add provider…</option>
+      <select class="select add" onchange={onPreset} aria-label={t("settings.addProvider")}>
+        <option value="" selected>{t("settings.addProvider")}</option>
         {#each settings.presets as preset, i (preset.name)}
           <option value={i}>{preset.name}</option>
         {/each}
@@ -180,47 +196,48 @@
           }}
         />
       {:else if editing?.builtin}
-        <p class="explain">
-          The mock provider reverses each paragraph after a short delay. Use it to try BiWrite without an API key. Add a
-          real provider above.
-        </p>
+        <p class="explain">{t("settings.mockHint")}</p>
       {/if}
     </section>
 
     <section>
-      <h3 class="smallcaps">Writing assistant</h3>
+      <h3 class="smallcaps">{t("settings.assistant")}</h3>
       <label class="field">
-        <span class="label">Model for polishing, edits and questions</span>
+        <span class="label">{t("settings.assistantModel")}</span>
         <select
           class="select"
           value={settings.assistantProvider}
           onchange={(e) => run(() => settingsIpc.setAssistantProvider(e.currentTarget.value))}
         >
-          <option value="">Same as translation ({settings.activeLabel})</option>
+          <option value="">{t("settings.assistantSame", { label: settings.activeLabel })}</option>
           {#each assistantChoices as p (p.id)}
             <option value={p.id}>{p.name} · {p.model}</option>
           {/each}
         </select>
         <span class="hint">
           {settings.assistantReady
-            ? `Uses ${settings.assistantLabel}. A fast model can translate while a stronger one writes.`
-            : "The offline mock cannot write. Add a provider above and choose it here."}
+            ? t("settings.assistantUses", { label: settings.assistantLabel })
+            : t("settings.assistantMock")}
         </span>
       </label>
     </section>
 
+    <SkillSection onchange={onskill} />
+
+    <LatexSection {latex} {settings} {onchange} />
+
     <section>
-      <h3 class="smallcaps">This document</h3>
+      <h3 class="smallcaps">{t("settings.document")}</h3>
       <label class="field">
-        <span class="label">Note for the translator</span>
+        <span class="label">{t("settings.note")}</span>
         <textarea
           class="textarea"
           rows="2"
           bind:value={note}
           onblur={saveNote}
-          placeholder="e.g. ML paper on in-context learning in graph models"
+          placeholder={t("settings.notePlaceholder")}
         ></textarea>
-        <span class="hint">Sent with every paragraph of this file.</span>
+        <span class="hint">{t("settings.noteHint")}</span>
       </label>
     </section>
 
@@ -263,19 +280,21 @@
     </section>
 
     <section>
-      <h3 class="smallcaps">Glossary</h3>
+      <h3 class="smallcaps">{t("glossary.title")}</h3>
       <div class="row glossary">
-        <p class="explain grow">Preferred Chinese for your terms, or keep them in English. Used for every document.</p>
-        <button class="btn" onclick={onglossary}>Edit glossary…</button>
+        <p class="explain grow">{t("settings.glossaryHint")}</p>
+        <button class="btn" onclick={onglossary}>{t("settings.glossaryEdit")}</button>
       </div>
     </section>
 
     <section>
-      <h3 class="smallcaps">System prompt</h3>
+      <h3 class="smallcaps">{t("settings.prompt")}</h3>
       <PromptEditor />
     </section>
 
     <StorageSection logDir={settings.logDir} />
+
+    <UpdateSection {settings} {onchange} {dirty} />
 
     {#if error}<p class="error">{error}</p>{/if}
   </div>

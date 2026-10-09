@@ -128,6 +128,18 @@ export class SourceEditor {
     this.view.focus();
   }
 
+  /** Select `from`..`to` and scroll it to the middle of the view. */
+  select(from: number, to: number, focus = true): void {
+    const length = this.view.state.doc.length;
+    const a = Math.min(Math.max(0, from), length);
+    const b = Math.min(Math.max(a, to), length);
+    this.view.dispatch({
+      selection: { anchor: a, head: b },
+      effects: EditorView.scrollIntoView(a, { y: "center" }),
+    });
+    if (focus) this.view.focus();
+  }
+
   focus(): void {
     this.view.focus();
   }

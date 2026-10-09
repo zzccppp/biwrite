@@ -23,11 +23,11 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "script-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval'",
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data:",
         "font-src": "'self'",
-        "connect-src": "ipc: http://ipc.localhost"
+        "connect-src": "'self' ipc: http://ipc.localhost"
       }
     }
   },

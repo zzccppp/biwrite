@@ -5,7 +5,9 @@
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import PAPER from "../../samples/paper.tex?raw";
 import type {
+  BuildView,
   KeyEntry,
   LogSettings,
   ProviderView,
@@ -15,6 +17,7 @@ import type {
   SessionView,
   SettingsView,
   Snapshot,
+  TemplateView,
 } from "../lib/types";
 
 type Args = Record<string, unknown>;
@@ -30,8 +33,12 @@ const POOL: (Omit<KeyEntry, "name">)[] = [
 ];
 
 function clone<T>(value: T): T {
-  return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
+  if (value === undefined || value instanceof ArrayBuffer) return value;
+  return JSON.parse(JSON.stringify(value)) as T;
 }
+
+/** `dev/mock.html?latex` opens the sample LaTeX paper (its PDF: dev/sample.pdf). */
+const LATEX = new URLSearchParams(window.location.search).has("latex");
 
 const SAMPLE = `Graph neural networks can learn new tasks from a few examples in context.
 
@@ -40,7 +47,7 @@ This note collects open questions about whether the same idea transfers to graph
 How many examples per class are needed before accuracy saturates? Early results suggest that three to five are enough on citation graphs.`;
 
 const state = {
-  text: SAMPLE,
+  text: LATEX ? PAPER : SAMPLE,
   revision: 1,
   version: 1,
   nextRecord: 1,
@@ -116,6 +123,9 @@ const state = {
     batchSize: 3,
     matchPool: true,
     effectiveConcurrency: 12,
+    latex: { compileOnSave: true },
+    checkUpdates: true,
+    version: "0.1.1",
   } as SettingsView,
   records: [] as RequestRecord[],
 };
@@ -148,7 +158,7 @@ function snapshot(full = true): Snapshot {
   }));
   return {
     revision: state.revision++,
-    mode: "plain",
+    mode: LATEX ? "latex" : "plain",
     direction: "en-zh",
     full,
     layout: segs,
@@ -159,8 +169,8 @@ function snapshot(full = true): Snapshot {
 
 function session(): SessionView {
   return {
-    path: "/Users/me/paper/notes.txt",
-    name: "notes.txt",
+    path: LATEX ? "/Users/me/papers/gnn-icl/paper.tex" : "/Users/me/paper/notes.txt",
+    name: LATEX ? "paper.tex" : "notes.txt",
     text: state.text,
     dirty: false,
     autoTranslate: true,
@@ -263,7 +273,123 @@ function emitLater(delay: number, payload: unknown): void {
   setTimeout(() => void emit("assist", clone(payload)), delay);
 }
 
+let nextBuild = 1;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((done) => setTimeout(done, ms));
+}
+
+/** UTF-16 range of the sentence of the sample text that holds `words`. */
+function sentenceOf(words: string): { from: number; to: number } {
+  const text = state.text;
+  const probe = words.trim().split(/\s+/).slice(0, 4).join(" ");
+  const at = probe ? text.indexOf(probe) : -1;
+  const pos = at >= 0 ? at : text.indexOf("We answer");
+  const from = Math.max(text.lastIndexOf(". ", pos) + 2, text.lastIndexOf("\n", pos) + 1);
+  const end = text.indexOf(". ", pos);
+  const nl = text.indexOf("\n", pos);
+  const to = Math.min(end < 0 ? text.length : end + 1, nl < 0 ? text.length : nl);
+  return { from, to };
+}
+
+const TEMPLATES: TemplateView[] = [
+  { id: "iclr2027", builtin: true, name: "ICLR 2027", description: "Official ICLR 2027 conference template with natbib and the ICLR math commands.", main: "iclr2027_conference.tex", engine: "pdflatex", source: "https://github.com/ICLR/Master-Template", files: 7, bytes: 134_000 },
+  { id: "ieee-tii", builtin: true, name: "IEEE TII (Transactions on Industrial Informatics)", description: "IEEE TII article class (ieeecolor with the TII header) and IEEEtran references, with a short skeleton paper.", main: "main.tex", engine: "pdflatex", source: "https://www.ieee-ies.org/pubs/transactions-on-industrial-informatics", files: 6, bytes: 921_000 },
+  { id: "pvldb", builtin: true, name: "VLDB (PVLDB Vol. 20, 2027)", description: "Official PVLDB template: acmart v2.19 (sigconf) with pvldb.sty, ACM reference format.", main: "main.tex", engine: "pdflatex", source: "https://github.com/vldbproceedings/VLDB-Template", files: 6, bytes: 469_000 },
+  { id: "my-lab-thesis", builtin: false, name: "My lab thesis", description: "", main: "thesis.tex", engine: "xelatex", files: 23, bytes: 2_400_000 },
+];
+
+const RELEASES = [
+  { tag: "v0.2.0", name: "BiWrite 0.2.0", version: "0.2.0", prerelease: false, date: "2026-10-10", notes: "LaTeX PDF view with SyncTeX, paper templates, writing assistant, key pools, request log, updates.", relation: "newer", asset: { name: "BiWrite_0.2.0_universal.dmg", size: 24_800_000, sha256: "9f2c" } },
+  { tag: "v0.2.0-beta.1", name: "BiWrite 0.2.0 beta 1 (feat/v0.2)", version: "0.2.0-beta.1", prerelease: true, date: "2026-10-10", notes: "Branch build of feat/v0.2.", relation: "newer", asset: { name: "BiWrite_0.2.0-beta.1_universal.dmg", size: 24_700_000, sha256: "1a2b" } },
+  { tag: "v0.1.1", name: "BiWrite 0.1.1", version: "0.1.1", prerelease: false, date: "2026-10-09", notes: "Formatted translation pane, logs, cache management.", relation: "current", asset: { name: "BiWrite_0.1.1_universal.dmg", size: 9_600_000, sha256: null } },
+  { tag: "v0.1.0", name: "BiWrite 0.1.0", version: "0.1.0", prerelease: false, date: "2026-10-09", notes: "First release.", relation: "older", asset: { name: "BiWrite_0.1.0_universal.dmg", size: 9_500_000, sha256: null } },
+];
+
 const handlers: Record<string, (args: Args) => unknown> = {
+  list_releases: async () => {
+    await wait(500);
+    return { current: "0.1.1", releases: RELEASES };
+  },
+  install_release: async (a) => {
+    const release = RELEASES.find((r) => r.tag === a.tag)!;
+    const total = release.asset.size;
+    for (let i = 1; i <= 10; i++) {
+      await wait(120);
+      void emit("update-progress", { tag: release.tag, received: (total * i) / 10, total });
+    }
+    return { version: release.version, relaunch: true, quitting: false, file: null };
+  },
+  relaunch: () => null,
+  set_check_updates: (a) => {
+    state.settings.checkUpdates = Boolean(a.on);
+    return state.settings;
+  },
+  latex_status: () => ({
+    found: true,
+    distribution: "TeX Live 2023",
+    bin: "/Library/TeX/texbin",
+    latexmk: true,
+    synctex: true,
+    engines: ["pdflatex", "xelatex", "lualatex"],
+    customBin: null,
+    compileOnSave: state.settings.latex.compileOnSave,
+  }),
+  latex_set_compile_on_save: (a) => {
+    state.settings.latex.compileOnSave = Boolean(a.on);
+    return null;
+  },
+  latex_choose_bin: () => handlers.latex_status({}),
+  latex_reset_bin: () => handlers.latex_status({}),
+  latex_project: () =>
+    LATEX ? { folder: "gnn-icl", root: "paper.tex", current: "paper.tex", engine: "pdflatex", files: ["paper.tex", "sections/appendix.tex"] } : null,
+  latex_open: () => session(),
+  latex_open_folder: () => session(),
+  latex_compile: async (a): Promise<BuildView> => {
+    await wait(1200);
+    const zh = a.lang === "zh";
+    return {
+      id: nextBuild++,
+      lang: zh ? "zh" : "en",
+      outcome: "errors",
+      hasPdf: true,
+      stale: false,
+      issues: [
+        { severity: "error", file: "paper.tex", line: 45, message: "Package pdftex.def Error: File `figures/prompt_graph.pdf' not found: using draft setting.", here: true },
+        { severity: "warning", file: null, line: 23, message: "Citation `kipf2017gcn' on page 1 undefined on input line 23.", here: true },
+        { severity: "warning", file: null, line: 26, message: "Reference `sec:experiments' on page 1 undefined on input line 26.", here: true },
+        { severity: "box", file: null, line: 61, message: "Overfull \\hbox (3.97pt too wide) in paragraph at lines 61--62", here: false },
+      ],
+      durationMs: zh ? 3400 : 1830,
+      tool: zh ? "latexmk -xelatex" : "latexmk -pdf",
+      engine: zh ? "xelatex" : "pdflatex",
+      root: "paper.tex",
+      untranslated: zh ? 2 : 0,
+      output: "",
+    };
+  },
+  latex_cancel: () => null,
+  latex_pdf: async () => (await fetch("/dev/sample.pdf")).arrayBuffer(),
+  latex_reveal_pdf: () => null,
+  latex_save_pdf: () => "/Users/me/papers/gnn-icl/paper.pdf",
+  latex_inverse: (a) => {
+    const range = sentenceOf(String(a.span ?? ""));
+    return { file: "paper.tex", line: 26, here: true, range, paragraph: false };
+  },
+  latex_forward: () => [{ page: 1, left: 133, top: 470, width: 345, height: 12 }],
+  latex_locate: (a) => sentenceOf(String(a.span ?? "")),
+  latex_goto: (a) => {
+    const lines = state.text.split("\n");
+    const n = Math.min(Number(a.line), lines.length) - 1;
+    const from = lines.slice(0, n).reduce((sum, l) => sum + l.length + 1, 0);
+    return { from, to: from + lines[n].length };
+  },
+  latex_templates: () => TEMPLATES,
+  latex_new_paper: () => session(),
+  latex_import_template: () => TEMPLATES[3],
+  latex_export_template: () => "/Users/me/papers/gnn-icl.zip",
+  latex_delete_template: () => null,
+  latex_reveal_templates: () => null,
   assist_start: (a) => {
     const req = a.request as { action: string; text: string; from: number; to: number; instruction: string };
     const id = nextJob++;
@@ -398,7 +524,8 @@ export function installMockBackend(): void {
       const handler = handlers[cmd];
       if (!handler) throw new Error(`mock backend: no handler for ${cmd}`);
       // Real IPC serializes: never hand out the mock's own objects.
-      return clone(handler((payload ?? {}) as Args));
+      const result = handler((payload ?? {}) as Args);
+      return result instanceof Promise ? result.then(clone) : clone(result);
     },
     { shouldMockEvents: true },
   );

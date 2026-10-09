@@ -180,6 +180,18 @@ export interface SettingsView {
   matchPool: boolean;
   /** Parallel requests in effect. */
   effectiveConcurrency: number;
+  latex: LatexSettings;
+  /** Look for a newer release at startup. */
+  checkUpdates: boolean;
+  /** This build's version. */
+  version: string;
+}
+
+export interface LatexSettings {
+  /** Build the PDF after each save of a .tex file. */
+  compileOnSave: boolean;
+  /** Folder with the TeX programs chosen by the user. */
+  texBin?: string;
 }
 
 /** What the translation cache holds. */
@@ -363,4 +375,155 @@ export interface SkillInfo {
   folder: string | null;
   files: number;
   missing: string[];
+}
+
+// ── LaTeX ───────────────────────────────────────────────────────────
+
+/** Which PDF: the English paper or the Chinese mirror. */
+export type PdfLang = "en" | "zh";
+export type TexEngine = "pdflatex" | "xelatex" | "lualatex";
+export type BuildOutcome = "ok" | "errors" | "failed" | "timed_out";
+export type IssueSeverity = "error" | "warning" | "box";
+
+export interface TexStatus {
+  found: boolean;
+  distribution: string;
+  bin: string;
+  latexmk: boolean;
+  synctex: boolean;
+  engines: TexEngine[];
+  customBin: string | null;
+  compileOnSave: boolean;
+}
+
+export interface ProjectView {
+  folder: string;
+  /** Root file, relative to the project folder. */
+  root: string;
+  /** The open document, relative to the project folder. */
+  current: string;
+  engine: TexEngine;
+  files: string[];
+}
+
+export interface IssueView {
+  severity: IssueSeverity;
+  /** Relative to the project folder (the original file for the Chinese PDF). */
+  file: string | null;
+  line: number | null;
+  message: string;
+  /** The line is in the open document. */
+  here: boolean;
+}
+
+export interface BuildView {
+  id: number;
+  lang: PdfLang;
+  outcome: BuildOutcome;
+  hasPdf: boolean;
+  /** The PDF predates the build. */
+  stale: boolean;
+  issues: IssueView[];
+  durationMs: number;
+  tool: string;
+  engine: TexEngine;
+  root: string;
+  /** Paragraphs of the Chinese PDF still in English. */
+  untranslated: number;
+  output: string;
+}
+
+/** Where a source line is typeset, in PDF points from the page's top left. */
+export interface PdfBox {
+  page: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** UTF-16 range in the editor's text. */
+export interface Range16 {
+  from: number;
+  to: number;
+}
+
+export interface SyncHit {
+  file: string;
+  line: number;
+  here: boolean;
+  range: Range16 | null;
+  /** The range is a whole paragraph (the PDF is in the other language). */
+  paragraph: boolean;
+}
+
+export interface TemplateView {
+  id: string;
+  builtin: boolean;
+  name: string;
+  description: string;
+  main: string;
+  engine: TexEngine | null;
+  source?: string;
+  files: number;
+  bytes: number;
+}
+
+/** A click on the PDF: page (1-based), point in PDF points from the top
+ * left, the text-layer run under it and the click's offset in that run. */
+export interface PdfPick {
+  page: number;
+  x: number;
+  y: number;
+  span: string;
+  click: number;
+}
+
+/** What a click on the PDF found, shown next to it. */
+export interface PdfMenu {
+  page: number;
+  x: number;
+  y: number;
+  /** Selected in the open document (sentence or paragraph). */
+  here: boolean;
+  paragraph: boolean;
+  file: string;
+  line: number;
+}
+
+// ── Updates ─────────────────────────────────────────────────────────
+
+export type ReleaseRelation = "newer" | "current" | "older";
+
+export interface ReleaseView {
+  tag: string;
+  name: string;
+  version: string;
+  /** Pre-releases carry branch builds. */
+  prerelease: boolean;
+  date: string;
+  notes: string;
+  relation: ReleaseRelation;
+  /** The installer for this computer, if the release has one. */
+  asset: { name: string; size: number; sha256: string | null } | null;
+}
+
+export interface UpdatesView {
+  current: string;
+  releases: ReleaseView[];
+}
+
+export interface InstalledView {
+  version: string;
+  /** The new version is in place and starts with the next launch. */
+  relaunch: boolean;
+  /** BiWrite quits so the installer can run. */
+  quitting: boolean;
+  file: string | null;
+}
+
+export interface UpdateProgress {
+  tag: string;
+  received: number;
+  total: number;
 }

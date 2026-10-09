@@ -9,18 +9,24 @@ import type {
   AssistRequest,
   AssistStarted,
   AttachmentView,
+  BuildView,
   CacheView,
   ClearedView,
   Direction,
   ExportView,
   GlossaryEntry,
+  InstalledView,
   KeyEntry,
   KeyStatus,
   LogSettings,
   LogView,
   Mode,
+  PdfBox,
+  PdfLang,
+  ProjectView,
   PromptView,
   ProviderConfig,
+  Range16,
   RequestRecord,
   SavedView,
   SegmentState,
@@ -29,6 +35,11 @@ import type {
   SettingsView,
   SkillInfo,
   Snapshot,
+  SyncHit,
+  TemplateView,
+  TexStatus,
+  UpdateProgress,
+  UpdatesView,
 } from "./types";
 
 export const ipc = {
@@ -76,6 +87,7 @@ export const settingsIpc = {
   testKey: (id: string, fingerprint: string) => invoke<string>("test_api_key", { id, fingerprint }),
   setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),
   setMatchPool: (on: boolean) => invoke<SettingsView>("set_match_pool", { on }),
+  setCheckUpdates: (on: boolean) => invoke<SettingsView>("set_check_updates", { on }),
   setAssistantProvider: (id: string) => invoke<SettingsView>("set_assistant_provider", { id }),
   setActive: (id: string) => invoke<SettingsView>("set_active_provider", { id }),
   test: (id: string) => invoke<string>("test_provider", { id }),
@@ -103,6 +115,46 @@ export const assistIpc = {
   chooseSkillFolder: () => invoke<SkillInfo | null>("choose_skill_folder"),
   resetSkillFolder: () => invoke<SkillInfo>("reset_skill_folder"),
   revealSkill: () => invoke<void>("reveal_skill"),
+};
+
+/** LaTeX: builds, the PDF, SyncTeX, project files and templates. Folders
+ * and files are chosen in native dialogs on the Rust side. */
+export const latexIpc = {
+  status: (refresh = false) => invoke<TexStatus>("latex_status", { refresh }),
+  setCompileOnSave: (on: boolean) => invoke<void>("latex_set_compile_on_save", { on }),
+  chooseBin: () => invoke<TexStatus>("latex_choose_bin"),
+  resetBin: () => invoke<TexStatus>("latex_reset_bin"),
+  project: () => invoke<ProjectView | null>("latex_project"),
+  /** Open another .tex file of the project (relative to its folder). */
+  open: (file: string) => invoke<SessionView | null>("latex_open", { file }),
+  openFolder: () => invoke<SessionView | null>("latex_open_folder"),
+  compile: (lang: PdfLang, text: string) => invoke<BuildView>("latex_compile", { lang, text }),
+  cancel: (lang: PdfLang) => invoke<void>("latex_cancel", { lang }),
+  pdf: (lang: PdfLang) => invoke<ArrayBuffer>("latex_pdf", { lang }),
+  revealPdf: (lang: PdfLang) => invoke<void>("latex_reveal_pdf", { lang }),
+  savePdf: (lang: PdfLang) => invoke<string | null>("latex_save_pdf", { lang }),
+  inverse: (lang: PdfLang, page: number, x: number, y: number, span: string, click: number, text: string) =>
+    invoke<SyncHit | null>("latex_inverse", { lang, page, x, y, span, click, text }),
+  forward: (lang: PdfLang, offset: number, text: string) =>
+    invoke<PdfBox[]>("latex_forward", { lang, offset, text }),
+  locate: (text: string, line: number, span: string, click: number) =>
+    invoke<Range16>("latex_locate", { text, line, span, click }),
+  goto: (lang: PdfLang, line: number, text: string) => invoke<Range16 | null>("latex_goto", { lang, line, text }),
+  templates: () => invoke<TemplateView[]>("latex_templates"),
+  newPaper: (id: string) => invoke<SessionView | null>("latex_new_paper", { id }),
+  importTemplate: (zip: boolean) => invoke<TemplateView | null>("latex_import_template", { zip }),
+  exportTemplate: () => invoke<string | null>("latex_export_template"),
+  deleteTemplate: (id: string) => invoke<void>("latex_delete_template", { id }),
+  revealTemplates: () => invoke<void>("latex_reveal_templates"),
+};
+
+/** Updates from BiWrite's GitHub releases (pre-releases are branch builds). */
+export const updateIpc = {
+  list: () => invoke<UpdatesView>("list_releases"),
+  install: (tag: string) => invoke<InstalledView>("install_release", { tag }),
+  relaunch: () => invoke<void>("relaunch"),
+  onProgress: (handler: (p: UpdateProgress) => void) =>
+    listen<UpdateProgress>("update-progress", (e) => handler(e.payload)),
 };
 
 /** Request log (metadata of model requests, no text, no keys). */

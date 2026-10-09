@@ -27,6 +27,8 @@ log = "0.4.34"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Checks downloaded updates against GitHub's checksum (already in the build).
+sha2 = "0.10"
 similar.workspace = true
 thiserror.workspace = true
 tauri = { version = "2.12.2", features = [] }

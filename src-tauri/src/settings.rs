@@ -62,6 +62,8 @@ pub struct AppSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skill_folder: Option<String>,
     pub latex: LatexSettings,
+    /// Look for a newer release at startup.
+    pub check_updates: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +99,7 @@ impl Default for AppSettings {
             match_pool: true,
             skill_folder: None,
             latex: LatexSettings::default(),
+            check_updates: true,
         }
     }
 }
@@ -289,6 +292,9 @@ pub struct SettingsView {
     /// Parallel requests in effect (see `AppSettings::effective_concurrency`).
     pub effective_concurrency: usize,
     pub latex: LatexSettings,
+    pub check_updates: bool,
+    /// This build's version.
+    pub version: String,
 }
 
 pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> SettingsView {
@@ -321,6 +327,8 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         match_pool: settings.match_pool,
         effective_concurrency: settings.effective_concurrency(),
         latex: settings.latex.clone(),
+        check_updates: settings.check_updates,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
     }
 }
 

@@ -18,6 +18,7 @@ mod sink;
 mod skills;
 mod state;
 mod storage_commands;
+mod updater;
 
 #[cfg(test)]
 mod leak_tests;
@@ -204,6 +205,10 @@ pub fn run() {
             latex_commands::latex_export_template,
             latex_commands::latex_delete_template,
             latex_commands::latex_reveal_templates,
+            updater::list_releases,
+            updater::install_release,
+            updater::relaunch,
+            settings_commands::set_check_updates,
             log_commands::get_request_log,
             log_commands::set_request_log,
             log_commands::clear_request_log,

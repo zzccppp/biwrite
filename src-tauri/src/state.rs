@@ -16,6 +16,7 @@ use crate::request_log::RequestLog;
 use crate::secrets::SecretStore;
 use crate::settings::{AppSettings, Paths};
 use crate::skills::SkillStore;
+use crate::updater::UpdateState;
 
 /// An HTTP provider in use, with the id of its settings entry.
 pub type HttpInUse = Option<(String, Arc<HttpProvider>)>;
@@ -68,6 +69,7 @@ pub struct AppState {
     pub assist: AssistState,
     pub skills: SkillStore,
     pub latex: LatexState,
+    pub updates: UpdateState,
 }
 
 impl AppState {
@@ -101,6 +103,7 @@ impl AppState {
             assist: AssistState::default(),
             skills,
             latex,
+            updates: UpdateState::default(),
         }
     }
 

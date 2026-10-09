@@ -6,14 +6,17 @@
   import AssistPanel from "./lib/components/AssistPanel.svelte";
   import GlossaryPanel from "./lib/components/GlossaryPanel.svelte";
   import LogPanel from "./lib/components/LogPanel.svelte";
+  import PdfPane from "./lib/components/PdfPane.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import Splitter from "./lib/components/Splitter.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
+  import TemplatePanel from "./lib/components/TemplatePanel.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TranslationPane from "./lib/components/TranslationPane.svelte";
   import { SourceEditor } from "./lib/editor/editor";
   import { t } from "./lib/i18n.svelte";
-  import { assistIpc, errorMessage, ipc, logIpc, settingsIpc, subscribe } from "./lib/ipc";
+  import { assistIpc, errorMessage, ipc, latexIpc, logIpc, settingsIpc, subscribe, updateIpc } from "./lib/ipc";
+  import { LatexStore } from "./lib/latex.svelte";
   import { RequestLogStore } from "./lib/requestLog.svelte";
   import { ScrollSync, type Side } from "./lib/scrollSync";
   import { Session } from "./lib/session.svelte";
@@ -22,7 +25,12 @@
     AssistAction,
     AssistRequest,
     AssistScope,
+    IssueView,
     Mode,
+    PdfBox,
+    PdfLang,
+    PdfMenu,
+    PdfPick,
     SavedView,
     SessionView,
     SettingsView,
@@ -33,6 +41,7 @@
   const DEBOUNCE_MS = 800;
   const SPLIT_KEY = "biwrite.split";
   const ASSIST_KEY = "biwrite.assist.open";
+  const PANE_KEY = "biwrite.right";
   const isMac = navigator.platform.toLowerCase().includes("mac");
 
   const session = new Session();
@@ -48,6 +57,10 @@
   let highlightTick = $state(0);
   let settings = $state<SettingsView | null>(null);
   let showSettings = $state(false);
+  /** Section to show when Settings opens (e.g. "updates"). */
+  let settingsFocus = $state<string | null>(null);
+  /** A newer release found at startup. */
+  let updateAvailable = $state<string | null>(null);
   let showGlossary = $state(false);
   let showLog = $state(false);
   let showAssist = $state(loadFlag(ASSIST_KEY));
@@ -56,6 +69,17 @@
   let selection = $state({ from: 0, to: 0 });
   let assistPanel = $state<{ focus(): void }>();
   const assist = new AssistStore();
+  const latex = new LatexStore();
+  /** Right pane of a LaTeX document: the translation or the PDF. */
+  let rightTab = $state<"translation" | "pdf">(loadPane());
+  let showTemplates = $state(false);
+  let pdfMenu = $state<PdfMenu | null>(null);
+  let pdfMarks = $state<{ lang: PdfLang; boxes: PdfBox[]; tick: number }>({ lang: "en", boxes: [], tick: 0 });
+  /** The last click on the PDF, to find its words again in a file opened from there. */
+  let lastPick: PdfPick | null = null;
+  const isLatex = $derived(session.mode === "latex");
+  const showPdf = $derived(isLatex && rightTab === "pdf");
+  const compilable = $derived(!!session.path && session.path.toLowerCase().endsWith(".tex"));
 
   // Engine round-trip bookkeeping (not reactive).
   let savedDoc: Text | null = null;
@@ -68,6 +92,7 @@
   /** Bumped when a different document is loaded; stale responses are dropped. */
   let epoch = 0;
   let saving = false;
+  let compiling = false;
   let opening = false;
   let swapping = false;
   let exporting = false;
@@ -88,6 +113,29 @@
       return v >= 0.22 && v <= 0.78 ? v : 0.5;
     } catch {
       return 0.5;
+    }
+  }
+
+  function loadPane(): "translation" | "pdf" {
+    try {
+      return localStorage.getItem(PANE_KEY) === "pdf" ? "pdf" : "translation";
+    } catch {
+      return "translation";
+    }
+  }
+
+  function setRightTab(tab: "translation" | "pdf"): void {
+    rightTab = tab;
+    pdfMenu = null;
+    try {
+      localStorage.setItem(PANE_KEY, tab);
+    } catch {
+      // Not persisted; harmless.
+    }
+    if (tab === "pdf") {
+      if (compilable && latex.ready && !latex.builds[latex.lang] && !latex.building[latex.lang]) void compile();
+    } else {
+      requestAnimationFrame(() => sync.schedule());
     }
   }
 
@@ -233,8 +281,12 @@
     unsent = ChangeSet.empty(editor.doc.length);
     session.load(view);
     if (rightPane) rightPane.scrollTop = 0;
+    pdfMenu = null;
     editor.focus();
     void refreshSettings(); // the document note follows the file
+    void latex.loadProject().then(() => {
+      if (showPdf && compilable && latex.ready) void compile();
+    });
   }
 
   async function refreshSettings(): Promise<void> {
@@ -282,6 +334,10 @@
       session.dirty = !editor.doc.eq(doc);
       if (session.dirty) setDirty(true);
       if (wasUntitled && saved.suggestedMode !== session.mode) changeMode(saved.suggestedMode);
+      if (saved.path.toLowerCase().endsWith(".tex")) {
+        if (wasUntitled) await latex.loadProject();
+        if (settings?.latex.compileOnSave && latex.ready && !compiling) void compile(latex.lang, false);
+      }
     } catch (err) {
       fail(err);
     } finally {
@@ -392,12 +448,144 @@
     return doc.sliceString(Math.min(from, doc.length), Math.min(to, doc.length));
   }
 
+  /** At startup, if allowed: is a newer release out? Quiet when offline. */
+  async function checkForUpdate(): Promise<void> {
+    if (!settings?.checkUpdates) return;
+    try {
+      const view = await updateIpc.list();
+      updateAvailable = view.releases.find((r) => r.relation === "newer" && !r.prerelease && r.asset)?.version ?? null;
+    } catch {
+      // No network or GitHub unavailable: try again next start.
+    }
+  }
+
+  function openSettings(focus: string | null = null): void {
+    settingsFocus = focus;
+    showSettings = true;
+  }
+
+  // ── LaTeX: building, the PDF and SyncTeX ─────────────────────────
+
+  /** Build a PDF. Unsaved edits are saved first: the PDF shows the files. */
+  async function compile(lang: PdfLang = latex.lang, saveFirst = true): Promise<void> {
+    if (!editor || compiling || !compilable) return;
+    compiling = true;
+    try {
+      if (saveFirst && session.dirty) {
+        await save(false);
+        if (session.dirty) return;
+      }
+      await settleEdits();
+      await latex.compile(lang, editor.text());
+    } finally {
+      compiling = false;
+    }
+  }
+
+  function showPdfTab(): void {
+    if (rightTab !== "pdf") setRightTab("pdf");
+  }
+
+  /** A click on the PDF: select the source behind it. */
+  async function pickInPdf(pick: PdfPick): Promise<void> {
+    if (!editor) return;
+    lastPick = pick;
+    const near = { page: pick.page, x: pick.x, y: pick.y };
+    try {
+      const hit = await latexIpc.inverse(latex.lang, pick.page, pick.x, pick.y, pick.span, pick.click, editor.text());
+      if (!hit) {
+        pdfMenu = { ...near, here: false, paragraph: false, file: "", line: 0 };
+      } else if (hit.here && hit.range) {
+        editor.select(hit.range.from, hit.range.to, false);
+        pdfMenu = { ...near, here: true, paragraph: hit.paragraph, file: hit.file, line: hit.line };
+      } else {
+        pdfMenu = { ...near, here: false, paragraph: false, file: hit.file, line: hit.line };
+      }
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** The PDF menu's actions run on the selection the click made. */
+  function pdfAction(action: "polish" | "edit" | "ask"): void {
+    pdfMenu = null;
+    if (action === "polish") {
+      void runAssist({ action: "polish", instruction: "" });
+      return;
+    }
+    assist.setAction(action);
+    setAssistOpen(true);
+    requestAnimationFrame(() => assistPanel?.focus());
+  }
+
+  /** Open another file of the project and select `line` (or the clicked words on it). */
+  async function openProjectFile(file: string, line = 0, pick: PdfPick | null = null): Promise<void> {
+    pdfMenu = null;
+    try {
+      const view = await latexIpc.open(file);
+      if (!view || !editor) return;
+      loadView(view);
+      if (line > 0) {
+        const r = pick
+          ? await latexIpc.locate(editor.text(), line, pick.span, pick.click)
+          : lineRange(line);
+        editor.select(r.from, r.to);
+      }
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  function lineRange(line: number): { from: number; to: number } {
+    const doc = editor!.doc;
+    const l = doc.line(Math.min(Math.max(1, line), doc.lines));
+    return { from: l.from, to: l.to };
+  }
+
+  async function gotoIssue(issue: IssueView): Promise<void> {
+    if (!editor || issue.line === null) return;
+    if (issue.here) {
+      const r = await latexIpc.goto(latex.lang, issue.line, editor.text()).catch(() => null);
+      const range = r ?? lineRange(issue.line);
+      editor.select(range.from, range.to);
+    } else if (issue.file) {
+      await openProjectFile(issue.file, issue.line);
+    }
+  }
+
+  /** Show the cursor's place in the PDF. */
+  async function locateInPdf(): Promise<void> {
+    if (!editor || !isLatex) return;
+    showPdfTab();
+    const lang = latex.lang;
+    try {
+      const head = editor.view.state.selection.main.head;
+      const boxes = await latexIpc.forward(lang, head, editor.text());
+      if (boxes.length === 0) {
+        session.flash(t("pdf.noSource"));
+        return;
+      }
+      pdfMarks = { lang, boxes, tick: pdfMarks.tick + 1 };
+    } catch (err) {
+      fail(err);
+    }
+  }
+
   function onKeydown(e: KeyboardEvent): void {
-    if (!(isMac ? e.metaKey : e.ctrlKey) || e.altKey) return;
+    const primary = isMac ? e.metaKey : e.ctrlKey;
+    if (primary && e.altKey && e.code === "KeyJ") {
+      e.preventDefault();
+      if (!e.repeat) void locateInPdf();
+      return;
+    }
+    if (!primary || e.altKey) return;
     const key = e.key.toLowerCase();
     if (key === ",") {
       e.preventDefault();
-      if (!showGlossary) showSettings = !showSettings;
+      if (!showGlossary) {
+        settingsFocus = null;
+        showSettings = !showSettings;
+      }
     } else if (key === "s") {
       e.preventDefault();
       if (!e.repeat) void save(e.shiftKey);
@@ -413,6 +601,12 @@
     } else if (key === "p" && e.shiftKey) {
       e.preventDefault();
       if (!e.repeat) void runAssist({ action: "polish", instruction: "" });
+    } else if (key === "b" && !e.shiftKey) {
+      e.preventDefault();
+      if (!e.repeat && isLatex) {
+        showPdfTab();
+        void compile();
+      }
     } else if (key === "k" && !e.shiftKey) {
       e.preventDefault();
       assist.setAction(assist.action === "polish" ? "edit" : assist.action);
@@ -610,6 +804,9 @@
         else unlisten = off;
         loadView(await ipc.getSession());
         requestLog.load(await logIpc.get());
+        await latex.loadStatus();
+        if (showPdf && compilable && latex.ready && !latex.builds[latex.lang]) void compile();
+        void checkForUpdate();
       } catch (err) {
         fail(err);
       }
@@ -633,6 +830,9 @@
   <Toolbar
     {session}
     {theme}
+    project={latex.project}
+    onnew={() => (showTemplates = true)}
+    onfile={(file) => openProjectFile(file)}
     onopen={open}
     onsave={() => save(false)}
     onexport={exportBilingual}
@@ -644,9 +844,7 @@
       showSettings = false;
       showGlossary = true;
     }}
-    onsettings={() => {
-      showSettings = true;
-    }}
+    onsettings={() => openSettings()}
     onlog={() => {
       showLog = true;
     }}
@@ -676,24 +874,58 @@
 
     <Splitter {ratio} container={panes} onchange={setRatio} />
 
-    <div
-      class="target"
-      role="presentation"
-      onpointerenter={drive("right")}
-      onwheelcapture={scrollManually("right")}
-      onkeydowncapture={scrollManually("right")}
-    >
-      <TranslationPane
-        {session}
-        {blocks}
-        {preview}
-        {slice}
-        bind:pane={rightPane}
-        onactivate={activate}
-        onretry={(id) => ipc.retranslateSegment(id).catch(fail)}
-        onscroll={() => sync.onScroll("right")}
-        onresize={() => sync.schedule()}
-      />
+    <div class="target" class:tabbed={isLatex}>
+      {#if isLatex}
+        <div class="tabs" role="tablist" aria-label={t("pane.pdf")}>
+          <button
+            class="tab smallcaps"
+            class:on={!showPdf}
+            role="tab"
+            aria-selected={!showPdf}
+            onclick={() => setRightTab("translation")}>{t("pane.translation")}</button
+          >
+          <button class="tab smallcaps" class:on={showPdf} role="tab" aria-selected={showPdf} onclick={() => setRightTab("pdf")}
+            >{t("pane.pdf")}{#if latex.building.en || latex.building.zh}<span class="busy" aria-hidden="true"></span>{/if}</button
+          >
+        </div>
+      {/if}
+      <div
+        class="right"
+        class:hidden={showPdf}
+        role="presentation"
+        onpointerenter={drive("right")}
+        onwheelcapture={scrollManually("right")}
+        onkeydowncapture={scrollManually("right")}
+      >
+        <TranslationPane
+          {session}
+          {blocks}
+          {preview}
+          {slice}
+          bind:pane={rightPane}
+          onactivate={activate}
+          onretry={(id) => ipc.retranslateSegment(id).catch(fail)}
+          onscroll={() => sync.onScroll("right")}
+          onresize={() => sync.schedule()}
+        />
+      </div>
+      {#if showPdf}
+        <div class="right">
+          <PdfPane
+            store={latex}
+            marks={pdfMarks}
+            menu={pdfMenu}
+            {compilable}
+            oncompile={(lang) => compile(lang)}
+            onpick={pickInPdf}
+            onlocate={locateInPdf}
+            onissue={gotoIssue}
+            onaction={pdfAction}
+            onopenfile={(file, line) => openProjectFile(file, line, lastPick)}
+            onclosemenu={() => (pdfMenu = null)}
+          />
+        </div>
+      {/if}
     </div>
   </main>
   {#if showAssist}
@@ -717,14 +949,26 @@
   {/if}
   </div>
 
-  <StatusBar {session} provider={settings?.activeLabel ?? ""} ondismisserror={dismissError} />
+  <StatusBar
+    {session}
+    provider={settings?.activeLabel ?? ""}
+    update={updateAvailable}
+    onupdate={() => openSettings("updates")}
+    ondismisserror={dismissError}
+  />
 </div>
 
 {#if showSettings && settings}
   <SettingsPanel
     {settings}
+    {latex}
+    dirty={session.dirty}
+    focus={settingsFocus}
     onchange={(view) => {
       settings = view;
+    }}
+    onskill={(next) => {
+      skill = next;
     }}
     onclose={() => {
       showSettings = false;
@@ -741,6 +985,21 @@
   <GlossaryPanel
     onclose={() => {
       showGlossary = false;
+      editor?.focus();
+    }}
+  />
+{/if}
+
+{#if showTemplates}
+  <TemplatePanel
+    canExport={!!latex.project}
+    onopened={(view) => {
+      showTemplates = false;
+      loadView(view);
+      if (latex.ready) setRightTab("pdf");
+    }}
+    onclose={() => {
+      showTemplates = false;
       editor?.focus();
     }}
   />
@@ -806,7 +1065,62 @@
   .target {
     flex: 1;
     min-width: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     box-shadow: inset 8px 0 14px -12px rgba(0, 0, 0, 0.18);
+  }
+  .target.tabbed {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .right {
+    min-height: 0;
+    min-width: 0;
+  }
+  .right.hidden {
+    display: none;
+  }
+  .tabs {
+    display: flex;
+    gap: 2px;
+    padding: 4px 10px 0;
+    background: var(--chrome);
+    border-bottom: 1px solid var(--rule);
+  }
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: 5px 5px 0 0;
+    background: transparent;
+    padding: 3px 12px 5px;
+    font-size: 13.5px;
+    color: var(--muted);
+    cursor: pointer;
+    margin-bottom: -1px;
+  }
+  .tab:hover {
+    color: var(--ink);
+  }
+  .tab.on {
+    background: var(--paper-2);
+    border-color: var(--rule);
+    color: var(--ink);
+  }
+  .tab .busy {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid var(--accent-soft);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 800ms linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   @keyframes settle {
     from {
