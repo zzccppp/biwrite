@@ -4,6 +4,7 @@
   import { KIND_LABELS } from "../types";
   import PromptEditor from "./PromptEditor.svelte";
   import ProviderForm from "./ProviderForm.svelte";
+  import StorageSection from "./StorageSection.svelte";
 
   interface Props {
     settings: SettingsView;
@@ -180,6 +181,8 @@
       <h3 class="smallcaps">System prompt</h3>
       <PromptEditor />
     </section>
+
+    <StorageSection logDir={settings.logDir} />
 
     {#if error}<p class="error">{error}</p>{/if}
   </div>

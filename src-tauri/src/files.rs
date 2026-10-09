@@ -167,6 +167,23 @@ pub async fn read_text_file(path: PathBuf) -> CommandResult<TextFile> {
     .map_err(|e| CommandError::Task(e.to_string()))?
 }
 
+/// Show a folder in Finder / Explorer (created first if missing).
+pub fn reveal(dir: &Path) -> CommandResult<()> {
+    fs::create_dir_all(dir).map_err(|e| CommandError::io(dir, e))?;
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(program)
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| CommandError::io(dir, e))
+}
+
 /// Distinguishes temp files of saves that might overlap.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 

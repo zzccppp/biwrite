@@ -4,16 +4,19 @@ mod commands;
 mod error;
 mod files;
 mod glossary_commands;
+mod logging;
 mod provider_state;
 mod secrets;
 mod settings;
 mod settings_commands;
 mod sink;
 mod state;
+mod storage_commands;
 
 #[cfg(test)]
 mod leak_tests;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use biwrite_engine::{
@@ -28,18 +31,34 @@ use crate::sink::TauriSink;
 use crate::state::AppState;
 
 pub fn run() {
+    // First, so even failures before setup (e.g. no WebView2) are reported.
+    logging::init();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            let log_dir = app.path().app_log_dir().ok();
+            if let Some(dir) = &log_dir {
+                logging::attach_dir(dir.clone());
+            }
+            log::info!(
+                "BiWrite {} starting ({} {})",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
             let config_dir = app.path().app_config_dir()?;
-            let paths = Paths::in_dir(&config_dir);
+            let mut paths = Paths::in_dir(&config_dir);
+            paths.logs = log_dir;
             settings::ensure_prompt_files(&paths.prompts);
             let settings = settings::load(&paths.settings);
             let secrets: Arc<dyn SecretStore> = Arc::new(Keychain);
             let translator = initial_translator(&settings, &secrets, &paths);
+            log::info!("provider: {}", settings::label(&settings.active().config));
+            let (cache, cache_path) = open_cache(app);
+            paths.cache = cache_path;
             let engine = Engine::new(
                 translator,
-                open_cache(app),
+                cache.clone(),
                 Arc::new(TauriSink::new(app.handle().clone())),
                 EngineSettings {
                     concurrency: settings.concurrency,
@@ -48,7 +67,7 @@ pub fn run() {
                 tauri::async_runtime::handle().inner().clone(),
             );
             engine.set_glossary(settings.glossary.clone());
-            let state = AppState::new(engine, settings, paths, secrets);
+            let state = AppState::new(engine, cache, settings, paths, secrets);
             if let Some(path) = std::env::args_os().nth(1).map(std::path::PathBuf::from) {
                 // `biwrite paper.tex`: open a file from the command line.
                 match state.load_path_blocking(path) {
@@ -57,7 +76,7 @@ pub fn run() {
                             window.set_title(&state.file().window_title())?;
                         }
                     }
-                    Err(e) => eprintln!("BiWrite: {e}"),
+                    Err(e) => log::error!("{e}"),
                 }
             }
             app.manage(state);
@@ -89,6 +108,9 @@ pub fn run() {
             settings_commands::get_prompt,
             settings_commands::save_prompt,
             settings_commands::reveal_prompts,
+            storage_commands::get_cache,
+            storage_commands::clear_cache,
+            storage_commands::reveal_logs,
             glossary_commands::get_glossary,
             glossary_commands::save_glossary,
             glossary_commands::import_glossary,
@@ -100,7 +122,7 @@ pub fn run() {
     match app {
         Ok(app) => app.run(on_run_event),
         Err(e) => {
-            eprintln!("BiWrite failed to start: {e}");
+            log::error!("BiWrite failed to start: {e}");
             std::process::exit(1);
         }
     }
@@ -117,27 +139,30 @@ fn initial_translator(
         dir: paths.prompts.clone(),
     });
     provider_state::translator_for(settings.active(), secrets, prompts).unwrap_or_else(|e| {
-        eprintln!("BiWrite: provider unavailable ({e}); using the mock translator");
+        log::warn!("provider unavailable ({e}); using the mock translator");
         Arc::new(MockTranslator::default())
     })
 }
 
-/// The persistent translation cache in the app data folder; falls back to an
-/// in-memory cache (with a warning) so the app still works if it can't open.
-fn open_cache(app: &App) -> Arc<dyn TranslationCache> {
+/// The persistent translation cache in the app data folder (and its path);
+/// falls back to an in-memory cache (with a warning) so the app still works
+/// if it can't open.
+fn open_cache(app: &App) -> (Arc<dyn TranslationCache>, Option<PathBuf>) {
     let opened = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())
         .and_then(|dir| {
             std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-            SqliteCache::open(&dir.join("cache.sqlite3")).map_err(|e| e.to_string())
+            let path = dir.join("cache.sqlite3");
+            let cache = SqliteCache::open(&path).map_err(|e| e.to_string())?;
+            Ok((cache, path))
         });
     match opened {
-        Ok(cache) => Arc::new(cache),
+        Ok((cache, path)) => (Arc::new(cache), Some(path)),
         Err(e) => {
-            eprintln!("BiWrite: translation cache unavailable ({e}); using a temporary one");
-            Arc::new(MemoryCache::default())
+            log::warn!("translation cache unavailable ({e}); using a temporary one");
+            (Arc::new(MemoryCache::default()), None)
         }
     }
 }
@@ -156,7 +181,7 @@ fn on_window_event(window: &Window, event: &WindowEvent) {
         if discard {
             target.state::<AppState>().confirm_discard_on_close();
             if let Err(e) = target.destroy() {
-                eprintln!("BiWrite: failed to close window: {e}");
+                log::error!("failed to close window: {e}");
             }
         }
     });

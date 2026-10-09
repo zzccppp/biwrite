@@ -16,7 +16,7 @@ use crate::state::{AppState, FileState, SavedView, SessionView, display_name};
 fn refresh_title(window: &WebviewWindow, state: &AppState) {
     let title = state.file().window_title();
     if let Err(e) = window.set_title(&title) {
-        eprintln!("BiWrite: failed to set window title: {e}");
+        log::warn!("failed to set window title: {e}");
     }
 }
 
@@ -46,6 +46,7 @@ pub async fn open_file(
     let snapshot = state
         .engine
         .load(file.text().to_owned(), Mode::from_path(&path));
+    log::info!("opened {} ({:?})", display_name(Some(&path)), snapshot.mode);
     *state.file() = FileState {
         path: Some(path),
         file,
@@ -129,6 +130,7 @@ async fn save_to(
         state.apply_doc_note();
     }
     refresh_title(window, state);
+    log::info!("saved {}", display_name(Some(&path)));
     Ok(SavedView {
         name: display_name(Some(&path)),
         suggested_mode: Mode::from_path(&path),
@@ -146,6 +148,10 @@ pub async fn swap_languages(
     text: String,
 ) -> CommandResult<SessionView> {
     let swapped = state.engine.swap(text.clone())?;
+    log::info!(
+        "swapped languages: now {}",
+        swapped.snapshot.direction.as_str()
+    );
     // Dirty means "the English differs from the file on disk".
     let english = match swapped.snapshot.direction {
         Direction::EnZh => &swapped.text,

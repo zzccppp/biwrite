@@ -351,6 +351,22 @@ line, `$$…$$ text` on one line (the line is skipped as math), and
   `\label` is stripped; numbered environments render unnumbered. A KaTeX
   error falls back to the escaped source. Collapsed math blocks have a ▸
   toggle that typesets the equation; the expanded state survives a swap.
+* **Text formatting** (`lib/format.ts`), deliberately small; anything else
+  stays visible as escaped source:
+  * Markdown: `**bold**`/`__bold__`, `*italic*`/`_italic_` (not inside
+    words), `~~strike~~`, inline code, links and images (text underlined,
+    URL as tooltip, never clickable, since an `<a href>` would navigate the
+    app window), autolinks, `\`-escapes, list items (`-`/`*`/`+`/`1.`, up
+    to three nesting levels) and `>` quotes as block lines.
+  * LaTeX: `\textbf`, `\textit`/`\emph`/`\textsl`, `\texttt`,
+    `\underline`, `\textsc`, `\footnote` (inline, muted), citations as
+    `[keys]`, references as their label (`\eqref` in parentheses), `\label`
+    hidden, `\url`/`\href` as links, ` ``…'' ` quotes, `--`/`---` dashes,
+    `~`, `\\`, escaped characters; comments hidden and bare braces dropped as
+    in the PDF; unknown commands shown as written.
+  * Math is swapped for private-use stand-ins while formatting, so
+    `**$x$ 很大**` and `\textbf{$x$ …}` work; stand-ins never go into
+    attributes. Chinese bold uses a bold sans (Songti's bold is too weak).
 * Clicking a block moves the cursor to the segment start and scrolls the editor
   so the segment sits at the same height as the clicked block.
 
@@ -363,9 +379,33 @@ line, `$$…$$ text` on one line (the line is skipped as math), and
   file names and glossary entries only (`events.rs`, `commands.rs`,
   `glossary_commands.rs`). Glossary CSVs and exports are also picked in Rust
   dialogs; CSV reads are capped at 2 MB.
-* `{@html}` only ever receives HTML-escaped prose and KaTeX output rendered
-  with `trust: false` (no `\href`, `\url`, `\includegraphics` or HTML
-  extensions).
+* `{@html}` only ever receives HTML-escaped prose, the formatter's fixed
+  tags (`strong`, `em`, `del`, `code`, `u`, `span` with a class and an
+  escaped `title`) and KaTeX output rendered with `trust: false` (no `\href`,
+  `\url`, `\includegraphics` or HTML extensions). Nothing is clickable.
+
+## Logs and cache maintenance
+
+* **Logs** (`src-tauri/src/logging.rs`, on the `log` facade): one file per
+  local day, `biwrite-YYYY-MM-DD.log`, in the app log folder (macOS
+  `~/Library/Logs/app.biwrite.desktop/`, Windows
+  `%LOCALAPPDATA%\app.biwrite.desktop\logs\`). At most 5 MB a day, then one
+  line saying the rest of the day is dropped. Files older than 7 days are
+  deleted at startup and when the day changes; only files named like ours
+  are touched. BiWrite's messages from `info`, other crates' from `warn`.
+  Logged: startup, files opened/saved/exported (names only), provider
+  switches, glossary changes, cache clearing, notices (retries, cache
+  problems), failed paragraphs, every error a command returns to the UI,
+  and panics with a backtrace. No document text beyond what error
+  messages quote (e.g. a placeholder error names the formula it lost);
+  every line goes through the key redaction again. The logger is installed first thing in
+  `run()` (stderr until the log folder is known), so failures before setup
+  are reported too. Timestamps and the day use the local offset, read per
+  line. Settings → *Show logs* opens the folder.
+* **Translation cache:** Settings shows the number of entries, the size,
+  and a breakdown by provider (configured name, or the API host), model
+  and direction. *Clear cache…* (confirmed inline) deletes every entry,
+  `VACUUM`s and truncates the WAL. Translations already on screen stay.
 * Capability: `core:default` only. CSP restricts scripts to `'self'`.
 
 ## File round-trip

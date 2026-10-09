@@ -183,6 +183,6 @@ test("latex: verb, url and href arguments are not math", () => {
 });
 
 test("rendering: LaTeX prose escapes show as characters", () => {
-  assert.equal(renderToHtml(String.raw`提高了 5\% \& 更多 \\ 行`, "latex"), String.raw`提高了 5% &amp; 更多 \\ 行`);
-  assert.equal(renderToHtml(String.raw`5\%`, "markdown"), String.raw`5\%`);
+  assert.equal(renderToHtml(String.raw`提高了 5\% \& 更多 \\ 行`, "latex"), "提高了 5% &amp; 更多 \n 行");
+  assert.equal(renderToHtml(String.raw`\textbf{x}`, "markdown"), String.raw`\textbf{x}`);
 });

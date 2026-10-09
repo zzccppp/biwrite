@@ -5,6 +5,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  CacheView,
+  ClearedView,
   Direction,
   ExportView,
   GlossaryEntry,
@@ -57,6 +59,9 @@ export const settingsIpc = {
   getPrompt: (direction: Direction) => invoke<PromptView>("get_prompt", { direction }),
   savePrompt: (direction: Direction, text: string) => invoke<PromptView>("save_prompt", { direction, text }),
   revealPrompts: () => invoke<void>("reveal_prompts"),
+  getCache: () => invoke<CacheView>("get_cache"),
+  clearCache: () => invoke<ClearedView>("clear_cache"),
+  revealLogs: () => invoke<void>("reveal_logs"),
 };
 
 export interface EngineEvents {

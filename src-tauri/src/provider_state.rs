@@ -58,6 +58,7 @@ impl AppState {
         let settings = self.settings();
         let translator = translator_for(settings.active(), &self.secrets, self.prompts())?;
         self.engine.set_translator(translator);
+        log::info!("provider: {}", settings::label(&settings.active().config));
         Ok(())
     }
 
@@ -118,6 +119,6 @@ impl AppState {
 
     pub fn settings_view(&self) -> SettingsView {
         let note = self.doc_note();
-        settings::view(&self.settings(), note, &self.paths.prompts)
+        settings::view(&self.settings(), note, &self.paths)
     }
 }

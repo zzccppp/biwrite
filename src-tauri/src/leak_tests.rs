@@ -36,14 +36,15 @@ async fn key_never_appears_in_views_or_settings_file() {
     });
     settings.active_provider = "p-1".into();
 
+    let cache = Arc::new(MemoryCache::default());
     let engine = Engine::new(
         Arc::new(MockTranslator::default()),
-        Arc::new(MemoryCache::default()),
+        cache.clone(),
         Arc::new(NullSink),
         EngineSettings::default(),
         tokio::runtime::Handle::current(),
     );
-    let state = AppState::new(engine, settings, paths.clone(), secrets);
+    let state = AppState::new(engine, cache, settings, paths.clone(), secrets);
     state.apply_active_provider().unwrap();
     let snapshot = state.engine.load("Hello world.".into(), Mode::Plain);
 

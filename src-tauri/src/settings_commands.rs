@@ -308,19 +308,7 @@ pub async fn save_prompt(
 /// Show the prompt files in Finder / Explorer.
 #[tauri::command]
 pub async fn reveal_prompts(state: State<'_, AppState>) -> CommandResult<()> {
-    let dir = state.paths.prompts.clone();
-    let program = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(program)
-        .arg(&dir)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| CommandError::io(&dir, e))
+    crate::files::reveal(&state.paths.prompts)
 }
 
 #[cfg(test)]

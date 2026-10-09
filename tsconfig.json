@@ -13,6 +13,7 @@
     "noImplicitOverride": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": true,
     "moduleDetection": "force",
     "noEmit": true
   },

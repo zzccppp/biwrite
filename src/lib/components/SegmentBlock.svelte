@@ -419,6 +419,89 @@
     white-space: pre-wrap;
   }
 
+  /* Markdown and LaTeX text markup (format.ts). */
+  .zh :global(strong) {
+    font-weight: 700;
+  }
+  /* Songti's bold barely differs from its regular weight: Chinese bold text
+     is set in a bold sans (黑体), as in Chinese typesetting. */
+  .zh:not(.en) :global(strong) {
+    font-family: "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei",
+      var(--font-zh);
+    font-weight: 600;
+  }
+  .zh :global(del) {
+    color: var(--muted);
+  }
+  .zh :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0 3px;
+  }
+  .zh :global(.fmt-link) {
+    color: var(--hl-link);
+    text-decoration: underline;
+    text-decoration-color: var(--accent-soft);
+    text-underline-offset: 2px;
+  }
+  .zh :global(.fmt-image)::before {
+    content: "▣ ";
+    color: var(--faint);
+  }
+  .zh :global(.fmt-sc) {
+    font-variant-caps: small-caps;
+  }
+  .zh :global(.fmt-note) {
+    font-size: 0.85em;
+    color: var(--muted);
+  }
+  .zh :global(.fmt-note)::before {
+    content: "〔注 ";
+  }
+  .zh :global(.fmt-note)::after {
+    content: "〕";
+  }
+  .zh.en :global(.fmt-note)::before {
+    content: "[note: ";
+  }
+  .zh.en :global(.fmt-note)::after {
+    content: "]";
+  }
+  .zh :global(.fmt-cite),
+  .zh :global(.fmt-ref) {
+    font-family: var(--font-prose);
+    font-size: 0.9em;
+    color: var(--hl-command);
+  }
+  .zh :global(.fmt-li),
+  .zh :global(.fmt-quote) {
+    display: block;
+  }
+  .zh :global(.fmt-li) {
+    position: relative;
+    padding-left: 1.4em;
+  }
+  .zh :global(.fmt-li.fmt-d1) {
+    margin-left: 1.4em;
+  }
+  .zh :global(.fmt-li.fmt-d2),
+  .zh :global(.fmt-li.fmt-d3) {
+    margin-left: 2.8em;
+  }
+  .zh :global(.fmt-marker) {
+    position: absolute;
+    left: 0;
+    color: var(--seal);
+  }
+  .zh :global(.fmt-quote) {
+    padding-left: 0.8em;
+    border-left: 3px solid var(--rule-strong);
+    color: var(--ink-2);
+  }
+
   @keyframes ink-in {
     from {
       opacity: 0;

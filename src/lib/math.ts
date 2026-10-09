@@ -7,7 +7,10 @@
 // \url, \html* and \includegraphics as inert text.
 
 import katex from "katex";
+import { escapeHtml, formatProse } from "./format.ts";
 import type { Mode } from "./types";
+
+export { escapeHtml };
 
 export type MathKind = "text" | "inline" | "display";
 
@@ -327,12 +330,6 @@ export function preambleOf(text: string): string {
 
 // ── Rendering ──────────────────────────────────────────────────────
 
-const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-
-export function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ESCAPES[c]);
-}
-
 /** Drop `\label{…}` (KaTeX has no cross-references). */
 function stripLabels(tex: string): string {
   let out = "";
@@ -397,32 +394,29 @@ function renderMath(part: MathPart, macros: Macros): string {
   return html;
 }
 
-/** LaTeX prose escapes shown as their character (`\%` → `%`); `\\` stays. */
-function unescapeLatexText(s: string): string {
-  return s.replace(/\\(\\|[%&#_$])/g, (m, c: string) => (c === "\\" ? m : c));
-}
-
 /**
- * HTML for `text` with its math typeset. Prose is escaped; line breaks next
- * to display math are dropped (the display block breaks the line itself).
- * In LaTeX, escaped characters in prose (`\%`, `\&`, `\$`, …) are shown
- * plainly.
+ * HTML for `text` with its math typeset and its Markdown or LaTeX text markup
+ * formatted (see `format.ts`). Line breaks next to display math are dropped
+ * (the display block breaks the line itself).
  */
 export function renderToHtml(text: string, mode: Mode, macros: Macros = {}): string {
-  const parts = splitMath(text, mode);
-  let out = "";
+  // Math becomes a stand-in while the prose is formatted, so `**$x$ 很大**`
+  // still works; the private-use stand-in characters can't occur otherwise.
+  const parts = splitMath(text.replace(/[\uE000\uE001]/g, ""), mode);
+  const math: string[] = [];
+  let prose = "";
   parts.forEach((part, i) => {
     if (part.kind !== "text") {
-      out += renderMath(part, macros);
+      prose += `\uE000${math.length}\uE001`;
+      math.push(renderMath(part, macros));
       return;
     }
     let value = part.value;
     if (parts[i - 1]?.kind === "display") value = value.replace(/^[ \t]*\n/, "");
     if (parts[i + 1]?.kind === "display") value = value.replace(/\n[ \t]*$/, "");
-    if (mode === "latex") value = unescapeLatexText(value);
-    out += escapeHtml(value);
+    prose += value;
   });
-  return out;
+  return formatProse(prose, mode).replace(/\uE000(\d+)\uE001/g, (_, n: string) => math[Number(n)] ?? "");
 }
 
 /** Clear the render cache (tests). */

@@ -121,9 +121,17 @@ request carries only the terms its paragraph mentions.
   all, pause auto-translate, Glossary, Settings, theme (auto / light / dark).
   In narrower windows the secondary buttons show icons only.
 
+* The right pane formats common Markdown (bold, italic, code, links, lists,
+  quotes) and LaTeX text markup (`\textbf`, `\emph`, citations, references,
+  footnotes, quotes, dashes) as well as math.
+
 The translation cache persists in
-`~/Library/Application Support/app.biwrite.desktop/cache.sqlite3`. Delete it to
-start fresh.
+`~/Library/Application Support/app.biwrite.desktop/cache.sqlite3`. Settings →
+*Translation cache* shows what it holds and can clear it.
+
+Logs: one file per day in `~/Library/Logs/app.biwrite.desktop/` (Windows:
+`%LOCALAPPDATA%\app.biwrite.desktop\logs\`), at most 5 MB a day, kept for 7
+days. Settings → *Logs* → *Show logs*.
 
 ## Checks
 

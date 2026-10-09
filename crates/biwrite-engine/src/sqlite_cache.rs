@@ -6,7 +6,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::cache::{CacheError, CacheKey, TranslationCache};
+use biwrite_core::Direction;
+
+use crate::cache::{CacheError, CacheGroup, CacheKey, CacheStats, TranslationCache, sort_groups};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS translations (
@@ -122,6 +124,55 @@ impl TranslationCache for SqliteCache {
         ])?;
         Ok(())
     }
+
+    fn stats(&self) -> Result<CacheStats, CacheError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT provider, model, direction, COUNT(*) FROM translations
+             GROUP BY provider, model, direction",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut groups = Vec::new();
+        for row in rows {
+            let (provider, model, direction, n) = row?;
+            let direction = match direction.as_str() {
+                "zh-en" => Direction::ZhEn,
+                _ => Direction::EnZh,
+            };
+            groups.push(CacheGroup {
+                provider,
+                model,
+                direction,
+                entries: u64::try_from(n).unwrap_or(0),
+            });
+        }
+        sort_groups(&mut groups);
+        let pages: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+        let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        Ok(CacheStats {
+            entries: groups.iter().map(|g| g.entries).sum(),
+            bytes: u64::try_from(pages.saturating_mul(page_size)).unwrap_or(0),
+            groups,
+        })
+    }
+
+    fn clear(&self) -> Result<u64, CacheError> {
+        let conn = self.conn();
+        let n = conn.execute("DELETE FROM translations", [])?;
+        // Give the space back: compact, then empty the write-ahead log. The
+        // entries are gone either way, so this is best-effort (it fails if
+        // another process is using the database).
+        let _ = conn.execute_batch("VACUUM");
+        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        Ok(n as u64)
+    }
 }
 
 #[cfg(test)]
@@ -180,6 +231,67 @@ mod tests {
         }
         // Whitespace-only differences share an entry (normalized hash).
         assert_eq!(cache.get(&key(" a\n")).unwrap().as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn stats_group_entries_and_clear_empties() {
+        let cache = SqliteCache::in_memory().unwrap();
+        cache.put(&key("a"), "甲").unwrap();
+        cache.put(&key("b"), "乙").unwrap();
+        cache
+            .put(
+                &CacheKey {
+                    direction: Direction::ZhEn,
+                    model: "n".into(),
+                    ..key("c")
+                },
+                "C",
+            )
+            .unwrap();
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.entries, 3);
+        assert!(stats.bytes > 0);
+        assert_eq!(
+            stats
+                .groups
+                .iter()
+                .map(|g| (
+                    g.provider.as_str(),
+                    g.model.as_str(),
+                    g.direction,
+                    g.entries
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("p", "m", Direction::EnZh, 2),
+                ("p", "n", Direction::ZhEn, 1)
+            ]
+        );
+        assert_eq!(cache.clear().unwrap(), 3);
+        let after = cache.stats().unwrap();
+        assert_eq!((after.entries, after.groups.len()), (0, 0));
+        assert_eq!(cache.get(&key("a")).unwrap(), None);
+        // Still usable afterwards.
+        cache.put(&key("a"), "甲").unwrap();
+        assert_eq!(cache.stats().unwrap().entries, 1);
+    }
+
+    #[test]
+    fn clearing_a_file_cache_shrinks_it() {
+        let dir = std::env::temp_dir().join(format!("biwrite-cache-clear-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cache.sqlite3");
+        let cache = SqliteCache::open(&path).unwrap();
+        let long = "译".repeat(2000);
+        for i in 0..300 {
+            cache.put(&key(&format!("p{i}")), &long).unwrap();
+        }
+        let before = cache.stats().unwrap().bytes;
+        assert_eq!(cache.clear().unwrap(), 300);
+        let after = cache.stats().unwrap().bytes;
+        assert!(after * 10 < before, "{before} → {after}");
+        drop(cache);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

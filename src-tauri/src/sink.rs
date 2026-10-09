@@ -3,7 +3,7 @@
 //! Payloads are segment states, usage counters and notices only; nothing that
 //! passes through here may contain credentials.
 
-use biwrite_engine::{EventSink, SegmentState, SessionUsage};
+use biwrite_engine::{EventSink, SegmentState, SegmentStatus, SessionUsage};
 use tauri::{AppHandle, Emitter};
 
 pub const EVENT_SEGMENT_STATES: &str = "segment-states";
@@ -23,13 +23,19 @@ impl TauriSink {
         // Events are best-effort: if the webview is gone or reloading, it
         // resynchronizes with `get_session` on startup.
         if let Err(e) = self.app.emit(event, payload) {
-            eprintln!("biwrite: failed to emit {event}: {e}");
+            log::warn!("failed to emit {event}: {e}");
         }
     }
 }
 
 impl EventSink for TauriSink {
     fn segment_states(&self, states: &[SegmentState]) {
+        // Failed translations go to the log; the message is already redacted.
+        for s in states.iter().filter(|s| s.status == SegmentStatus::Error) {
+            if let Some(error) = &s.error {
+                log::warn!("paragraph {} failed: {error}", s.id.0);
+            }
+        }
         self.emit(EVENT_SEGMENT_STATES, states);
     }
 
@@ -38,6 +44,7 @@ impl EventSink for TauriSink {
     }
 
     fn notice(&self, message: &str) {
+        log::info!("{message}");
         self.emit(EVENT_NOTICE, message);
     }
 }
