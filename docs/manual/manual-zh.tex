@@ -34,6 +34,7 @@
 \author{版本 0.2.2}
 \date{2026 年 10 月}
 
+\setlength{\emergencystretch}{2em}
 \begin{document}
 \maketitle
 \thispagestyle{empty}
@@ -100,7 +101,7 @@ BiWrite 是一个中英双语的论文写作编辑器。左侧编写正文，右
 写好的段落用\ui{润色}统一措辞，用\ui{按指令改}按要求调整，用\ui{提问}检查论证是否成立。操作方法见第~\ref{sec:assist}~节。
 
 \subsection{第 5 步：插入图表}
-在写作助手中选\ui{图表}，在要求中写清图表的内容，例如\ui{四个基准上的准确率，做成表格}。结果卡片给出可以直接插入的 LaTeX 代码（\fig{f-table} ①）。生成代码时，软件把文档已经加载的宏包告诉模型，模型优先使用这些宏包。代码还需要文档没有加载的宏包时，卡片会列出这些宏包（②）。当前文件就是主文件时，点\ui{插入}（③）会把代码插在段落之后，同时把对应的 \texttt{\textbackslash usepackage} 加到 \texttt{\textbackslash begin\{document\}} 之前（\fig{f-table-in}）。当前文件是某一节的分文件时，卡片提示要在主文件导言区加入哪几行。
+在写作助手中选\ui{图表}，在要求中写清图表的内容，例如\ui{四个基准上的准确率，做成表格}。结果卡片给出可以直接插入的 LaTeX 代码（\fig{f-table} ①）。生成代码的请求中列出文档已经加载的宏包，并要求优先使用这些宏包。代码还需要文档没有加载的宏包时，卡片会列出这些宏包（②）。当前文件就是主文件时，点\ui{插入}（③）会把代码插在段落之后，同时把对应的 \texttt{\textbackslash usepackage} 加到 \texttt{\textbackslash begin\{document\}} 之前（\fig{f-table-in}）。当前文件是某一节的分文件时，卡片提示要在主文件导言区加入哪几行。
 
 \shot{f-table}{①表格代码，②需要补充的宏包，③插入}
 \shot{f-table-in}{①插入时自动加入导言区的宏包}

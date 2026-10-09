@@ -40,6 +40,7 @@
 \author{Version 0.2.2}
 \date{October 2026}
 
+\setlength{\emergencystretch}{2em}
 \begin{document}
 \maketitle
 \thispagestyle{empty}
@@ -106,7 +107,7 @@ The card (\fig{f-written}) shows the new paragraphs \n{1}, their Chinese paragra
 \ui{Polish} evens out the wording, \ui{Edit} changes a paragraph as you say, and \ui{Ask} checks an argument. Section~\ref{sec:assist} has the details.
 
 \subsection{Step 5: Figures and tables}
-Choose \ui{Figure} and describe the figure or table, for example \ui{accuracy on the four benchmarks as a table}. The card gives LaTeX ready to insert (\fig{f-table} \n{1}). The model is told which packages the document loads and prefers them. When the code needs a package the document does not load, the card names it \n{2}. If the open file is the main file, \ui{Insert} \n{3} puts the code after the paragraph and adds the \texttt{\textbackslash usepackage} lines right before \texttt{\textbackslash begin\{document\}} (\fig{f-table-in}). In a section file, the card names the lines to add to the main file's preamble.
+Choose \ui{Figure} and describe the figure or table, for example \ui{accuracy on the four benchmarks as a table}. The card gives LaTeX ready to insert (\fig{f-table} \n{1}). The request lists the packages the document loads and asks for code that uses them first. When the code needs a package the document does not load, the card names it \n{2}. If the open file is the main file, \ui{Insert} \n{3} puts the code after the paragraph and adds the \texttt{\textbackslash usepackage} lines right before \texttt{\textbackslash begin\{document\}} (\fig{f-table-in}). In a section file, the card names the lines to add to the main file's preamble.
 
 \shot{f-table}{(1) The table, (2) the packages it needs, (3) Insert}
 \shot{f-table-in}{(1) The package added to the preamble on insert}
@@ -141,7 +142,7 @@ Put the exported Chinese \texttt{.tex} next to the English main file as \texttt{
 \shot[0.8]{w-open}{(1) Open a file, (2) the files of the project, (3) the paragraph's translation}
 
 \subsection{Switching the edited language}
-The \ui{EN \swapsym{} \zhch} button in the middle of the toolbar (\fig{w-swap} \n{1}) decides which language you edit on the left.
+The \ui{EN \swapsym{} \zhch} button in the middle of the toolbar (\fig{w-swap} \n{1}) sets which language you edit on the left.
 \begin{enumerate}
 \item By default you edit English on the left and read Chinese on the right.
 \item After the swap, the left pane holds the Chinese (\fig{w-swapped} \n{2}) and you edit it, with the English on the right \n{3}. Only the paragraphs you change get new English, revised from your previous English. Every other paragraph keeps your exact English.

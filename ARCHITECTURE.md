@@ -485,7 +485,7 @@ resolve to their target and permissions are preserved.
 * **Writing and figures** (`Action::Write`, `biwrite_latex::packages`).
   Write inserts new paragraphs after the target in the manner of reference
   texts, which can be files (`load_reference` keeps a `.tex` body without
-  comments). Figures are told the packages the document loads, and the
+  comments). Figure requests list the packages the document loads, and the
   packages their code still needs are added before `\begin{document}` on
   insert when the open file holds the preamble.
 * **Tray** (`src-tauri/src/tray.rs`). Closing the window hides it when the

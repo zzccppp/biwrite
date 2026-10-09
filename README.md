@@ -186,7 +186,7 @@ paragraph at the cursor:
   its manner, never its sentences, claims, numbers or citations. The
   paragraphs come with their Chinese.
 * **Figure** writes a figure or table to insert after the paragraph. The
-  model is told which packages the document loads, and packages the code
+  request lists the packages the document loads, and packages the code
   still needs are added to the preamble on insert.
 * **Via translation** fills the box with the paragraph's Chinese. Rewrite the
   Chinese, run it, and the English is revised to say the same, with as little
