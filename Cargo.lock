@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "biwrite-core",
  "biwrite-engine",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "serde",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "biwrite-core",
  "rusqlite",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite-providers"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "biwrite-core",
  "biwrite-engine",
