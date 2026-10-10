@@ -371,10 +371,10 @@
       savedDoc = doc;
       session.path = saved.path;
       session.name = saved.name;
-      reportMirror(saved.name, saved.mirror);
       // Rust marked the file clean; re-report if the user kept typing meanwhile.
       session.dirty = !editor.doc.eq(doc);
       if (session.dirty) setDirty(true);
+      reportMirror(saved.name, saved.mirror);
       if (wasUntitled && saved.suggestedMode !== session.mode) changeMode(saved.suggestedMode);
       if (saved.path.toLowerCase().endsWith(".tex")) {
         if (wasUntitled) await latex.loadProject();
@@ -415,6 +415,11 @@
 
   function changeMode(mode: Mode): void {
     if (!editor || mode === session.mode) return;
+    // Its links are paragraphs of the mode it was paired in.
+    if (session.pair) {
+      session.flash(t("pair.modeLocked"));
+      return;
+    }
     if (swapping) {
       session.flash(t("doc.busySwapping"));
       return;
@@ -630,17 +635,35 @@
         void swapLanguages();
       }
     }
-    if (mirrorWaiting) void writeMirror();
+    // A failed paragraph holds the paired file back until it is retried.
+    if (mirrorWaiting && c.error === 0) void writeMirror();
   });
 
+  /** Problems and left-out paragraphs of a paired-file write, as a sticky message. */
+  function mirrorProblems(mirror: MirrorSaved): void {
+    const notes: string[] = [];
+    if (mirror.problem === "changedOnDisk") notes.push(t("doc.mirrorChangedOnDisk", { mirror: mirror.name }));
+    if (mirror.problem === "structure") notes.push(t("doc.mirrorStructure", { mirror: mirror.name }));
+    if (mirror.leftOut > 0) notes.push(t("doc.mirrorLeftOut", { mirror: mirror.name, n: mirror.leftOut }));
+    if (notes.length > 0) session.error = notes.join(" ");
+  }
+
   function reportMirror(name: string, mirror: MirrorSaved | null): void {
+    if (mirror) mirrorProblems(mirror);
     if (!mirror) {
       session.flash(t("doc.saved", { name }));
-    } else if (mirror.pending > 0) {
+    } else if (mirror.problem) {
+      mirrorWaiting = false;
+      session.flash(t("doc.saved", { name }));
+    } else if (mirror.pending > 0 || mirror.deferred) {
       mirrorWaiting = true;
       // Not everything is on disk yet: closing or opening another file asks first.
       setDirty(true);
-      session.flash(t("doc.savedMirrorWaiting", { name, mirror: mirror.name, n: mirror.pending }));
+      session.flash(
+        mirror.pending > 0
+          ? t("doc.savedMirrorWaiting", { name, mirror: mirror.name, n: mirror.pending })
+          : t("doc.savedMirrorDeferred", { name, mirror: mirror.name }),
+      );
     } else {
       mirrorWaiting = false;
       session.flash(
@@ -649,21 +672,39 @@
           : t("doc.saved", { name }),
       );
     }
-    if (session.pair) session.pair = { ...session.pair, dirty: mirror ? !mirror.written && mirror.pending > 0 : false };
+    if (session.pair) session.pair = { ...session.pair, dirty: !!mirror?.behind };
   }
 
+  /** A write of the paired file is on its way (not reactive: no effect loop). */
+  let mirrorWriting = false;
+  /** Asked again while it was: try once more when it is done. */
+  let mirrorAgain = false;
+
   async function writeMirror(): Promise<void> {
-    mirrorWaiting = false;
+    if (mirrorWriting) {
+      mirrorAgain = true;
+      return;
+    }
+    mirrorWriting = true;
     try {
       const done = await pairIpc.write();
-      if (done?.pending) {
-        mirrorWaiting = true;
-        return;
-      }
+      if (session.pair && done) session.pair = { ...session.pair, dirty: done.behind };
+      // Still waiting (translations, or a save of later edits): tried again
+      // when the paragraphs change.
+      if (done && !done.problem && (done.pending > 0 || done.deferred)) return;
+      mirrorWaiting = false;
+      if (done) mirrorProblems(done);
       if (done?.written) session.flash(t("doc.mirrorWritten", { mirror: done.name, n: done.changed }));
       refreshDirty();
     } catch (err) {
+      mirrorWaiting = false;
       fail(err);
+    } finally {
+      mirrorWriting = false;
+      if (mirrorAgain) {
+        mirrorAgain = false;
+        if (mirrorWaiting) void writeMirror();
+      }
     }
   }
 
@@ -690,6 +731,8 @@
       await pairIpc.close();
       session.pair = null;
       mirrorWaiting = false;
+      // A save that marked the pair as waiting no longer applies.
+      refreshDirty();
     } catch (err) {
       fail(err);
     }

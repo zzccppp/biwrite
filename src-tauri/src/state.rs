@@ -43,10 +43,11 @@ impl FileState {
         display_name(self.path.as_deref())
     }
 
-    /// Something isn't on disk: the editor's text, or edits of the paired
-    /// file swapped away from (the frontend only reports the editor).
+    /// Something isn't on disk: the editor's text, or the paired file
+    /// (edits of it swapped away from, or a write it waits for). The
+    /// frontend only reports the editor.
     pub fn unsaved(&self) -> bool {
-        self.dirty || self.pair.as_ref().is_some_and(|p| p.text != p.file.text())
+        self.dirty || self.pair.as_ref().is_some_and(PairState::unsaved)
     }
 
     pub fn window_title(&self) -> String {

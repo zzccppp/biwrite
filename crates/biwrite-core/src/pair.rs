@@ -11,6 +11,7 @@
 //! a fixed penalty, so mirrors that follow the original one to one pair up
 //! in order even where anchors are scarce.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::compose::fit;
@@ -28,6 +29,17 @@ pub struct Unit {
     pub kind: SegmentKind,
     pub content: Range<usize>,
     pub range: Range<usize>,
+}
+
+impl Unit {
+    /// A paragraph of its own, which a new paragraph can follow: not a
+    /// heading, a caption (inside a float) or a list item.
+    pub fn is_plain_paragraph(&self, text: &str) -> bool {
+        self.kind == SegmentKind::Paragraph
+            && text
+                .get(self.range.start..self.content.start)
+                .is_some_and(|prefix| prefix.trim().is_empty())
+    }
 }
 
 /// The units of `text`.
@@ -301,6 +313,8 @@ pub enum Edit {
         text: String,
         tag: u64,
     },
+    /// A new paragraph before a unit.
+    InsertBefore { unit: usize, text: String, tag: u64 },
     /// The unit is gone, with the blank line that separated it.
     Delete { unit: usize },
 }
@@ -317,6 +331,47 @@ pub enum Origin {
     Inserted(u64),
 }
 
+/// What an inserted paragraph needs after it so that it stays a paragraph of
+/// its own, given the text that follows the insertion point: nothing before
+/// a blank line or the end, else enough newlines for one blank line (a
+/// paragraph on the very next line would otherwise run on from it).
+/// What an inserted paragraph needs before it, given the text before the
+/// insertion point (a line start): enough newlines for one blank line.
+fn blank_line_before(text: &str) -> &'static str {
+    let text = text.trim_end_matches([' ', '\t', '\r']);
+    if text.trim().is_empty() {
+        return "";
+    }
+    let newlines = text
+        .chars()
+        .rev()
+        .take_while(|c| c.is_whitespace())
+        .filter(|c| *c == '\n')
+        .count();
+    match newlines {
+        0 => "\n\n",
+        1 => "\n",
+        _ => "",
+    }
+}
+
+fn blank_line_after(rest: &str) -> &'static str {
+    let rest = rest.trim_start_matches([' ', '\t', '\r']);
+    if rest.trim().is_empty() {
+        return "";
+    }
+    let newlines = rest
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .filter(|c| *c == '\n')
+        .count();
+    match newlines {
+        0 => "\n\n",
+        1 => "\n",
+        _ => "",
+    }
+}
+
 /// The mirror after `edits`, and the origin of each unit of the result in
 /// order. Translations are shaped to fit their slot (no blank lines, LaTeX
 /// `%` escaped); everything not edited stays byte for byte.
@@ -325,8 +380,27 @@ pub fn patch(b: &str, mode: Mode, edits: &[Edit]) -> (String, Vec<Origin>) {
     // Byte edits: (start, end, replacement), applied from the back.
     let mut changes: Vec<(usize, usize, String)> = Vec::new();
     let mut deleted = vec![false; ub.len()];
+    for e in edits {
+        if let Edit::Delete { unit } = e
+            && let Some(gone) = deleted.get_mut(*unit)
+        {
+            *gone = true;
+        }
+    }
+    // Nothing follows unit `k` but space and units deleted too.
+    let tail_gone = |k: usize| {
+        let mut at = ub[k].range.end;
+        for (j, u) in ub.iter().enumerate().skip(k + 1) {
+            if !deleted[j] || !b[at..u.range.start].trim().is_empty() {
+                return false;
+            }
+            at = u.range.end;
+        }
+        b[at..].trim().is_empty()
+    };
     // Inserts per anchor, in edit order, joined into one change each.
     let mut inserts: Inserts = Vec::new();
+    let mut before: Vec<(usize, Vec<(u64, String)>)> = Vec::new();
     for e in edits {
         match e {
             Edit::Replace { unit, text } => {
@@ -339,30 +413,66 @@ pub fn patch(b: &str, mode: Mode, edits: &[Edit]) -> (String, Vec<Origin>) {
                     ));
                 }
             }
+            // Before the first unit is before unit 0 (in edit order with
+            // the other inserts there).
+            Edit::InsertAfter {
+                unit: None,
+                text,
+                tag,
+            }
+            | Edit::InsertBefore { unit: 0, text, tag }
+                if !ub.is_empty() =>
+            {
+                let body = fit(text, SegmentKind::Paragraph, mode, "");
+                match before.iter_mut().find(|(at, _)| *at == 0) {
+                    Some((_, list)) => list.push((*tag, body)),
+                    None => before.push((0, vec![(*tag, body)])),
+                }
+            }
+            // An anchor that isn't there: nothing sensible to do.
+            Edit::InsertAfter { unit: Some(u), .. } if *u >= ub.len() => {}
             Edit::InsertAfter { unit, text, tag } => {
-                let unit = unit.filter(|u| *u < ub.len());
+                let unit = *unit;
                 let body = fit(text, SegmentKind::Paragraph, mode, "");
                 match inserts.iter_mut().find(|(at, _)| *at == unit) {
                     Some((_, list)) => list.push((*tag, body)),
                     None => inserts.push((unit, vec![(*tag, body)])),
                 }
             }
+            Edit::InsertBefore { unit, text, tag } => {
+                if *unit < ub.len() {
+                    let body = fit(text, SegmentKind::Paragraph, mode, "");
+                    match before.iter_mut().find(|(at, _)| at == unit) {
+                        Some((_, list)) => list.push((*tag, body)),
+                        None => before.push((*unit, vec![(*tag, body)])),
+                    }
+                }
+            }
             Edit::Delete { unit } => {
                 if let Some(u) = ub.get(*unit) {
-                    // The unit and the blank line before it (after it, for the first unit).
-                    let before = b[..u.range.start]
-                        .trim_end_matches([' ', '\t', '\n', '\r'])
-                        .len();
-                    let (start, end) = if before > 0 && *unit > 0 {
-                        (before, u.range.end)
+                    // With text after it: the unit and the space after it, up
+                    // to the next line, so what follows keeps the separator
+                    // that was before the unit (a paragraph right after a
+                    // deleted heading doesn't run into the one above). At the
+                    // end (later units deleted too): from the end of the unit
+                    // before, so trailing deletes touch and never overlap,
+                    // and never reach into a unit that stays.
+                    let (start, end) = if tail_gone(*unit) {
+                        match unit.checked_sub(1).and_then(|k| ub.get(k)) {
+                            Some(prev) => {
+                                let prev_end = b[..u.range.start].trim_end().len();
+                                (prev_end.max(prev.range.end), u.range.end)
+                            }
+                            None if *unit + 1 == ub.len() => (u.range.start, b.len()),
+                            None => (u.range.start, u.range.end),
+                        }
                     } else {
                         let rest = &b[u.range.end..];
-                        let gap =
-                            rest.len() - rest.trim_start_matches([' ', '\t', '\n', '\r']).len();
+                        let space = rest.len() - rest.trim_start().len();
+                        let gap = rest[..space].rfind('\n').map_or(0, |i| i + 1);
                         (u.range.start, u.range.end + gap)
                     };
                     changes.push((start, end, String::new()));
-                    deleted[*unit] = true;
                 }
             }
         }
@@ -373,13 +483,26 @@ pub fn patch(b: &str, mode: Mode, edits: &[Edit]) -> (String, Vec<Origin>) {
             Some(u) => changes.push((
                 u.range.end,
                 u.range.end,
-                format!("\n\n{}", bodies.join("\n\n")),
+                format!(
+                    "\n\n{}{}",
+                    bodies.join("\n\n"),
+                    blank_line_after(&b[u.range.end..])
+                ),
             )),
             None => {
                 let at = ub.first().map_or(b.len(), |u| u.range.start);
                 changes.push((at, at, format!("{}\n\n", bodies.join("\n\n"))));
             }
         }
+    }
+    for (unit, list) in &before {
+        let bodies: Vec<&str> = list.iter().map(|(_, t)| t.as_str()).collect();
+        let at = ub[*unit].range.start;
+        changes.push((
+            at,
+            at,
+            format!("{}{}\n\n", blank_line_before(&b[..at]), bodies.join("\n\n")),
+        ));
     }
     changes.sort_by(|x, y| y.0.cmp(&x.0).then(y.1.cmp(&x.1)));
     let mut out = b.to_owned();
@@ -403,14 +526,71 @@ pub fn patch(b: &str, mode: Mode, edits: &[Edit]) -> (String, Vec<Origin>) {
             })
             .unwrap_or_default()
     };
+    let tags_before = |unit: usize| {
+        before
+            .iter()
+            .find(|(at, _)| *at == unit)
+            .map(|(_, list)| {
+                list.iter()
+                    .map(|(tag, _)| Origin::Inserted(*tag))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
     let mut origin: Vec<Origin> = tags(None);
     for (k, gone) in deleted.iter().enumerate() {
+        origin.extend(tags_before(k));
         if !gone {
             origin.push(Origin::Kept(k));
         }
         origin.extend(tags(Some(k)));
     }
     (out, origin)
+}
+
+/// [`patch`], if the result segments as the edits say: kept units keep
+/// their kind and inserted ones are plain paragraphs, nothing more and
+/// nothing less. `None` otherwise (a translation that adds a heading, an insert
+/// that runs into a neighbour), when writing it would put paragraphs in
+/// the wrong places from then on.
+pub fn patch_checked(b: &str, mode: Mode, edits: &[Edit]) -> Option<(String, Vec<Origin>)> {
+    let before = units(b, mode);
+    let (text, origin) = patch(b, mode, edits);
+    let after = units(&text, mode);
+    // What each unit must read now: a replacement or an insert as shaped,
+    // anything else as it was. An edit dropped along the way shows here.
+    let mut replaced: HashMap<usize, String> = HashMap::new();
+    let mut inserted: HashMap<u64, String> = HashMap::new();
+    for e in edits {
+        match e {
+            Edit::Replace { unit, text } => {
+                if let Some(u) = before.get(*unit) {
+                    replaced.insert(*unit, fit(text, u.kind, mode, &b[u.content.clone()]));
+                }
+            }
+            Edit::InsertAfter { text, tag, .. } | Edit::InsertBefore { text, tag, .. } => {
+                inserted.insert(*tag, fit(text, SegmentKind::Paragraph, mode, ""));
+            }
+            Edit::Delete { .. } => {}
+        }
+    }
+    let fits = after.len() == origin.len()
+        && after.iter().zip(&origin).all(|(u, o)| {
+            let now = text[u.content.clone()].trim();
+            match o {
+                Origin::Kept(k) => before.get(*k).is_some_and(|old| {
+                    let expected = replaced
+                        .get(k)
+                        .map_or(&b[old.content.clone()], String::as_str);
+                    old.kind == u.kind && now == expected.trim()
+                }),
+                Origin::Inserted(tag) => {
+                    u.is_plain_paragraph(&text)
+                        && inserted.get(tag).is_some_and(|t| now == t.trim())
+                }
+            }
+        });
+    fits.then_some((text, origin))
 }
 
 #[cfg(test)]
@@ -500,5 +680,146 @@ TabPFN \\cite{hollmann2025} 等表格基础模型可以在上下文中学习。\
             Mode::Plain,
         );
         assert_eq!(p.pairs, vec![(0, 0), (1, 1), (2, 2)]);
+    }
+
+    #[test]
+    fn an_insert_never_runs_into_the_next_paragraph() {
+        let zh = "\\section{方法}\\label{sec:method}\n第一段。\n\n第二段。\n";
+        let edits = vec![Edit::InsertAfter {
+            unit: Some(0),
+            text: "新的一段。".into(),
+            tag: 1,
+        }];
+        let (out, origin) = patch_checked(zh, Mode::Latex, &edits).expect("a clean insert");
+        assert_eq!(
+            out,
+            "\\section{方法}\\label{sec:method}\n\n新的一段。\n\n第一段。\n\n第二段。\n"
+        );
+        assert_eq!(
+            origin,
+            vec![
+                Origin::Kept(0),
+                Origin::Inserted(1),
+                Origin::Kept(1),
+                Origin::Kept(2)
+            ]
+        );
+        // At the end of the file, nothing is added after it.
+        let edits = vec![Edit::InsertAfter {
+            unit: Some(2),
+            text: "结尾。".into(),
+            tag: 2,
+        }];
+        let (out, _) = patch_checked(zh, Mode::Latex, &edits).unwrap();
+        assert!(out.ends_with("第二段。\n\n结尾。\n"), "{out:?}");
+    }
+
+    #[test]
+    fn a_patch_that_changes_the_structure_is_refused() {
+        let zh = "第一段。\n\n第二段。\n";
+        let edits = vec![Edit::Replace {
+            unit: 0,
+            text: "第一段。\n\\section{注入}\n更多。".into(),
+        }];
+        let mode = Mode::Latex;
+        let (unchecked, _) = patch(zh, mode, &edits);
+        assert_ne!(
+            units(&unchecked, mode).len(),
+            2,
+            "the heading took a unit of its own"
+        );
+        assert!(patch_checked(zh, mode, &edits).is_none());
+        // Items and captions are not plain paragraphs.
+        let list = "\\begin{itemize}\n\\item 一项。\n\\end{itemize}\n\n正文。\n";
+        let u = units(list, mode);
+        assert!(!u[0].is_plain_paragraph(list));
+        assert!(u[1].is_plain_paragraph(list));
+    }
+
+    #[test]
+    fn a_paragraph_before_the_first_one_goes_outside_a_leading_list() {
+        let zh = "\\begin{itemize}\n\\item 一项。\n\\end{itemize}\n\n正文。\n";
+        // After the list, before the first paragraph of its own.
+        let edits = vec![Edit::InsertBefore {
+            unit: 1,
+            text: "新段。".into(),
+            tag: 9,
+        }];
+        let (out, origin) = patch_checked(zh, Mode::Latex, &edits).expect("fits");
+        assert_eq!(
+            out,
+            "\\begin{itemize}\n\\item 一项。\n\\end{itemize}\n\n新段。\n\n正文。\n"
+        );
+        assert_eq!(
+            origin,
+            vec![Origin::Kept(0), Origin::Inserted(9), Origin::Kept(1)]
+        );
+    }
+
+    #[test]
+    fn deleting_a_heading_keeps_the_paragraphs_apart() {
+        let zh = "第零段。\n\n\\section{甲}\n第一段。\n\n第二段。\n";
+        let edits = vec![Edit::Delete { unit: 1 }];
+        let (out, origin) = patch_checked(zh, Mode::Latex, &edits).expect("fits");
+        assert_eq!(out, "第零段。\n\n第一段。\n\n第二段。\n");
+        assert_eq!(
+            origin,
+            vec![Origin::Kept(0), Origin::Kept(2), Origin::Kept(3)]
+        );
+        // The last unit takes the blank line before it.
+        let (out, _) = patch_checked(zh, Mode::Latex, &[Edit::Delete { unit: 3 }]).unwrap();
+        assert_eq!(out, "第零段。\n\n\\section{甲}\n第一段。\n");
+        // An indented next unit and an insert before it both survive.
+        let indented = "甲。\n\n  乙。\n";
+        let edits = vec![
+            Edit::Delete { unit: 0 },
+            Edit::InsertBefore {
+                unit: 1,
+                text: "丙。".into(),
+                tag: 3,
+            },
+        ];
+        let (out, origin) = patch_checked(indented, Mode::Plain, &edits).expect("fits");
+        assert_eq!(origin, vec![Origin::Inserted(3), Origin::Kept(1)]);
+        assert!(
+            !out.contains('甲') && out.contains("丙。") && out.contains("乙。"),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn deletes_at_the_end_never_overlap_or_eat_a_neighbour() {
+        // The last two units deleted together.
+        let zh = "甲。\n\n乙。\n\n丙。\n";
+        let edits = vec![Edit::Delete { unit: 1 }, Edit::Delete { unit: 2 }];
+        let (out, origin) = patch_checked(zh, Mode::Plain, &edits).expect("fits");
+        assert_eq!(out, "甲。\n");
+        assert_eq!(origin, vec![Origin::Kept(0)]);
+        // Trailing spaces on the line before: its replacement survives.
+        let spaced = "甲。\n\n乙。  \n\n丙。\n";
+        let edits = vec![
+            Edit::Replace {
+                unit: 1,
+                text: "新乙。".into(),
+            },
+            Edit::Delete { unit: 2 },
+        ];
+        let (out, _) = patch_checked(spaced, Mode::Plain, &edits).expect("fits");
+        assert_eq!(out, "甲。\n\n新乙。\n");
+        // And an insert after it too.
+        let edits = vec![
+            Edit::InsertAfter {
+                unit: Some(1),
+                text: "丁。".into(),
+                tag: 4,
+            },
+            Edit::Delete { unit: 2 },
+        ];
+        let (out, origin) = patch_checked(spaced, Mode::Plain, &edits).expect("fits");
+        assert_eq!(out, "甲。\n\n乙。  \n\n丁。\n");
+        assert_eq!(
+            origin,
+            vec![Origin::Kept(0), Origin::Kept(1), Origin::Inserted(4)]
+        );
     }
 }

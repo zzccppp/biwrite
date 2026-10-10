@@ -107,6 +107,9 @@ where
 /// `\%` (it would comment out the rest of the line) unless it starts one of
 /// the source's own comments, which placeholder protection carried over.
 pub fn fit(t: &str, kind: SegmentKind, mode: Mode, source: &str) -> String {
+    // Documents hold `\n` only (`TextFile` normalizes on reading); a model's
+    // `\r` would make a written file read back different from what was kept.
+    let t = &t.replace("\r\n", "\n").replace('\r', "\n");
     let mut out = if t.lines().any(|l| l.trim().is_empty()) {
         t.lines()
             .filter(|l| !l.trim().is_empty())

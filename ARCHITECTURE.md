@@ -107,6 +107,13 @@ CodeMirror edit ──(800 ms debounce, single-flight)──▶ update_document(
 * **Events.** Every state change bumps a global version; the frontend drops
   updates older than what it has, so invoke responses and events may arrive in
   any order.
+* **Documents.** `Snapshot.document` changes whenever the document is
+  replaced (load, `load_known`, swap). Every command that carries the
+  editor's text carries this number too, and `AppState::sync_text` refuses
+  text for an earlier document (`EngineError::Stale`), so a save or flush
+  sent before a swap or an open is never applied to the new document.
+  Saves and document changes (open, swap, retarget, pairing, the deferred
+  mirror write) take `save_lock` in turn.
 
 ## Segmentation
 
@@ -250,8 +257,13 @@ The toolbar's `EN ⇄ 中` button swaps which language is edited.
    `compose_target()`, the English composed from the right pane. Swapping back
    without edits restores the original byte for byte (tested on both samples).
 4. Retranslate (segment and all) is disabled while editing Chinese, because it
-   would replace the user's English with machine translation. The editor is
-   read-only during a swap. Opening a file always returns to editing English.
+   would replace the user's English with machine translation (Rust refuses it
+   too, for paragraphs whose translation is exact). The editor is read-only
+   during a swap, and save, export, compile, continue and mode changes wait
+   for it. Opening a file always returns to editing English.
+5. Swapping back to the file's own language never keeps untranslated
+   paragraphs (`keep` is ignored that way round): they would be saved into
+   the file in the other language. The swap waits for every translation.
 
 Known segmenter limits (not translated, or translated as a whole):
 `\item[label]` labels, `\subfloat[caption]`, a second `\caption` on the same
@@ -440,12 +452,44 @@ resolve to their target and permissions are preserved.
   to the editor through a line diff in the same language and paragraph by
   paragraph across languages. A click's words pick the spot near the
   SyncTeX line (`locate.rs`).
+  * The root's name comes from the project (`% !TEX root`, file names), and
+    latexmk runs the engine through the shell, so `compile` only takes roots
+    whose path parts are letters, digits and ` ._-+,()[]@='`, none starting
+    with `-` (a file named `-shell-escape` or `` `cmd`.tex `` ran commands).
+    On Windows, `NoDefaultCurrentDirectoryInExePath` stops tools being found
+    in the project folder. A project's own `latexmkrc` still runs, as in
+    other editors.
 * **Pairs** (`biwrite-core::pair`, `src-tauri/src/pairing.rs`). Opening a
   file looks for its counterpart by name (`_zh`, `sections_en` and
   `sections_zh`, …). Paragraphs align with a dynamic program over kind and
   shared anchors plus a pass for moved floats. `Engine::load_known` seeds
   the mirror's paragraphs as exact translations. Saving patches only
   changed paragraphs into the mirror, and swapping edits the mirror.
+  * The two files must read as two languages (`lang::chinese_of_two`: their
+    prose's shares of Chinese differ by 0.15 or more; the one with more is
+    Chinese), so a same-language copy is never written into. A file is
+    never its own counterpart (`same_file`, through links).
+  * The mirror is written only as it was read: if it changed on disk, it is
+    not overwritten (`MirrorProblem::ChangedOnDisk`), and swapping onto it
+    is refused. A patch must segment as planned (`pair::patch_checked`),
+    else nothing is written (`MirrorProblem::Structure`). A new paragraph
+    goes next to a paired paragraph or heading it sits next to in the
+    document (only blank lines between, other new paragraphs aside), right
+    after or before that one's counterpart, with a blank line on both
+    sides: so it lands in the same place, inside a list or a wrapper around
+    the body alike. New headings, captions, list items and paragraphs with
+    no such neighbour are left out and reported. A Save As whose mirror
+    can't be written moves the pair anyway (`PairState.exists` false): the
+    next save creates it, and the old mirror is never patched again.
+  * `PairState.behind` marks a mirror waiting for translations or not
+    written; it counts as unsaved (close asks), like a pair's text that
+    differs from its file after a swap. The mirror follows the saved
+    document: written later (when its translations arrive) only while the
+    document is still the saved text, else with the next save
+    (`MirrorSaved.deferred`).
+  * A pair keeps its mode, and retranslating a paragraph whose translation
+    is the mirror's own text is refused. Save As names the mirror where
+    opening the new file looks for it.
 * **Assistant** (`biwrite-core::assist`, `src-tauri/src/assist_commands.rs`,
   `skills.rs`). Prompts carry the research-builder skill's files for the
   task. Jobs stream in the background as events, the frontend keeps each
@@ -477,7 +521,12 @@ resolve to their target and permissions are preserved.
   paragraph if it still reads as before. Its translation stays the exact
   original through a seed on the new text's hash.
   `Engine::continue_translation` takes up failed and paused paragraphs and,
-  swapped, paragraphs still in the other language.
+  swapped, paragraphs still in the other language: plainly so
+  (`lang::plainly_written_in`; English must be nearly free of Chinese,
+  since Chinese often carries many English names), and not translated into
+  the other language already. `State::fill` refuses a fill whose answer did
+  not move into the edited language (`lang::moved_into`) or would replace
+  an exact original; that paragraph is translated the usual way instead.
 * **PDF clicks** (`latex_commands::checked_point`). The words under a click
   are checked against the line SyncTeX names. When they are not there (a
   line-number ruler drawn over the page), `biwrite_latex::find_words` finds

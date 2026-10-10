@@ -427,6 +427,26 @@ export const messages = {
     zh: "已保存 {name}。{mirror} 将在剩余 {n} 段译完后写入。",
   },
   "doc.mirrorWritten": { en: "Saved {mirror} ({n} paragraphs changed).", zh: "已保存 {mirror}（改动 {n} 段）。" },
+  "doc.mirrorChangedOnDisk": {
+    en: "{mirror} changed on disk since it was opened, so it was not overwritten. Reopen the document to pair it with the new version.",
+    zh: "{mirror} 在打开后被其他程序修改过，因此没有覆盖。请重新打开文档，与新版本配对。",
+  },
+  "doc.mirrorStructure": {
+    en: "{mirror} was not written: the changes would not fit its structure (a translation that adds a heading or a list item, or a new paragraph with no place of its own). Edit that paragraph, or update {mirror} by hand and reopen the document.",
+    zh: "{mirror} 没有写入：改动放不进它的结构（某段译文多出标题或列表项，或新段落找不到合适的位置）。请修改该段，或手动更新 {mirror} 后重新打开文档。",
+  },
+  "doc.savedMirrorDeferred": {
+    en: "Saved {name}. {mirror} follows with the next save (the document changed meanwhile).",
+    zh: "已保存 {name}。{mirror} 将在下次保存时写入（文档在此期间有改动）。",
+  },
+  "doc.mirrorLeftOut": {
+    en: "{n} new headings, captions, list items or paragraphs with no paired paragraph right next to them are not in {mirror}: add them there by hand.",
+    zh: "有 {n} 个新的标题、图注、列表项或旁边没有已配对段落的段落没有写入 {mirror}，请手动添加。",
+  },
+  "pair.modeLocked": {
+    en: "A document paired with its translation keeps its mode.",
+    zh: "已与译文配对的文档不能切换模式。",
+  },
   "segment.editTranslation": {
     en: "Rewrite this translation: the source paragraph follows",
     zh: "改写这段译文，原文随之修改",
@@ -490,6 +510,10 @@ export const messages = {
   "toolbar.retranslateOff": {
     en: "Not available while you edit the translation, because machine translation would replace your {own} on the right",
     zh: "编辑译文时不可用，否则机器翻译会替换右侧你写的{own}",
+  },
+  "toolbar.retranslatePairOff": {
+    en: "Not available for a paired document: the paired file's paragraphs are your own translation, and machine translation would replace them",
+    zh: "已配对的文档不可用：对应文件的段落是你自己的译文，机器翻译会替换它们",
   },
   "toolbar.retranslateAll": { en: "Retranslate every paragraph", zh: "重新翻译所有段落" },
   "toolbar.retranslateAllHint": {

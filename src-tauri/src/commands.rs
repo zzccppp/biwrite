@@ -336,7 +336,8 @@ pub async fn update_document(
     Ok(state.engine.update_in(document, text).ok())
 }
 
-/// Change the mode; `None` as for [`update_document`].
+/// Change the mode; `None` as for [`update_document`]. Not for a pair: its
+/// links are paragraphs of the mode it was paired in.
 #[tauri::command]
 pub async fn set_mode(
     state: State<'_, AppState>,
@@ -344,17 +345,46 @@ pub async fn set_mode(
     text: String,
     document: u64,
 ) -> CommandResult<Option<Snapshot>> {
+    if state.file().pair.is_some() && mode != state.engine.mode() {
+        return Err(CommandError::Settings(
+            "A document paired with its translation keeps its mode.".into(),
+        ));
+    }
     Ok(state.engine.set_mode_in(document, mode, text).ok())
 }
 
+/// The translations are text the user wrote and the file keeps: a pair's
+/// other file, or the file's own language while the other is edited.
+fn translations_are_own(state: &AppState) -> bool {
+    let fs = state.file();
+    fs.pair.is_some() || state.engine.direction() != fs.home
+}
+
+/// Retranslate one paragraph (also retries a failed one). Never one whose
+/// translation is the user's own text: it would replace it in the file.
 #[tauri::command]
 pub async fn retranslate_segment(state: State<'_, AppState>, id: u64) -> CommandResult<()> {
-    state.engine.retranslate(SegmentId(id))?;
+    let id = SegmentId(id);
+    if translations_are_own(&state) && state.engine.has_exact_translation(id) {
+        return Err(CommandError::Settings(
+            "This paragraph's translation is your own text, which the file keeps: \
+             edit it instead of retranslating."
+                .into(),
+        ));
+    }
+    state.engine.retranslate(id)?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn retranslate_all(state: State<'_, AppState>) -> CommandResult<()> {
+    if translations_are_own(&state) {
+        return Err(CommandError::Settings(
+            "The translations are your own text, which the file keeps: retranslating \
+             them all would replace it."
+                .into(),
+        ));
+    }
     state.engine.retranslate_all();
     Ok(())
 }

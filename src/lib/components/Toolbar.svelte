@@ -214,8 +214,12 @@
     <button
       class="tool secondary"
       onclick={onretranslate}
-      disabled={session.activeId === null || session.swapped}
-      title={session.swapped ? t("toolbar.retranslateOff", { own }) : t("toolbar.segmentTitle")}
+      disabled={session.activeId === null || session.swapped || !!session.pair}
+      title={session.pair
+        ? t("toolbar.retranslatePairOff")
+        : session.swapped
+          ? t("toolbar.retranslateOff", { own })
+          : t("toolbar.segmentTitle")}
     >
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" /></svg>
       <span class="smallcaps">{t("toolbar.segment")}</span>
@@ -237,9 +241,15 @@
       </button>
       {#if allOpen}
         <div class="menu" role="menu">
-          <button role="menuitem" disabled={session.swapped} onclick={() => choose(onretranslateall)}>
+          <button role="menuitem" disabled={session.swapped || !!session.pair} onclick={() => choose(onretranslateall)}>
             <span class="item">{t("toolbar.retranslateAll")}</span>
-            <span class="hint">{session.swapped ? t("toolbar.retranslateOff", { own }) : t("toolbar.retranslateAllHint")}</span>
+            <span class="hint"
+              >{session.pair
+                ? t("toolbar.retranslatePairOff")
+                : session.swapped
+                  ? t("toolbar.retranslateOff", { own })
+                  : t("toolbar.retranslateAllHint")}</span
+            >
           </button>
           <button role="menuitem" onclick={() => choose(oncontinue)}>
             <span class="item">{t("toolbar.continue")}</span>

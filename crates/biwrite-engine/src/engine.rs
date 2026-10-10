@@ -343,7 +343,26 @@ impl Engine {
     /// Each translatable segment with text, in order: its id and its
     /// translation if up to date (`None` while one is pending).
     pub fn translations(&self) -> Vec<(SegmentId, Option<String>)> {
+        Self::translations_of(&self.inner.lock())
+    }
+
+    /// The text and its [`Self::translations`], read at the same moment.
+    pub fn text_and_translations(&self) -> (String, Vec<(SegmentId, Option<String>)>) {
         let st = self.inner.lock();
+        (st.doc.text().to_owned(), Self::translations_of(&st))
+    }
+
+    /// Whether the up-to-date translation of `id` is an exact original (a
+    /// swap's, or a paired file's paragraph): text the user wrote.
+    pub fn has_exact_translation(&self, id: SegmentId) -> bool {
+        let st = self.inner.lock();
+        let hash = st.doc.get(id).map(|s| s.hash);
+        st.meta
+            .get(&id)
+            .is_some_and(|m| m.exact && hash.is_some() && m.translated_hash == hash)
+    }
+
+    fn translations_of(st: &State) -> Vec<(SegmentId, Option<String>)> {
         let text = st.doc.text();
         st.doc
             .segments()

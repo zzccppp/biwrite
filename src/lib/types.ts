@@ -581,4 +581,12 @@ export interface MirrorSaved {
   /** Paragraphs still being translated: the paired file waits for them. */
   pending: number;
   changed: number;
+  /** New headings, captions and list items left out of the paired file (add them by hand). */
+  leftOut: number;
+  /** Why a paired file that was ready was not written. */
+  problem: "changedOnDisk" | "structure" | null;
+  /** The document was edited since it was saved: the paired file follows with the next save. */
+  deferred: boolean;
+  /** The paired file still lags behind the saved document. */
+  behind: boolean;
 }

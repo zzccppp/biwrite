@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use biwrite_core::lang::{chinese_of_two, written_in};
-use biwrite_core::pair::{Edit, Origin, align, patch, units};
-use biwrite_core::{Direction, Mode, SegmentId, TextFile};
+use biwrite_core::pair::{Edit, Origin, align, patch_checked, units};
+use biwrite_core::{Direction, Mode, SegmentId, SegmentKind, TextFile};
 use serde::Serialize;
 use tauri::{AppHandle, WebviewWindow};
 
@@ -35,6 +35,19 @@ pub struct PairState {
     /// Segments without a partner when paired: their translations stay out
     /// of the mirror.
     pub unpaired: HashSet<SegmentId>,
+    /// The mirror lags behind the saved document: it waits for translations,
+    /// or its write failed or was refused. Unsaved until it is written.
+    pub behind: bool,
+    /// The file is on disk. Not after a Save As whose mirror couldn't be
+    /// written: it is still to be created there (and nothing else may be).
+    pub exists: bool,
+}
+
+impl PairState {
+    /// Something of the mirror is not on disk.
+    pub fn unsaved(&self) -> bool {
+        self.behind || self.text != self.file.text()
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -60,6 +73,42 @@ pub struct MirrorSaved {
     pub pending: usize,
     /// Paragraphs changed in the mirror.
     pub changed: usize,
+    /// New headings, captions and list items, which have no place of their
+    /// own in the mirror: left out, to be added there by hand.
+    pub left_out: usize,
+    /// Why a mirror that was ready was not written.
+    pub problem: Option<MirrorProblem>,
+    /// The document was edited since it was saved: the mirror, which
+    /// follows the saved document, is written with the next save.
+    pub deferred: bool,
+    /// The mirror still lags behind the saved document after this.
+    pub behind: bool,
+}
+
+impl MirrorSaved {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            written: false,
+            pending: 0,
+            changed: 0,
+            left_out: 0,
+            problem: None,
+            deferred: false,
+            behind: false,
+        }
+    }
+}
+
+/// Why the mirror was not written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MirrorProblem {
+    /// It changed on disk since it was read: not overwritten.
+    ChangedOnDisk,
+    /// The changes would not fit its structure (a translation that adds a
+    /// heading, say): written, the paragraphs would land in wrong places.
+    Structure,
 }
 
 fn fail(message: impl Into<String>) -> CommandError {
@@ -117,7 +166,50 @@ pub fn counterpart(path: &Path) -> Option<PathBuf> {
             }
         }
     }
-    candidates.into_iter().find(|p| p != path && p.is_file())
+    candidates
+        .into_iter()
+        .find(|p| p != path && p.is_file() && !same_file(p, path))
+}
+
+/// `a` and `b` are the same file (through a link, or spelled differently).
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// `path` with its language folder swapped (`sections_en/x.tex` →
+/// `sections_zh/x.tex`), if it is in one.
+fn in_other_folder(path: &Path) -> Option<PathBuf> {
+    let parts: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    for (i, part) in parts
+        .iter()
+        .enumerate()
+        .take(parts.len().saturating_sub(1))
+        .rev()
+    {
+        let lower = part.to_lowercase();
+        let other = FOLDERS.iter().find_map(|(en, zh)| {
+            (lower == *en)
+                .then_some(*zh)
+                .or((lower == *zh).then_some(*en))
+        });
+        if let Some(other) = other {
+            let mut swapped = parts.clone();
+            swapped[i] = other.to_owned();
+            let swapped: PathBuf = swapped.iter().collect();
+            // Only a folder that is there (`English/` needn't have a `chinese/`).
+            return swapped
+                .parent()
+                .is_some_and(Path::is_dir)
+                .then_some(swapped);
+        }
+    }
+    None
 }
 
 /// Pair `text` (the open document, at `path`) with the mirror at
@@ -195,6 +287,8 @@ pub fn load_paired(
             text: other,
             links,
             unpaired,
+            behind: false,
+            exists: true,
         },
     ))
 }
@@ -255,153 +349,314 @@ pub fn view(pair: &PairState, units_total: usize) -> PairView {
         name: display_name(Some(&pair.path)),
         paired: pair.links.len(),
         units: units_total,
-        dirty: pair.text != pair.file.text(),
+        dirty: pair.unsaved(),
     }
 }
 
 /// The edits that bring the mirror in line with the open document's
-/// current translations, or the number of paragraphs still waiting for
-/// one.
-fn edits(
-    state: &AppState,
-    pair: &PairState,
-) -> Result<(Vec<Edit>, HashMap<u64, SegmentId>), usize> {
-    let current = state.engine.translations();
-    let ub = units(&pair.text, state.engine.mode());
-    let present: HashSet<SegmentId> = current.iter().map(|(id, _)| *id).collect();
+/// current translations.
+struct Plan {
+    edits: Vec<Edit>,
+    /// Insert tags → the segment inserted.
+    tags: HashMap<u64, SegmentId>,
+    /// The open document's segments now.
+    present: HashSet<SegmentId>,
+    left_out: usize,
+}
+
+/// Where a new paragraph goes in the mirror: next to one of its units.
+enum Spot {
+    After(usize),
+    Before(usize),
+}
+
+/// Why there is no plan yet.
+enum Wait {
+    /// Paragraphs whose translation is on its way.
+    Pending(usize),
+    /// The document is no longer the saved one.
+    Moved,
+}
+
+/// The [`Plan`] for the document as it is, or only if its text is
+/// `saved` (the mirror follows the saved document). A new paragraph goes
+/// into the mirror next to a paired paragraph or heading it sits next to in
+/// the document (nothing but blank lines between, other new paragraphs
+/// aside): right after or before that one's counterpart, so it lands in
+/// the same place, inside a list or around the whole body alike. New
+/// headings, captions, list items and paragraphs with no such neighbour
+/// are left out (`left_out`), to be added by hand.
+fn plan(state: &AppState, pair: &PairState, saved: Option<&str>) -> Result<Plan, Wait> {
+    let mode = state.engine.mode();
+    let (text, current) = state.engine.text_and_translations();
+    if saved.is_some_and(|saved| saved != text) {
+        return Err(Wait::Moved);
+    }
     let pending = current
         .iter()
         .filter(|(id, t)| t.is_none() && !pair.unpaired.contains(id))
         .count();
     if pending > 0 {
-        return Err(pending);
+        return Err(Wait::Pending(pending));
     }
-    let mut out = Vec::new();
-    let mut tags = HashMap::new();
-    let mut last: Option<usize> = None;
-    for (id, translation) in current {
-        let Some(translation) = translation else {
-            continue;
-        };
-        match pair.links.get(&id) {
-            Some(&unit) => {
-                let now = ub.get(unit).map(|u| &pair.text[u.content.clone()]);
-                if now != Some(translation.as_str()) {
-                    out.push(Edit::Replace {
-                        unit,
-                        text: translation,
-                    });
-                }
-                last = Some(last.map_or(unit, |l| l.max(unit)));
-            }
-            None if pair.unpaired.contains(&id) => {}
-            None => {
-                let tag = id.0;
-                tags.insert(tag, id);
-                out.push(Edit::InsertAfter {
-                    unit: last,
-                    text: translation,
-                    tag,
-                });
+    let ua = units(&text, mode);
+    let ub = units(&pair.text, mode);
+    // A mirror unit a new paragraph can go next to.
+    let beside = |j: usize| {
+        ub.get(j).is_some_and(|u| {
+            u.is_plain_paragraph(&pair.text) || matches!(u.kind, SegmentKind::Heading { .. })
+        })
+    };
+    let linked = |k: usize| {
+        current
+            .get(k)
+            .and_then(|(id, _)| pair.links.get(id))
+            .copied()
+    };
+    let new_paragraph = |k: usize| {
+        current
+            .get(k)
+            .is_some_and(|(id, _)| !pair.links.contains_key(id) && !pair.unpaired.contains(id))
+            && ua.get(k).is_some_and(|u| u.is_plain_paragraph(&text))
+    };
+    // Units k and k + 1 of the document with only blank lines between.
+    let adjacent = |k: usize| match (ua.get(k), ua.get(k + 1)) {
+        (Some(a), Some(b)) => text[a.range.end..b.range.start].trim().is_empty(),
+        _ => false,
+    };
+    // Where new paragraph `k` goes: after the paired unit before its run of
+    // new paragraphs, else before the one after it.
+    let place = |k: usize| -> Option<Spot> {
+        let mut j = k;
+        while j > 0 && adjacent(j - 1) {
+            match linked(j - 1) {
+                Some(unit) if beside(unit) => return Some(Spot::After(unit)),
+                None if new_paragraph(j - 1) => j -= 1,
+                _ => break,
             }
         }
+        let mut j = k;
+        while adjacent(j) {
+            match linked(j + 1) {
+                Some(unit) if beside(unit) => return Some(Spot::Before(unit)),
+                None if new_paragraph(j + 1) => j += 1,
+                _ => break,
+            }
+        }
+        None
+    };
+    let present: HashSet<SegmentId> = current.iter().map(|(id, _)| *id).collect();
+    let mut edits = Vec::new();
+    let mut tags = HashMap::new();
+    let mut left_out = 0;
+    for (k, (id, translation)) in current.iter().enumerate() {
+        let Some(translation) = translation.clone() else {
+            continue;
+        };
+        if let Some(&unit) = pair.links.get(id) {
+            let now = ub.get(unit).map(|u| &pair.text[u.content.clone()]);
+            if now != Some(translation.as_str()) {
+                edits.push(Edit::Replace {
+                    unit,
+                    text: translation,
+                });
+            }
+            continue;
+        }
+        if pair.unpaired.contains(id) {
+            continue;
+        }
+        let tag = id.0;
+        match place(k).filter(|_| new_paragraph(k)) {
+            Some(Spot::After(unit)) => edits.push(Edit::InsertAfter {
+                unit: Some(unit),
+                text: translation,
+                tag,
+            }),
+            Some(Spot::Before(unit)) => edits.push(Edit::InsertBefore {
+                unit,
+                text: translation,
+                tag,
+            }),
+            None => {
+                left_out += 1;
+                continue;
+            }
+        }
+        tags.insert(tag, *id);
     }
     for (id, unit) in &pair.links {
         if !present.contains(id) {
-            out.push(Edit::Delete { unit: *unit });
+            edits.push(Edit::Delete { unit: *unit });
         }
     }
-    Ok((out, tags))
+    Ok(Plan {
+        edits,
+        tags,
+        present,
+        left_out,
+    })
 }
 
-/// The mirror's text with the current translations, and its new links.
-/// `Err(pending)` while translations are on their way.
-pub fn patched(
-    state: &AppState,
-    pair: &PairState,
-) -> Result<(String, HashMap<SegmentId, usize>, usize), usize> {
-    let (edits, tags) = edits(state, pair)?;
-    let changed = edits.len();
-    if edits.is_empty() {
-        return Ok((pair.text.clone(), pair.links.clone(), 0));
+/// The mirror with the open document's current translations.
+pub enum Patched {
+    Ready {
+        text: String,
+        /// Segment of the open document → unit of `text`.
+        links: HashMap<SegmentId, usize>,
+        changed: usize,
+        left_out: usize,
+    },
+    /// Paragraphs whose translation is on its way.
+    Pending(usize),
+    /// The document is no longer the saved text asked for.
+    Moved,
+    /// The changes would not fit the mirror's structure.
+    Unsafe,
+}
+
+/// The mirror patched with the document's translations; with `saved`, only
+/// while the document's text is that.
+pub fn patched(state: &AppState, pair: &PairState, saved: Option<&str>) -> Patched {
+    let plan = match plan(state, pair, saved) {
+        Ok(plan) => plan,
+        Err(Wait::Pending(pending)) => return Patched::Pending(pending),
+        Err(Wait::Moved) => return Patched::Moved,
+    };
+    let changed = plan.edits.len();
+    let left_out = plan.left_out;
+    if plan.edits.is_empty() {
+        return Patched::Ready {
+            text: pair.text.clone(),
+            links: pair.links.clone(),
+            changed,
+            left_out,
+        };
     }
-    let mode = state.engine.mode();
-    let (text, origin) = patch(&pair.text, mode, &edits);
+    let Some((text, origin)) = patch_checked(&pair.text, state.engine.mode(), &plan.edits) else {
+        log::warn!("the paired file would change structure; not patched");
+        return Patched::Unsafe;
+    };
     let by_unit: HashMap<usize, SegmentId> = pair.links.iter().map(|(id, u)| (*u, *id)).collect();
-    let present: HashSet<SegmentId> = state
-        .engine
-        .translations()
-        .iter()
-        .map(|(id, _)| *id)
-        .collect();
     let mut links = HashMap::new();
     for (k, o) in origin.iter().enumerate() {
         let id = match o {
             Origin::Kept(old) => by_unit.get(old).copied(),
-            Origin::Inserted(tag) => tags.get(tag).copied(),
+            Origin::Inserted(tag) => plan.tags.get(tag).copied(),
         };
-        if let Some(id) = id.filter(|id| present.contains(id)) {
+        if let Some(id) = id.filter(|id| plan.present.contains(id)) {
             links.insert(id, k);
         }
     }
-    if units(&text, mode).len() != origin.len() {
-        log::warn!("the patched mirror segments differently than expected; links may drift");
+    Patched::Ready {
+        text,
+        links,
+        changed,
+        left_out,
     }
-    Ok((text, links, changed))
 }
 
-/// Write the mirror if its translations are ready.
+/// Set whether the mirror at `path` lags behind (if it is still the pair's).
+fn set_behind(state: &AppState, path: &Path, behind: bool) {
+    if let Some(pair) = state.file().pair.as_mut().filter(|p| p.path == path) {
+        pair.behind = behind;
+    }
+}
+
+/// Write the mirror if its translations are ready and it is as it was read
+/// (changes made to it elsewhere are never overwritten).
 pub async fn save_mirror(state: &AppState) -> CommandResult<Option<MirrorSaved>> {
-    let (path, name, text, links, changed, bytes) = {
-        let fs = state.file();
-        let Some(pair) = fs.pair.as_ref() else {
+    let (path, mut saved, text, links, bytes, expected) = {
+        let mut guard = state.file();
+        let fs = &mut *guard;
+        let Some(pair) = fs.pair.as_mut() else {
             return Ok(None);
         };
-        let name = display_name(Some(&pair.path));
-        match patched(state, pair) {
-            Ok((text, _, _)) if text == pair.file.text() => {
-                return Ok(Some(MirrorSaved {
-                    name,
-                    written: false,
-                    pending: 0,
-                    changed: 0,
-                }));
-            }
-            Ok((text, links, changed)) => {
+        let mut saved = MirrorSaved::new(display_name(Some(&pair.path)));
+        match patched(state, pair, Some(fs.file.text())) {
+            Patched::Ready {
+                text,
+                links,
+                changed,
+                left_out,
+            } => {
+                saved.left_out = left_out;
+                if text == pair.file.text() && pair.exists {
+                    pair.text = text;
+                    pair.links = links;
+                    pair.behind = false;
+                    return Ok(Some(saved));
+                }
+                saved.changed = changed;
                 let bytes = pair.file.encode(&text);
-                (pair.path.clone(), name, text, links, changed, bytes)
+                // As read, or (still to be created) not there at all.
+                let expected = pair.exists.then(|| pair.file.text().to_owned());
+                (pair.path.clone(), saved, text, links, bytes, expected)
             }
-            Err(pending) => {
-                return Ok(Some(MirrorSaved {
-                    name,
-                    written: false,
-                    pending,
-                    changed: 0,
-                }));
+            Patched::Pending(pending) => {
+                pair.behind = true;
+                saved.pending = pending;
+                saved.behind = true;
+                return Ok(Some(saved));
+            }
+            Patched::Moved => {
+                pair.behind = true;
+                saved.deferred = true;
+                saved.behind = true;
+                return Ok(Some(saved));
+            }
+            Patched::Unsafe => {
+                pair.behind = true;
+                saved.problem = Some(MirrorProblem::Structure);
+                saved.behind = true;
+                return Ok(Some(saved));
             }
         }
     };
-    files::write_file_atomic(path.clone(), bytes.clone()).await?;
+    let on_disk = files::read_text_file(path.clone()).await;
+    let as_expected = match (&expected, on_disk) {
+        (Some(expected), Ok(disk)) => disk.text() == expected,
+        (None, Err(_)) => !path.exists(),
+        // Ours already, from a write that reported a failure after landing.
+        (None, Ok(disk)) => disk.text() == text,
+        _ => false,
+    };
+    if !as_expected {
+        log::warn!("{} changed on disk; not overwritten", saved.name);
+        set_behind(state, &path, true);
+        saved.problem = Some(MirrorProblem::ChangedOnDisk);
+        saved.behind = true;
+        return Ok(Some(saved));
+    }
+    if let Err(e) = files::write_file_atomic(path.clone(), bytes.clone()).await {
+        set_behind(state, &path, true);
+        return Err(e);
+    }
     {
         let mut fs = state.file();
         if let Some(pair) = fs.pair.as_mut().filter(|p| p.path == path) {
             pair.file = pair.file.saved(text.clone(), bytes);
             pair.text = text;
             pair.links = links;
+            pair.behind = false;
+            pair.exists = true;
         }
     }
-    log::info!("saved the mirror {name} ({changed} paragraphs changed)");
-    Ok(Some(MirrorSaved {
-        name,
-        written: true,
-        pending: 0,
-        changed,
-    }))
+    log::info!(
+        "saved the mirror {} ({} paragraphs changed)",
+        saved.name,
+        saved.changed
+    );
+    saved.written = true;
+    Ok(Some(saved))
 }
 
-/// Where the mirror goes when the document is saved as `new_source`: the
-/// same change of name (`paper` → `paper-2` makes `paper_zh` → `paper_zh-2`),
-/// in the mirror's folder, never an existing file.
+/// Where the mirror goes when the document is saved as `new_source`: where
+/// opening `new_source` looks for it, so the two pair up again. With a
+/// language folder in the new path, the same name in the other folder;
+/// otherwise next to it with the suffix the pair had (`paper` → `paper-2`
+/// makes `paper_zh` → `paper-2_zh`), or `_zh`. Never the new file itself
+/// or an existing file.
 pub fn mirror_path_for(old_source: &Path, new_source: &Path, old_mirror: &Path) -> PathBuf {
     let stem = |p: &Path| {
         p.file_stem()
@@ -409,54 +664,108 @@ pub fn mirror_path_for(old_source: &Path, new_source: &Path, old_mirror: &Path) 
             .unwrap_or_default()
     };
     let (os, ns, ms) = (stem(old_source), stem(new_source), stem(old_mirror));
-    let new_stem = match (ns.strip_prefix(&os), ms.strip_prefix(&os)) {
-        (Some(suffix), _) => format!("{ms}{suffix}"),
-        (None, Some(tag)) => format!("{ns}{tag}"),
-        (None, None) => format!("{ns}_{}", if is_chinese(&ms) { "zh" } else { "mirror" }),
-    };
-    let ext = old_mirror
+    let ext = new_source
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
-    let dir = old_mirror.parent().unwrap_or(Path::new("."));
-    files::fresh_path(&dir.join(format!("{new_stem}{ext}")))
+    let dir = new_source.parent().unwrap_or(Path::new("."));
+    // `longer` is `shorter` plus one of the suffixes opening looks for.
+    let suffix = |longer: &str, shorter: &str| {
+        let tail = longer.get(shorter.len()..)?;
+        let lower = tail.to_lowercase();
+        (longer.get(..shorter.len())?.eq_ignore_ascii_case(shorter)
+            && SUFFIXES.contains(&lower.as_str()))
+        .then(|| tail.to_owned())
+    };
+    let target = in_other_folder(new_source).unwrap_or_else(|| {
+        let new_stem = match (suffix(&ms, &os), suffix(&os, &ms)) {
+            // paper → paper_zh: the new name with the same suffix.
+            (Some(tail), _) => format!("{ns}{tail}"),
+            // paper_zh → paper: the new name without it (or with it, when
+            // the new name has none: opening finds `x_zh` from `x` too).
+            (None, Some(tail)) => {
+                let cut = ns.len().saturating_sub(tail.len());
+                match ns.get(cut..) {
+                    Some(end) if end.eq_ignore_ascii_case(&tail) => ns[..cut].to_owned(),
+                    _ => format!("{ns}{tail}"),
+                }
+            }
+            (None, None) => format!("{ns}_zh"),
+        };
+        dir.join(format!("{new_stem}{ext}"))
+    });
+    let target = if same_file(&target, new_source) {
+        dir.join(format!("{ns}_zh{ext}"))
+    } else {
+        target
+    };
+    files::fresh_path(&target)
 }
 
 /// Write the mirror to `dest` (a Save As of the document): the pair moves
 /// there, and the old mirror stays as it was.
 pub async fn save_mirror_as(state: &AppState, dest: PathBuf) -> CommandResult<Option<MirrorSaved>> {
-    let (text, links, changed, pending, bytes) = {
+    let (text, links, bytes, mut saved, behind) = {
         let fs = state.file();
         let Some(pair) = fs.pair.as_ref() else {
             return Ok(None);
         };
-        let (text, links, changed, pending) = match patched(state, pair) {
-            Ok((t, l, c)) => (t, Some(l), c, 0),
-            // Paragraphs still on their way follow once translated.
-            Err(p) => (pair.text.clone(), None, 0, p),
+        let mut saved = MirrorSaved::new(display_name(Some(&dest)));
+        // Paragraphs still on their way (or that don't fit) follow later.
+        let (text, links, behind) = match patched(state, pair, Some(fs.file.text())) {
+            Patched::Ready {
+                text,
+                links,
+                changed,
+                left_out,
+            } => {
+                saved.changed = changed;
+                saved.left_out = left_out;
+                (text, Some(links), false)
+            }
+            Patched::Pending(pending) => {
+                saved.pending = pending;
+                (pair.text.clone(), None, true)
+            }
+            Patched::Moved => {
+                saved.deferred = true;
+                (pair.text.clone(), None, true)
+            }
+            Patched::Unsafe => {
+                saved.problem = Some(MirrorProblem::Structure);
+                (pair.text.clone(), None, true)
+            }
         };
         let bytes = pair.file.encode(&text);
-        (text, links, changed, pending, bytes)
+        (text, links, bytes, saved, behind)
     };
-    files::write_file_atomic(dest.clone(), bytes.clone()).await?;
+    if let Err(e) = files::write_file_atomic(dest.clone(), bytes.clone()).await {
+        // The document lives under its new name now: its mirror is the new
+        // one (to be written), never the old file left behind.
+        if let Some(pair) = state.file().pair.as_mut() {
+            pair.path = dest.clone();
+            pair.behind = true;
+            pair.exists = false;
+        }
+        return Err(e);
+    }
     {
         let mut fs = state.file();
         if let Some(pair) = fs.pair.as_mut() {
             pair.path = dest.clone();
             pair.file = pair.file.saved(text.clone(), bytes);
             pair.text = text;
+            pair.behind = behind;
+            pair.exists = true;
             if let Some(links) = links {
                 pair.links = links;
             }
         }
     }
     log::info!("saved the mirror as {}", display_name(Some(&dest)));
-    Ok(Some(MirrorSaved {
-        name: display_name(Some(&dest)),
-        written: true,
-        pending,
-        changed,
-    }))
+    saved.written = true;
+    saved.behind = behind;
+    Ok(Some(saved))
 }
 
 /// Pair the open document with a mirror the user picks.
@@ -482,7 +791,7 @@ pub async fn import_mirror(
     else {
         return Ok(None);
     };
-    if mirror_path == path {
+    if same_file(&mirror_path, &path) {
         return Err(fail(
             "Choose the other language's file, not the document itself.",
         ));
@@ -515,7 +824,8 @@ pub async fn import_mirror(
 #[tauri::command]
 pub async fn close_mirror(state: tauri::State<'_, AppState>) -> CommandResult<()> {
     let mut fs = state.file();
-    // After a swap, edits of the other file may live only here.
+    // After a swap, edits of the other file may live only here. (Machine
+    // translations it waits for are let go.)
     if let Some(pair) = fs.pair.as_ref().filter(|p| p.text != p.file.text()) {
         return Err(fail(format!(
             "{} has unsaved changes: save first, then stop pairing.",
@@ -528,7 +838,9 @@ pub async fn close_mirror(state: tauri::State<'_, AppState>) -> CommandResult<()
     Ok(())
 }
 
-/// Write the mirror now (after its translations arrived).
+/// Write the mirror now (after its translations arrived), unless the
+/// document was edited since it was saved: the mirror follows the saved
+/// document, and is written with the next save instead (`deferred`).
 #[tauri::command]
 pub async fn write_mirror(state: tauri::State<'_, AppState>) -> CommandResult<Option<MirrorSaved>> {
     let _one_at_a_time = state.save_lock.lock().await;
@@ -541,14 +853,41 @@ pub async fn write_mirror(state: tauri::State<'_, AppState>) -> CommandResult<Op
 /// The engine holds `text` already ([`AppState::sync_text`]).
 pub fn swap(state: &AppState, text: String) -> CommandResult<SessionView> {
     let mode = state.engine.mode();
+    // The mirror becomes the edited document and is saved as such: not
+    // over changes made to it elsewhere.
+    let (mirror_path, kept) = {
+        let fs = state.file();
+        let pair = fs.pair.as_ref().ok_or_else(|| fail("no pair"))?;
+        (pair.path.clone(), pair.file.text().to_owned())
+    };
+    let on_disk = std::fs::read(&mirror_path)
+        .ok()
+        .and_then(|bytes| TextFile::decode(bytes).ok());
+    if on_disk.is_none_or(|disk| disk.text() != kept) {
+        return Err(fail(format!(
+            "{} changed on disk since it was opened. Reopen the document to pair it with \
+             the new version.",
+            display_name(Some(&mirror_path))
+        )));
+    }
     let (new_text, links) = {
         let fs = state.file();
         let pair = fs.pair.as_ref().ok_or_else(|| fail("no pair"))?;
-        match patched(state, pair) {
-            Ok((t, links, _)) => (t, links),
-            Err(pending) => {
+        match patched(state, pair, None) {
+            Patched::Ready { text, links, .. } => (text, links),
+            Patched::Moved => return Err(biwrite_engine::EngineError::Stale.into()),
+            Patched::Pending(pending) => {
                 return Err(fail(format!(
                     "Swapping needs every paragraph translated: {pending} not ready yet."
+                )));
+            }
+            Patched::Unsafe => {
+                return Err(fail(format!(
+                    "Swapping would put paragraphs of {} in wrong places: the changes don't fit \
+                     its structure (a translation that adds a heading or a list item, or a new \
+                     paragraph with no place of its own). Edit the paragraph, or update the file \
+                     by hand and reopen the document.",
+                    display_name(Some(&pair.path))
                 )));
             }
         }
@@ -606,6 +945,8 @@ pub fn swap(state: &AppState, text: String) -> CommandResult<SessionView> {
             text: text.clone(),
             links: new_links,
             unpaired,
+            behind: false,
+            exists: true,
         });
         fs.dirty
     };
@@ -664,14 +1005,60 @@ mod tests {
     fn saved_as_mirrors_follow_the_new_name() {
         let dir = temp("saveas");
         let p = |n: &str| dir.join(n);
+        std::fs::create_dir_all(p("sections_en")).unwrap();
+        std::fs::create_dir_all(p("sections_zh")).unwrap();
+        std::fs::create_dir_all(p("other")).unwrap();
+        // Where opening the new file looks for its counterpart.
+        let cases = [
+            ("paper.tex", "paper-2.tex", "paper_zh.tex", "paper-2_zh.tex"),
+            ("paper.tex", "draft.tex", "paper_zh.tex", "draft_zh.tex"),
+            ("paper_zh.tex", "draft_zh.tex", "paper.tex", "draft.tex"),
+            ("paper_zh.tex", "draft.tex", "paper.tex", "draft_zh.tex"),
+            (
+                "paper.tex",
+                "other/draft.tex",
+                "paper_zh.tex",
+                "other/draft_zh.tex",
+            ),
+            (
+                "sections_en/intro.tex",
+                "sections_en/intro-2.tex",
+                "sections_zh/intro.tex",
+                "sections_zh/intro-2.tex",
+            ),
+            // Saved into the other language's folder: never onto itself.
+            (
+                "sections_en/intro.tex",
+                "sections_zh/intro-2.tex",
+                "sections_zh/intro.tex",
+                "sections_en/intro-2.tex",
+            ),
+        ];
+        for (old, new, mirror, expected) in cases {
+            let got = mirror_path_for(&p(old), &p(new), &p(mirror));
+            assert_eq!(got, p(expected), "{old} saved as {new}");
+            std::fs::write(p(new), "x").unwrap();
+            std::fs::write(&got, "x").unwrap();
+            assert_eq!(counterpart(&p(new)), Some(got.clone()), "{new} pairs again");
+            std::fs::remove_file(p(new)).unwrap();
+            std::fs::remove_file(&got).unwrap();
+        }
+        // A language-named folder without its counterpart: the suffix rule.
+        std::fs::create_dir_all(p("English")).unwrap();
         assert_eq!(
-            mirror_path_for(&p("paper.tex"), &p("paper-2.tex"), &p("paper_zh.tex")),
-            p("paper_zh-2.tex")
+            mirror_path_for(&p("paper.tex"), &p("English/essay.tex"), &p("paper_zh.tex")),
+            p("English/essay_zh.tex")
         );
+        // Only the suffixes opening looks for count, in any case.
         assert_eq!(
-            mirror_path_for(&p("paper.tex"), &p("draft.tex"), &p("paper_zh.tex")),
+            mirror_path_for(&p("intro.tex"), &p("draft.tex"), &p("introduction_zh.tex")),
             p("draft_zh.tex")
         );
+        assert_eq!(
+            mirror_path_for(&p("paper_ZH.tex"), &p("draft_ZH.tex"), &p("paper.tex")),
+            p("draft.tex")
+        );
+        // Never an existing file.
         std::fs::write(p("draft_zh.tex"), "x").unwrap();
         assert_eq!(
             mirror_path_for(&p("paper.tex"), &p("draft.tex"), &p("paper_zh.tex")),
