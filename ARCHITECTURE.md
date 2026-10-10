@@ -647,6 +647,17 @@ resolve to their target and permissions are preserved.
   list refuse the PDF built before (`CommandError::StalePdf`), and the UI
   builds it again without saving first. A swapped pair keeps both PDFs,
   which map through the pair's links and the files on disk.
+* **SyncTeX for every PDF** (`compile::synctex_behind`). latexmk goes by
+  the sources alone, so a PDF its author built without SyncTeX looks up to
+  date and would stay without it. When the SyncTeX file is missing, or
+  written well before the PDF, the build runs again (`-g`), and a PDF still
+  without one gets a warning in the problem list.
+* **Lines between paragraphs** (`latex_sync::index_at_line`). SyncTeX names
+  the `\begin{theorem}[Title]` line for a click on a theorem's title, which
+  is set with the theorem's first line. A line between paragraphs stands
+  for the next one when only `\begin`, `\label`, blank or comment lines
+  lead to it, else for the one before (such as `\end{…}`), for the pair's
+  links and for paragraphs across languages alike.
 * **Scroll sync and the PDF tab** (`scrollSync.ts`). A pane hidden behind
   the PDF tab has no size, so its scroll position is neither read nor
   written. Showing the PDF tab and clicking in the PDF make the editor the
@@ -675,6 +686,7 @@ resolve to their target and permissions are preserved.
 | 0.2.2 | The file's own language, early swaps filled in, continue, writing in the manner of a reference paper, figure packages, PDF clicks through rulers, tray | done |
 | 0.2.3 | Fixes from the review of 0.2–0.2.2: wrong-language and stale text kept out of files, safe TeX roots, pairs that never overwrite or misplace the paired file, assistant placement, key pools and key storage, checked batch answers and installs | done |
 | 0.2.4 | PDFs built before a pairing, an unpairing or a swap without a pair are built again before clicks map, PDF clicks keep the editor on the selected sentence, 0.2.2 settings and keys checked on upgrade | done |
+| 0.2.5 | A PDF built elsewhere without SyncTeX is built again with it, clicks on a theorem's title land on the theorem, a real paper paired by hand checked paragraph by paragraph | done |
 
 Revise prompting (M4 tuning): a glossary-only change (same source, new
 entries) sends just `<previous_translation>` with "revise it minimally so it

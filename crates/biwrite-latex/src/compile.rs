@@ -140,6 +140,11 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
         if let Some(rel) = &job.out_dir {
             args.push(format!("-outdir={}", rel.display()));
         }
+        // latexmk goes by the sources alone: a PDF built elsewhere without
+        // SyncTeX looks up to date and would stay without it.
+        if synctex_behind(&out, &stem) {
+            args.push("-g".to_owned());
+        }
         args.push(file.clone());
         tool = format!("latexmk {}", job.engine.latexmk_flag());
         let run = run(tc, &tc.tool("latexmk"), &args, &dir, deadline).await?;
@@ -179,6 +184,19 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
         // The tools failed without an error in the log (BibTeX, Biber).
         issues.insert(0, tool_error(&output));
     }
+    if pdf.is_some() && synctex_of(&out, &stem).is_none() {
+        issues.insert(
+            0,
+            Issue {
+                severity: Severity::Warning,
+                file: None,
+                line: None,
+                message: "No SyncTeX data was written for this PDF, so clicks in it cannot find \
+                          their place in the source."
+                    .to_owned(),
+            },
+        );
+    }
     Ok(Compiled {
         outcome,
         pdf,
@@ -204,6 +222,34 @@ fn prepare_out_dir(dir: &Path, out: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// How much older SyncTeX data may be than its PDF: XeLaTeX writes it
+/// before `xdvipdfmx` writes the PDF.
+const SYNCTEX_SLACK: Duration = Duration::from_secs(300);
+
+/// The SyncTeX file of the PDF `stem` in `out`, and when it was written.
+fn synctex_of(out: &Path, stem: &str) -> Option<SystemTime> {
+    [".synctex.gz", ".synctex"].iter().find_map(|ext| {
+        std::fs::metadata(out.join(format!("{stem}{ext}")))
+            .and_then(|m| m.modified())
+            .ok()
+    })
+}
+
+/// The PDF `stem` in `out` exists without SyncTeX data of its own: none,
+/// or written well before the PDF (which was built again elsewhere since).
+fn synctex_behind(out: &Path, stem: &str) -> bool {
+    let Ok(pdf) = std::fs::metadata(out.join(format!("{stem}.pdf"))).and_then(|m| m.modified())
+    else {
+        return false;
+    };
+    match synctex_of(out, stem) {
+        None => true,
+        Some(synctex) => pdf
+            .duration_since(synctex)
+            .is_ok_and(|behind| behind > SYNCTEX_SLACK),
+    }
 }
 
 fn fresh(path: &Path, since: SystemTime) -> bool {

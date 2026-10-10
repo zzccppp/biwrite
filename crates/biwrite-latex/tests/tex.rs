@@ -313,3 +313,69 @@ async fn a_project_latexmkrc_is_reported() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Build `root` in `dir` as an author's own latexmk run would, without
+/// SyncTeX.
+fn build_elsewhere(tc: &Toolchain, dir: &Path, flag: &str, root: &str) {
+    let path = format!(
+        "{}:{}",
+        tc.bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let status = std::process::Command::new(tc.tool("latexmk"))
+        .args([flag, "-interaction=nonstopmode", root])
+        .current_dir(dir)
+        .env("PATH", path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+/// A PDF built elsewhere without SyncTeX is up to date for latexmk, which
+/// would leave it so: the build runs again and writes the SyncTeX data that
+/// clicks need. The next build, with nothing changed, runs nothing.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_pdf_built_elsewhere_without_synctex_gets_it() {
+    let tc = toolchain().await;
+    if !tc.latexmk {
+        return;
+    }
+    let dir = scratch("nosynctex");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = "\\documentclass{article}\n\\begin{document}\nHello world, a sentence to click.\n\\end{document}\n";
+    std::fs::write(dir.join("main.tex"), source).unwrap();
+    build_elsewhere(&tc, &dir, "-pdf", "main.tex");
+    assert!(dir.join("main.pdf").is_file());
+    assert!(!dir.join("main.synctex.gz").exists());
+
+    let built = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    assert_eq!(built.outcome, Outcome::Ok, "{}", built.output);
+    assert!(!built.stale, "the PDF was built again");
+    assert!(dir.join("main.synctex.gz").is_file());
+    assert!(
+        built.issues.iter().all(|i| !i.message.contains("SyncTeX")),
+        "{:?}",
+        built.issues
+    );
+    let point = synctex::inverse(&tc, &dir.join("main.pdf"), 1, 150.0, 130.0)
+        .await
+        .unwrap();
+    assert!(point.is_some(), "SyncTeX answers for the rebuilt PDF");
+
+    // Nothing changed: latexmk has nothing to do.
+    let again = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    assert!(again.stale, "an up-to-date PDF is not built again");
+    // The source was never written.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("main.tex")).unwrap(),
+        source
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

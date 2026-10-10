@@ -708,7 +708,8 @@ fn mirror_hit(
         let mirror = pair.file.text();
         let at = line_start(mirror, line.saturating_sub(1));
         let ub = units(mirror, state.engine.mode());
-        let j = ub.iter().rposition(|u| u.range.start <= at).unwrap_or(0);
+        let ranges: Vec<_> = ub.iter().map(|u| u.range.clone()).collect();
+        let j = crate::latex_sync::index_at_line(&ranges, mirror, at).unwrap_or(0);
         let by_unit: HashMap<usize, SegmentId> =
             pair.links.iter().map(|(id, u)| (*u, *id)).collect();
         (0..=j).rev().find_map(|k| by_unit.get(&k).copied())?

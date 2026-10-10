@@ -88,12 +88,49 @@ fn paragraphs(text: &str, mode: Mode) -> Vec<Segment> {
         .collect()
 }
 
-/// Index of the paragraph at `at`, or of the last one before it.
-fn paragraph_index(paras: &[Segment], at: usize) -> Option<usize> {
-    if paras.is_empty() {
+/// Index of the paragraph for the line that starts at `at` (see
+/// [`index_at_line`]).
+fn paragraph_index(paras: &[Segment], text: &str, at: usize) -> Option<usize> {
+    let ranges: Vec<Range<usize>> = paras.iter().map(|s| s.range.clone()).collect();
+    index_at_line(&ranges, text, at)
+}
+
+/// Lines that lead into what follows them: blank lines, comments,
+/// `\begin{…}` with its options and arguments, `\label{…}`.
+fn only_openers(lines: &str) -> bool {
+    lines.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty()
+            || line.starts_with('%')
+            || line.starts_with("\\begin{")
+            || line.starts_with("\\label{")
+    })
+}
+
+/// Which of `ranges` (in order) the line of `text` that starts at `at`
+/// stands for. A line inside one, or one that starts on the line, is that
+/// one. A line between them stands for the next one when only opening
+/// lines lead to it, as `\begin{theorem}[Title]` does, whose title SyncTeX
+/// places on that line though it is set with the theorem's first line.
+/// Any other line between them, such as `\end{…}`, stands for the one
+/// before it.
+pub fn index_at_line(ranges: &[Range<usize>], text: &str, at: usize) -> Option<usize> {
+    if ranges.is_empty() {
         return None;
     }
-    Some(paras.iter().rposition(|s| s.range.start <= at).unwrap_or(0))
+    let at = at.min(text.len());
+    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    let before = ranges.iter().rposition(|r| r.start <= at);
+    if let Some(i) = before.filter(|&i| at < ranges[i].end) {
+        return Some(i);
+    }
+    let next = before.map_or(0, |i| i + 1);
+    if let Some(r) = ranges.get(next) {
+        if r.start <= line_end || text.get(at..r.start).is_some_and(only_openers) {
+            return Some(next);
+        }
+    }
+    Some(before.unwrap_or(0))
 }
 
 impl Basis {
@@ -105,6 +142,7 @@ impl Basis {
         let compiled = paragraphs(&self.compiled, self.mode);
         let k = paragraph_index(
             &compiled,
+            &self.compiled,
             line_start(&self.compiled, line.saturating_sub(1)),
         )?;
         let editor = paragraphs(&self.editor, self.mode);
@@ -112,7 +150,7 @@ impl Basis {
         let then_line = line_of(&self.editor, then.content.start) + 1;
         let now_line = map_line(&self.editor, current, then_line);
         let now = paragraphs(current, self.mode);
-        let i = paragraph_index(&now, line_start(current, now_line - 1))?;
+        let i = paragraph_index(&now, current, line_start(current, now_line - 1))?;
         Some(Place::Paragraph(now[i].content.clone()))
     }
 
@@ -125,7 +163,11 @@ impl Basis {
         }
         let then_line = map_line(current, &self.editor, now_line);
         let editor = paragraphs(&self.editor, self.mode);
-        let k = paragraph_index(&editor, line_start(&self.editor, then_line - 1))?;
+        let k = paragraph_index(
+            &editor,
+            &self.editor,
+            line_start(&self.editor, then_line - 1),
+        )?;
         let compiled = paragraphs(&self.compiled, self.mode);
         compiled
             .get(k)
@@ -136,6 +178,32 @@ impl Basis {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A click on a theorem's title (SyncTeX names its `\\begin` line)
+    /// is the theorem, a click on `\\end{theorem}` the theorem too, not the
+    /// paragraph after it.
+    #[test]
+    fn a_line_between_paragraphs_stands_for_the_one_it_opens() {
+        let text = "Intro paragraph.\n\n\\begin{theorem}[Title]\n\\label{t}\n\
+                    Body of the theorem.\n\\end{theorem}\nAfter it.\n";
+        let span = |s: &str| {
+            let at = text.find(s).unwrap();
+            at..at + s.len()
+        };
+        let ranges = [
+            span("Intro paragraph."),
+            span("Body of the theorem."),
+            span("After it."),
+        ];
+        let at_line = |n| index_at_line(&ranges, text, line_start(text, n));
+        assert_eq!(at_line(0), Some(0), "inside the first");
+        assert_eq!(at_line(2), Some(1), "the begin line with the title");
+        assert_eq!(at_line(3), Some(1), "the label line");
+        assert_eq!(at_line(4), Some(1), "the body");
+        assert_eq!(at_line(5), Some(1), "the end line");
+        assert_eq!(at_line(6), Some(2), "the paragraph after");
+        assert_eq!(index_at_line(&[], text, 0), None);
+    }
 
     #[test]
     fn lines_and_offsets() {

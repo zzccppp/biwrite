@@ -308,3 +308,214 @@ async fn clicks_in_both_pdfs_of_a_pair_land_on_the_clicked_paragraph() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The Chinese paper as its author left it: built with their own latexmk,
+/// without SyncTeX, so latexmk finds it up to date. The Chinese PDF BiWrite
+/// builds after the pairing still carries SyncTeX, and its clicks land on
+/// the English paragraph.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_chinese_paper_built_without_synctex_still_maps_clicks() {
+    let dir = temp("built");
+    let (en_path, zh_path) = (dir.join("en/paper.tex"), dir.join("zh/paper_zh.tex"));
+    std::fs::write(&en_path, EN).unwrap();
+    std::fs::write(&zh_path, ZH).unwrap();
+    let tc = biwrite_latex::detect(biwrite_latex::find_bin(None).expect("TeX")).await;
+    if !tc.latexmk {
+        return;
+    }
+    let status = std::process::Command::new(tc.tool("latexmk"))
+        .args(["-xelatex", "-interaction=nonstopmode", "paper_zh.tex"])
+        .current_dir(dir.join("zh"))
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tc.bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(dir.join("zh/paper_zh.pdf").is_file());
+    assert!(!dir.join("zh/paper_zh.synctex.gz").exists());
+
+    let app = tauri::test::mock_app();
+    app.manage(app_state(&dir));
+    let state = app.state::<AppState>();
+    let file = TextFile::decode(std::fs::read(&en_path).unwrap()).unwrap();
+    pairing::open(&state, en_path.clone(), file, None);
+    settle(&state).await;
+    build(&state, Lang::En).await;
+    pairing::pair_with(
+        &state,
+        state.engine.text(),
+        state.engine.document(),
+        en_path.clone(),
+        zh_path.clone(),
+    )
+    .await
+    .unwrap();
+    settle(&state).await;
+    build(&state, Lang::Zh).await;
+    assert!(dir.join("zh/paper_zh.synctex.gz").is_file());
+    assert_eq!(
+        round_trip(&state, Lang::Zh, EN_PARAGRAPH, ZH_SPAN).await,
+        EN_PARAGRAPH
+    );
+    assert_eq!(
+        round_trip(&state, Lang::En, EN_PARAGRAPH, EN_SPAN).await,
+        EN_PARAGRAPH
+    );
+    assert_eq!(std::fs::read(&en_path).unwrap(), EN.as_bytes());
+    assert_eq!(std::fs::read(&zh_path).unwrap(), ZH.as_bytes());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The boxes of the editor's `offset` in the PDF of `lang`.
+async fn boxes_at(state: &AppStateRef<'_>, lang: Lang, offset: usize) -> Vec<PdfBox> {
+    latex_forward(
+        state.clone(),
+        lang,
+        offset,
+        state.engine.text(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap_or_default()
+}
+
+/// `text` holds only lines that open what follows (`\\begin{…}`, `\\label{…}`).
+fn opens(text: &str) -> bool {
+    text.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty() || line.starts_with("\\begin{") || line.starts_with("\\label{")
+    })
+}
+
+/// Each paired body paragraph of the editor that the cursor finds in a PDF
+/// is selected again by a click there, in both PDFs.
+async fn check_round_trips(state: &AppStateRef<'_>, editor: &str) {
+    let text = state.engine.text();
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let linked: Vec<_> = state
+        .file()
+        .pair
+        .as_ref()
+        .unwrap()
+        .links
+        .keys()
+        .copied()
+        .collect();
+    let paragraphs: Vec<(usize, usize)> = state
+        .engine
+        .snapshot()
+        .layout
+        .iter()
+        .filter(|s| linked.contains(&s.id))
+        .map(|s| (s.from, s.to))
+        .filter(|&(from, to)| {
+            let body = String::from_utf16_lossy(&units[from..to]);
+            body.chars().count() >= 60 && !body.trim_start().starts_with('\\')
+        })
+        .collect();
+    for lang in [Lang::Zh, Lang::En] {
+        let (mut found, mut back, mut misses) = (0, 0, Vec::new());
+        for &(from, to) in &paragraphs {
+            // A line of the paragraph: SyncTeX also names the column box
+            // that holds it, whose middle is in another paragraph.
+            let Some(b) = boxes_at(state, lang, from + 10)
+                .await
+                .into_iter()
+                .find(|b| b.height < 40.0)
+            else {
+                continue;
+            };
+            found += 1;
+            let hit = click_box(state, lang, &b, "").await.unwrap();
+            match hit.and_then(|h| h.range) {
+                Some(r) if r.from < to && r.to > from => back += 1,
+                // The paragraph's opening line, such as the
+                // `\\begin{theorem}[Title]` of a click on the title.
+                Some(r)
+                    if r.from < from && opens(&String::from_utf16_lossy(&units[r.from..from])) =>
+                {
+                    back += 1
+                }
+                other => misses.push((from, other)),
+            }
+        }
+        eprintln!(
+            "{editor}, {lang:?} PDF: {found} of {} paragraphs found, {back} clicked back, misses {misses:?}",
+            paragraphs.len()
+        );
+        assert!(
+            found * 10 >= paragraphs.len() * 9,
+            "{editor}, {lang:?}: too few found"
+        );
+        assert_eq!(
+            back, found,
+            "{editor}, {lang:?}: clicks that missed their paragraph"
+        );
+    }
+}
+
+/// The author's own paper paired by hand (copies: `BIWRITE_REAL_PAIR_EN`
+/// and `BIWRITE_REAL_PAIR_ZH` name the two main files, the Chinese one as
+/// its author built it). Every paired paragraph of the English paper that
+/// the cursor finds in a PDF is selected again by a click there.
+#[tokio::test]
+#[ignore = "needs a TeX distribution; uses BIWRITE_REAL_PAIR_EN and BIWRITE_REAL_PAIR_ZH"]
+async fn a_real_paper_paired_by_hand_maps_clicks_both_ways() {
+    let (Ok(en), Ok(zh)) = (
+        std::env::var("BIWRITE_REAL_PAIR_EN"),
+        std::env::var("BIWRITE_REAL_PAIR_ZH"),
+    ) else {
+        eprintln!("skipped: BIWRITE_REAL_PAIR_EN and BIWRITE_REAL_PAIR_ZH name no papers");
+        return;
+    };
+    let (en_path, zh_path) = (PathBuf::from(en), PathBuf::from(zh));
+    let (en_before, zh_before) = (
+        std::fs::read(&en_path).unwrap(),
+        std::fs::read(&zh_path).unwrap(),
+    );
+    let scratch = temp("real-pair");
+    let app = tauri::test::mock_app();
+    app.manage(app_state(&scratch));
+    let state = app.state::<AppState>();
+    let file = TextFile::decode(en_before.clone()).unwrap();
+    pairing::open(&state, en_path.clone(), file, None);
+    settle(&state).await;
+    let view = pairing::pair_with(
+        &state,
+        state.engine.text(),
+        state.engine.document(),
+        en_path.clone(),
+        zh_path.clone(),
+    )
+    .await
+    .unwrap();
+    let pair = view.pair.expect("paired");
+    eprintln!("paired {} of {} paragraphs", pair.paired, pair.units);
+    settle(&state).await;
+    build(&state, Lang::Zh).await;
+    build(&state, Lang::En).await;
+    let synctex = zh_path.with_extension("synctex.gz");
+    assert!(synctex.is_file(), "{}", synctex.display());
+
+    // Every paired body paragraph of the English paper, then, swapped, of
+    // the Chinese one, round trips through both PDFs.
+    check_round_trips(&state, "English editor").await;
+    crate::commands::swap(&state, state.engine.text(), false).unwrap();
+    assert_eq!(state.file().path.as_deref(), Some(zh_path.as_path()));
+    check_round_trips(&state, "Chinese editor").await;
+    crate::commands::swap(&state, state.engine.text(), false).unwrap();
+    assert_eq!(state.file().path.as_deref(), Some(en_path.as_path()));
+    // Building and clicking wrote neither paper.
+    assert_eq!(std::fs::read(&en_path).unwrap(), en_before);
+    assert_eq!(std::fs::read(&zh_path).unwrap(), zh_before);
+    std::fs::remove_dir_all(&scratch).unwrap();
+}
