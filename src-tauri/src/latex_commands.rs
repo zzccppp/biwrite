@@ -407,6 +407,8 @@ pub struct BuildView {
     pub untranslated: usize,
     /// The end of the console output, for failures without a log.
     pub output: String,
+    /// The project's own `latexmkrc`, which ran with the build (a warning).
+    pub project_rc: Option<String>,
 }
 
 /// A file named in the log (relative to the folder TeX ran in), as the
@@ -595,7 +597,11 @@ pub async fn latex_compile(
         root: root_rel,
         untranslated,
         output: built.output,
+        project_rc: built.project_rc,
     };
+    if let Some(rc) = &view.project_rc {
+        log::warn!("the build ran the project's own {rc}");
+    }
     state.latex.builds().insert(
         lang,
         Build {

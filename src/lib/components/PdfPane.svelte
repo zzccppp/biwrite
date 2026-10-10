@@ -374,6 +374,9 @@
     </button>
   </header>
 
+  {#if build?.projectRc}
+    <div class="problems"><p class="note warn">{t("pdf.projectRc", { file: build.projectRc })}</p></div>
+  {/if}
   {#if build && (showProblems || build.outcome !== "ok") && (build.issues.length || build.outcome !== "ok")}
     <div class="problems">
       {#if build.stale && build.outcome !== "ok" && build.hasPdf}<p class="note">{t("pdf.stale")}</p>{/if}
@@ -651,6 +654,10 @@
     margin: 2px 0 4px;
     color: var(--muted);
     font-style: italic;
+  }
+  .note.warn {
+    color: var(--error);
+    font-style: normal;
   }
   .link {
     border: 0;

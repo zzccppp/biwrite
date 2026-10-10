@@ -534,6 +534,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
       root: "paper.tex",
       untranslated: zh ? 2 : 0,
       output: "",
+      projectRc: null,
     };
   },
   latex_cancel: () => null,

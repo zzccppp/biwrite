@@ -286,3 +286,30 @@ async fn a_root_named_like_an_option_is_refused() {
     assert!(!dir.join("main.pdf").exists(), "nothing ran");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A project's own latexmkrc runs with the build (latexmk reads it), so the
+/// build says so, for the user to be warned.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_project_latexmkrc_is_reported() {
+    let tc = toolchain().await;
+    let dir = scratch("rc");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nhello\n\\end{document}\n",
+    )
+    .unwrap();
+    let built = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    assert_eq!(built.project_rc, None);
+    std::fs::write(dir.join("latexmkrc"), "$pdf_mode = 1;\n").unwrap();
+    let built = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    if tc.latexmk {
+        assert_eq!(built.project_rc.as_deref(), Some("latexmkrc"));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

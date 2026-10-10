@@ -56,6 +56,10 @@ pub struct Compiled {
     pub tool: String,
     /// The end of the tools' console output, shown when there is no log.
     pub output: String,
+    /// The project's own latexmk configuration (`latexmkrc` or
+    /// `.latexmkrc` in its folder), which latexmk ran as Perl: it can run
+    /// any command, so the user is told.
+    pub project_rc: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -117,7 +121,12 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
     let mut output = String::new();
     let mut timed_out = false;
     let mut exit_ok = true;
+    let mut project_rc = None;
     if tc.latexmk {
+        project_rc = ["latexmkrc", ".latexmkrc"]
+            .into_iter()
+            .find(|name| dir.join(name).is_file())
+            .map(str::to_owned);
         let mut args = vec![
             job.engine.latexmk_flag().to_owned(),
             // Go on past errors: XeLaTeX writes no PDF otherwise (latexmk
@@ -178,6 +187,7 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         tool,
         output,
+        project_rc,
     })
 }
 

@@ -261,6 +261,10 @@ export const messages = {
   "pdf.failed": { en: "No PDF was produced.", zh: "没有生成 PDF。" },
   "pdf.timedOut": { en: "Stopped after 5 minutes.", zh: "编译超过 5 分钟，已停止。" },
   "pdf.stale": { en: "This is the last PDF that compiled.", zh: "当前显示的是上一次编译成功的 PDF。" },
+  "pdf.projectRc": {
+    en: "This project's own {file} ran with the build. It can run any command on your computer: build only projects you trust.",
+    zh: "本项目自带的 {file} 已随编译运行。它可以在你的电脑上执行任意命令，请只编译你信任的项目。",
+  },
   "pdf.untranslated": {
     en: "{n} paragraphs are not translated yet and appear in the original language.",
     zh: "有 {n} 段尚未翻译，暂以原文排版。",

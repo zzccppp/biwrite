@@ -458,7 +458,8 @@ resolve to their target and permissions are preserved.
     with `-` (a file named `-shell-escape` or `` `cmd`.tex `` ran commands).
     On Windows, `NoDefaultCurrentDirectoryInExePath` stops tools being found
     in the project folder. A project's own `latexmkrc` still runs, as in
-    other editors.
+    other editors, and the PDF pane warns that it did
+    (`Compiled::project_rc`): it can run any command.
 * **Pairs** (`biwrite-core::pair`, `src-tauri/src/pairing.rs`). Opening a
   file looks for its counterpart by name (`_zh`, `sections_en` and
   `sections_zh`, …). Paragraphs align with a dynamic program over kind and

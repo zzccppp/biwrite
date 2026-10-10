@@ -462,6 +462,8 @@ export interface BuildView {
   /** Paragraphs of the Chinese PDF still in English. */
   untranslated: number;
   output: string;
+  /** The project's own latexmkrc, which ran with the build: it can run any command. */
+  projectRc: string | null;
 }
 
 /** Where a source line is typeset, in PDF points from the page's top left. */
