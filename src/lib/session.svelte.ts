@@ -22,6 +22,8 @@ export class Session {
   dirty = $state(false);
   /** The paired file in the other language. */
   pair = $state<PairView | null>(null);
+  /** Rust's number for the loaded document (`Snapshot.document`), sent with its text. */
+  document = 0;
   autoTranslate = $state(true);
   lineEnding = $state<"lf" | "crlf" | "cr">("lf");
   usage = $state<SessionUsage>(NO_USAGE);
@@ -62,6 +64,7 @@ export class Session {
     this.dirty = view.dirty;
     this.pair = view.pair;
     this.home = view.home;
+    this.document = view.snapshot.document;
     this.autoTranslate = view.autoTranslate;
     this.lineEnding = view.lineEnding;
     this.activeId = null;

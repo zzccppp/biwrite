@@ -12,9 +12,14 @@ use crate::project::{preamble, uncommented};
 const CLASS_PACKAGES: &[(&str, &[&str])] = &[
     (
         "acmart",
-        &["amsmath", "amssymb", "booktabs", "graphicx", "hyperref", "natbib", "xcolor"],
+        &[
+            "amsmath", "amssymb", "booktabs", "graphicx", "hyperref", "natbib", "xcolor",
+        ],
     ),
-    ("beamer", &["amsmath", "amssymb", "graphicx", "hyperref", "xcolor"]),
+    (
+        "beamer",
+        &["amsmath", "amssymb", "graphicx", "hyperref", "xcolor"],
+    ),
     ("ctexart", &["ctex"]),
     ("ctexrep", &["ctex"]),
     ("ctexbook", &["ctex"]),
@@ -179,9 +184,10 @@ pub fn missing(snippet: &str, loaded: &BTreeSet<String>) -> Vec<String> {
     required(snippet)
         .into_iter()
         .filter(|p| {
-            !loaded.contains(*p)
-                && !(*p == "colortbl" && loaded.iter().any(|l| l == "colortbl"))
-                && !(*p == "tikz" && loaded.contains("pgfplots"))
+            // pgfplots loads tikz itself.
+            let loaded_already =
+                loaded.contains(*p) || (*p == "tikz" && loaded.contains("pgfplots"));
+            !loaded_already
         })
         .map(str::to_owned)
         .collect()
@@ -205,7 +211,9 @@ mod tests {
                     \\input{preamble}\n\
                     \\begin{document}\n\\usepackage{late}\n\\end{document}\n";
         let got = loaded(&dir, root);
-        for p in ["inputenc", "mystyle", "natbib", "tikz", "siunitx", "booktabs", "graphicx", "xcolor"] {
+        for p in [
+            "inputenc", "mystyle", "natbib", "tikz", "siunitx", "booktabs", "graphicx", "xcolor",
+        ] {
             assert!(got.contains(p), "{p} in {got:?}");
         }
         assert!(!got.contains("multirow"), "commented out");
@@ -217,7 +225,10 @@ mod tests {
     fn a_snippet_names_what_it_needs() {
         let table = "\\begin{table}\\centering\\begin{tabular}{lr}\\toprule A & \\multirow{2}{*}{x}\\\\\
                      \\midrule\\cellcolor{gray}B & 1\\\\\\bottomrule\\end{tabular}\\end{table}";
-        assert_eq!(required(table), ["booktabs", "multirow", "xcolor", "colortbl"]);
+        assert_eq!(
+            required(table),
+            ["booktabs", "multirow", "xcolor", "colortbl"]
+        );
         let plot = "\\begin{tikzpicture}\\begin{axis}\\addplot coordinates {(0,1)};\\end{axis}\\end{tikzpicture}";
         assert_eq!(required(plot), ["pgfplots"]);
         assert!(required("% \\includegraphics{x}\nplain").is_empty());

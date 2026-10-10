@@ -164,6 +164,7 @@ impl Engine {
         st.cancel_all();
         st.meta.clear();
         st.touched.clear();
+        st.document += 1;
         st.doc = DocumentModel::new(st.doc.next_id());
         st.doc.apply(composed.text.clone(), mode);
         st.direction = st.direction.flipped();

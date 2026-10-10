@@ -247,6 +247,7 @@ function snapshot(full = true): Snapshot {
     };
   });
   return {
+    document: 1,
     revision: state.revision++,
     mode: LATEX ? "latex" : "plain",
     direction: state.direction,

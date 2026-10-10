@@ -84,7 +84,8 @@ struct Script {
 impl Script {
     fn count(&mut self, text: &str) {
         for c in text.chars() {
-            if matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FFFF) {
+            if matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FFFF)
+            {
                 self.han += 1;
             } else if c.is_ascii_alphabetic() {
                 self.letters += 1;
@@ -133,11 +134,69 @@ pub fn paragraph_written_in(text: &str, mode: Mode) -> Option<Direction> {
     judge(text, mode, 1.0)
 }
 
-fn judge(text: &str, mode: Mode, min_words: f64) -> Option<Direction> {
+/// Least change in the share of Chinese for one text to count as another
+/// put into the other language, not the same language reworded. Chinese
+/// dense with English names ("使用 PyTorch Lightning 实现") has a share of
+/// only about 0.4, but rewording leaves the share where it was.
+const LANGUAGE_SHIFT: f64 = 0.15;
+
+/// `to` reads as `from` put into the language `direction` is written in
+/// (Chinese for [`Direction::ZhEn`]): with protected spans masked, its share
+/// of Chinese moved that way by a clear margin.
+pub fn moved_into(direction: Direction, from: &str, to: &str, mode: Mode) -> bool {
+    let share = |text: &str| chinese_share(&Protector::new(mode).mask(text));
+    let shift = share(to) - share(from);
+    match direction {
+        Direction::ZhEn => shift >= LANGUAGE_SHIFT,
+        Direction::EnZh => -shift >= LANGUAGE_SHIFT,
+    }
+}
+
+/// Share of Chinese under which a paragraph plainly reads as English:
+/// English prose carries hardly any Chinese, while Chinese prose often
+/// carries many English names.
+const PLAIN_ENGLISH: f64 = 0.1;
+
+/// `text` (one paragraph) is plainly written in the language `direction` is
+/// written in. Chinese dense with English names reads as English to
+/// [`paragraph_written_in`]; here English has to be nearly free of Chinese.
+pub fn plainly_written_in(direction: Direction, text: &str, mode: Mode) -> bool {
+    let script = prose(text, mode);
+    if script.words() < 1.0 {
+        return false;
+    }
+    match direction {
+        Direction::EnZh => script.share() < PLAIN_ENGLISH,
+        Direction::ZhEn => script.share() > 0.5,
+    }
+}
+
+/// Which of two versions of one document is the Chinese one: `Some(true)`
+/// for `a`, `Some(false)` for `b`, `None` when they don't plainly read as
+/// two languages (a copy in the same language, or no prose to tell by).
+/// Their shares of Chinese are compared, so Chinese dense with English
+/// names still tells against English.
+pub fn chinese_of_two(a: &str, b: &str, mode: Mode) -> Option<bool> {
+    let (a, b) = (prose(a, mode), prose(b, mode));
+    if a.words() < 1.0 || b.words() < 1.0 {
+        return None;
+    }
+    let shift = a.share() - b.share();
+    (shift.abs() >= LANGUAGE_SHIFT).then_some(shift > 0.0)
+}
+
+/// Han characters and Latin letters of `text`'s translatable paragraphs,
+/// with math, citations, references and the other protected spans masked.
+fn prose(text: &str, mode: Mode) -> Script {
     let mut script = Script::default();
     for unit in units(text, mode) {
         script.count(&Protector::new(mode).mask(&text[unit.content]));
     }
+    script
+}
+
+fn judge(text: &str, mode: Mode, min_words: f64) -> Option<Direction> {
+    let script = prose(text, mode);
     if script.words() < min_words {
         return None;
     }
@@ -195,11 +254,73 @@ mod tests {
         let en = "\\section{Introduction}\nTabular foundation models do well on small \
                   tasks, but errors in the data (脏数据) cost accuracy.\n";
         assert_eq!(written_in(en, Mode::Latex), Some(Direction::EnZh));
-        assert_eq!(written_in("$x^2$\n\n\\begin{equation}a=b\\end{equation}", Mode::Latex), None);
+        assert_eq!(
+            written_in("$x^2$\n\n\\begin{equation}a=b\\end{equation}", Mode::Latex),
+            None
+        );
         assert_eq!(written_in("", Mode::Plain), None);
         assert_eq!(written_in("Introduction", Mode::Plain), None);
-        assert_eq!(paragraph_written_in("Introduction", Mode::Plain), Some(Direction::EnZh));
-        assert_eq!(paragraph_written_in("引言", Mode::Plain), Some(Direction::ZhEn));
+        assert_eq!(
+            paragraph_written_in("Introduction", Mode::Plain),
+            Some(Direction::EnZh)
+        );
+        assert_eq!(
+            paragraph_written_in("引言", Mode::Plain),
+            Some(Direction::ZhEn)
+        );
         assert_eq!(paragraph_written_in("$x$", Mode::Latex), None);
+    }
+
+    #[test]
+    fn moved_into_tells_a_translation_from_a_rewording() {
+        let en = "Implemented with PyTorch Lightning and HuggingFace Transformers.";
+        let zh = "使用 PyTorch Lightning 和 HuggingFace Transformers 实现。";
+        // Chinese this dense with names reads as English on its own...
+        assert_eq!(paragraph_written_in(zh, Mode::Plain), Some(Direction::EnZh));
+        // ...but a translation still moves the share a long way.
+        assert!(moved_into(Direction::ZhEn, en, zh, Mode::Plain));
+        assert!(moved_into(Direction::EnZh, zh, en, Mode::Plain));
+        assert!(!moved_into(Direction::EnZh, en, zh, Mode::Plain));
+        // Rewording, or only spacing, is no move at all.
+        let tidied = "使用PyTorch Lightning和HuggingFace Transformers实现。";
+        assert!(!moved_into(Direction::ZhEn, zh, tidied, Mode::Plain));
+        assert!(!moved_into(Direction::ZhEn, en, en, Mode::Plain));
+        // Only plainly English counts as English; Chinese only when mostly Chinese.
+        assert!(plainly_written_in(Direction::EnZh, en, Mode::Plain));
+        assert!(!plainly_written_in(Direction::EnZh, zh, Mode::Plain));
+        let mixed = "使用 AdamW optimizer，learning rate 为 1e-4，weight decay 为 0.01，warmup steps 为 500。";
+        assert!(!plainly_written_in(Direction::EnZh, mixed, Mode::Plain));
+        assert!(!plainly_written_in(Direction::ZhEn, mixed, Mode::Plain));
+        assert!(plainly_written_in(
+            Direction::ZhEn,
+            "我们研究翻译。",
+            Mode::Plain
+        ));
+        assert!(!plainly_written_in(Direction::EnZh, "$x$", Mode::Latex));
+        // Math and citations don't count.
+        assert!(moved_into(
+            Direction::ZhEn,
+            "We set $\\alpha_{max}=1$ \\cite{smith2020}.",
+            "我们设 $\\alpha_{max}=1$ \\cite{smith2020}。",
+            Mode::Latex
+        ));
+    }
+
+    #[test]
+    fn two_versions_tell_which_is_chinese() {
+        let en = "\\section{Method}\nWe train with AdamW and a warmup of 500 steps.\n";
+        let zh =
+            "\\section{方法}\n使用 AdamW optimizer，learning rate 为 1e-4，warmup steps 为 500。\n";
+        assert_eq!(chinese_of_two(en, zh, Mode::Latex), Some(false));
+        assert_eq!(chinese_of_two(zh, en, Mode::Latex), Some(true));
+        // A copy in the same language, either language.
+        assert_eq!(chinese_of_two(en, en, Mode::Latex), None);
+        assert_eq!(chinese_of_two(zh, zh, Mode::Latex), None);
+        // A heading alone is enough to tell.
+        assert_eq!(
+            chinese_of_two("\\section{Appendix}\n", "\\section{附录}\n", Mode::Latex),
+            Some(false)
+        );
+        assert_eq!(chinese_of_two("$x$\n", "$x$\n", Mode::Latex), None);
     }
 }

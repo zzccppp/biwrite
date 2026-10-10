@@ -251,3 +251,38 @@ async fn a_build_that_never_ends_is_stopped() {
     assert!(running.trim().is_empty(), "still running: {running}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A project naming a file `-shell-escape` as its root must not get shell
+/// escape: the name is refused before any tool runs.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_root_named_like_an_option_is_refused() {
+    let tc = toolchain().await;
+    let dir = scratch("option-root");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("-shell-escape"), "").unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "% !TEX root = -shell-escape\n\\documentclass{article}\n\\begin{document}\n\
+         \\immediate\\write18{touch PWNED}\nhello\n\\end{document}\n",
+    )
+    .unwrap();
+    let err = compile(&tc, &job(&dir, "-shell-escape", Engine::Pdflatex))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("can't be compiled"), "{err}");
+    // latexmk runs the engine through the shell: a backtick runs a command.
+    let quoted = "`touch PWNED`.tex";
+    std::fs::write(
+        dir.join(quoted),
+        "\\documentclass{article}\\begin{document}x\\end{document}\n",
+    )
+    .unwrap();
+    let err = compile(&tc, &job(&dir, quoted, Engine::Pdflatex))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("can't be compiled"), "{err}");
+    assert!(!dir.join("PWNED").exists());
+    assert!(!dir.join("main.pdf").exists(), "nothing ran");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

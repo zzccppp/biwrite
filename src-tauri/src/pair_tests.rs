@@ -192,3 +192,103 @@ async fn a_real_paper_pair_saves_only_edited_paragraphs() {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// A copy in the same language (a translation just started with
+/// `cp paper.tex paper_zh.tex`) is not taken for the translation, so saving
+/// never writes into the original.
+#[tokio::test]
+async fn a_copy_in_the_same_language_is_not_paired() {
+    for (name, text) in [("same-en", EN), ("same-zh", ZH)] {
+        let dir = std::env::temp_dir().join(format!("biwrite-pairs-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (original, copy) = (dir.join("paper.tex"), dir.join("paper_zh.tex"));
+        std::fs::write(&original, text).unwrap();
+        std::fs::write(&copy, text).unwrap();
+        let state = app_state(&dir);
+        let mirror = pairing::counterpart(&copy).expect("found by name");
+        assert_eq!(mirror, original);
+        pairing::open(
+            &state,
+            copy.clone(),
+            read(&copy),
+            Some((mirror, read(&original))),
+        );
+        assert!(state.file().pair.is_none(), "{name}: paired with itself");
+        settle(&state).await;
+        assert!(pairing::save_mirror(&state).await.unwrap().is_none());
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), text);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// Swapping a pair with unsaved edits: they now live in the side swapped
+/// away from, and stay unsaved (closing asks) until a save writes them.
+#[tokio::test]
+async fn swapping_a_pair_keeps_its_unsaved_edits_unsaved() {
+    let (dir, en_path, zh_path) = project("unsaved", EN, ZH);
+    let state = app_state(&dir);
+    pairing::open(
+        &state,
+        en_path.clone(),
+        read(&en_path),
+        Some((zh_path.clone(), read(&zh_path))),
+    );
+    settle(&state).await;
+    // Only the equation changes: no translation changes with it.
+    let edited = EN.replace("w_i f_i(v)", "w_i g_i(v)");
+    state.engine.update(edited.clone());
+    state.file().dirty = true; // as the editor reports it
+    settle(&state).await;
+    let view = pairing::swap(&state, edited.clone()).unwrap();
+    assert!(view.dirty, "the English edit is not on disk");
+    // The editor now holds the untouched Chinese file and reports it clean.
+    state.file().dirty = false;
+    assert!(state.is_dirty() && state.needs_close_confirmation());
+    assert!(state.file().window_title().starts_with('•'));
+
+    // Saving writes both, and everything is clean.
+    crate::commands::write_document(&state, zh_path.clone(), view.text.clone(), None)
+        .await
+        .unwrap();
+    assert!(!state.is_dirty());
+    assert_eq!(std::fs::read_to_string(&en_path).unwrap(), edited);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Chinese dense with English names (under half Chinese by share) still
+/// pairs with its English, either file opened.
+#[tokio::test]
+async fn chinese_dense_with_english_names_still_pairs() {
+    let en = "\\section{Setup}\n\
+We train with AdamW, a learning rate of 1e-4 and a weight decay of 0.01.\n\n\
+We build on PyTorch Lightning 2.4 and HuggingFace Transformers 4.46.\n";
+    let zh = "\\section{Setup}\n\
+使用 AdamW optimizer，learning rate 为 1e-4，weight decay 为 0.01。\n\n\
+基于 PyTorch Lightning 2.4 和 HuggingFace Transformers 4.46 实现。\n";
+    assert_ne!(
+        biwrite_core::lang::written_in(zh, biwrite_core::Mode::Latex),
+        Some(Direction::ZhEn),
+        "reads as English on its own"
+    );
+    let (dir, en_path, zh_path) = project("dense", en, zh);
+    for (open, mirror, direction) in [
+        (&en_path, &zh_path, Direction::EnZh),
+        (&zh_path, &en_path, Direction::ZhEn),
+    ] {
+        let state = app_state(&dir);
+        pairing::open(
+            &state,
+            open.clone(),
+            read(open),
+            Some((mirror.clone(), read(mirror))),
+        );
+        assert!(
+            state.file().pair.is_some(),
+            "{} did not pair",
+            open.display()
+        );
+        assert_eq!(state.engine.direction(), direction);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

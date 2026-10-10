@@ -54,6 +54,7 @@ pub(crate) async fn load(
     state: &AppState,
     path: PathBuf,
 ) -> CommandResult<SessionView> {
+    let _no_save_meanwhile = state.save_lock.lock().await;
     let view = open_path(state, path).await?;
     refresh_title(window, state);
     Ok(view)
@@ -72,13 +73,17 @@ pub(crate) async fn open_path(state: &AppState, path: PathBuf) -> CommandResult<
 }
 
 /// Save to the current path (asks for one if the document is untitled).
+/// `text` is the editor's, for `document` (see [`AppState::sync_text`]).
 #[tauri::command]
 pub async fn save_file(
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
     text: String,
+    document: u64,
 ) -> CommandResult<Option<SavedView>> {
+    let _one_at_a_time = state.save_lock.lock().await;
+    state.sync_text(document, &text)?;
     let own = home_text(&state, text)?;
     let current = state.file().path.clone();
     let path = match current {
@@ -98,7 +103,10 @@ pub async fn save_file_as(
     window: WebviewWindow,
     state: State<'_, AppState>,
     text: String,
+    document: u64,
 ) -> CommandResult<Option<SavedView>> {
+    let _one_at_a_time = state.save_lock.lock().await;
+    state.sync_text(document, &text)?;
     let own = home_text(&state, text)?;
     let current = state.file().path.clone();
     let Some(path) = files::pick_save(&app, &window, current.as_deref()).await else {
@@ -123,11 +131,9 @@ pub async fn save_file_as(
 /// the other language is edited (after a swap), composed from the
 /// translations, refused while a paragraph is still pending. With a pair,
 /// the editor holds the file's own language and the mirror follows.
+///
+/// The engine holds `editor_text` already ([`AppState::sync_text`]).
 pub(crate) fn home_text(state: &AppState, editor_text: String) -> CommandResult<String> {
-    // Normally a no-op: the frontend flushes edits first.
-    if state.engine.text() != editor_text {
-        state.engine.update(editor_text.clone());
-    }
     let own = {
         let fs = state.file();
         fs.pair.is_some() || state.engine.direction() == fs.home
@@ -152,14 +158,14 @@ async fn save_to(
 }
 
 /// Write the document's own `text` to `path` (and the paired file to
-/// `mirror_to`, or where it is); [`save_to`] without the window title.
+/// `mirror_to`, or where it is); [`save_to`] without the window title. The
+/// caller holds `save_lock`, so the document can't change meanwhile.
 pub(crate) async fn write_document(
     state: &AppState,
     path: PathBuf,
     text: String,
     mirror_to: Option<PathBuf>,
 ) -> CommandResult<SavedView> {
-    let _one_save_at_a_time = state.save_lock.lock().await;
     let note = state.doc_note();
     // Only the English source is written; unedited text yields the original bytes.
     let bytes = state.file().file.encode(&text);
@@ -199,8 +205,11 @@ pub async fn swap_languages(
     window: WebviewWindow,
     state: State<'_, AppState>,
     text: String,
+    document: u64,
     keep: Option<bool>,
 ) -> CommandResult<SessionView> {
+    let _no_save_meanwhile = state.save_lock.lock().await;
+    state.sync_text(document, &text)?;
     let view = swap(&state, text, keep.unwrap_or(false));
     refresh_title(&window, &state);
     view
@@ -211,7 +220,10 @@ pub(crate) fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<
     if state.file().pair.is_some() {
         return pairing::swap(state, text);
     }
-    // `keep`: swap now; untranslated paragraphs keep their text.
+    // `keep`: swap now; untranslated paragraphs keep their text. Not back
+    // to the file's own language: those paragraphs would put the other
+    // language into the file, so that swap waits for every translation.
+    let keep = keep && state.engine.direction().flipped() != state.file().home;
     let swapped = if keep {
         state.engine.swap_keeping_untranslated(text.clone())?
     } else {
@@ -246,8 +258,11 @@ pub async fn retarget_language(
     window: WebviewWindow,
     state: State<'_, AppState>,
     text: String,
+    document: u64,
     only_if_needed: bool,
 ) -> CommandResult<Option<SessionView>> {
+    let _no_save_meanwhile = state.save_lock.lock().await;
+    state.sync_text(document, &text)?;
     let Some(snapshot) = retarget(&state, text, only_if_needed)? else {
         return Ok(None);
     };
@@ -296,10 +311,12 @@ pub(crate) fn retarget(
 /// while the other language is edited, also the paragraphs still written in
 /// the file's language. Returns how many paragraphs were taken up.
 #[tauri::command]
-pub async fn continue_translation(state: State<'_, AppState>, text: String) -> CommandResult<usize> {
-    if state.engine.text() != text {
-        state.engine.update(text);
-    }
+pub async fn continue_translation(
+    state: State<'_, AppState>,
+    text: String,
+    document: u64,
+) -> CommandResult<usize> {
+    state.sync_text(document, &text)?;
     let other_language = {
         let fs = state.file();
         fs.pair.is_none() && state.engine.direction() != fs.home
@@ -308,18 +325,26 @@ pub async fn continue_translation(state: State<'_, AppState>, text: String) -> C
 }
 
 /// New editor text after the debounce: re-segment, align, schedule work.
+/// `None` if the editor sent it for an earlier document (an update that
+/// crossed a swap or an open): it is dropped.
 #[tauri::command]
-pub async fn update_document(state: State<'_, AppState>, text: String) -> CommandResult<Snapshot> {
-    Ok(state.engine.update(text))
+pub async fn update_document(
+    state: State<'_, AppState>,
+    text: String,
+    document: u64,
+) -> CommandResult<Option<Snapshot>> {
+    Ok(state.engine.update_in(document, text).ok())
 }
 
+/// Change the mode; `None` as for [`update_document`].
 #[tauri::command]
 pub async fn set_mode(
     state: State<'_, AppState>,
     mode: Mode,
     text: String,
-) -> CommandResult<Snapshot> {
-    Ok(state.engine.set_mode(mode, text))
+    document: u64,
+) -> CommandResult<Option<Snapshot>> {
+    Ok(state.engine.set_mode_in(document, mode, text).ok())
 }
 
 #[tauri::command]

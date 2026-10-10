@@ -405,6 +405,22 @@ export const messages = {
     en: "{n} paragraphs could not be translated. Retry them, or click the swap button twice to swap with them as they are.",
     zh: "有 {n} 段翻译失败。可以重试这些段落，或连点两次切换按钮，保留原文直接切换。",
   },
+  "doc.swapBackWhenReady": {
+    en: "Swapping back when {n} more paragraphs are translated (click Continue if translation is paused): the file is saved in {lang}, so none can stay as they are.",
+    zh: "还有 {n} 段待翻译，译完后自动切回（若已暂停翻译，请点“继续”）。文件以{lang}保存，这些段落不能保留原样。",
+  },
+  "doc.swapBackBlocked": {
+    en: "{n} paragraphs could not be translated. Retry them or click Continue, then swap back.",
+    zh: "有 {n} 段翻译失败。请重试这些段落或点“继续”，然后再切回。",
+  },
+  "doc.busySwapping": {
+    en: "Swapping languages; try again in a moment.",
+    zh: "正在切换语言，请稍后再试。",
+  },
+  "doc.busySaving": {
+    en: "Saving; try again in a moment.",
+    zh: "正在保存，请稍后再试。",
+  },
   "doc.savedBoth": { en: "Saved {name} and {mirror} ({n} paragraphs changed).", zh: "已保存 {name} 和 {mirror}（改动 {n} 段）。" },
   "doc.savedMirrorWaiting": {
     en: "Saved {name}. {mirror} is written when {n} more paragraphs are translated.",

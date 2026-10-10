@@ -5,7 +5,7 @@ mod common;
 
 use common::{all_translated, harness, join, loaded, paragraphs, reverse, settle, state_of};
 
-use biwrite_engine::{EngineSettings, SegmentStatus};
+use biwrite_engine::{EngineError, EngineSettings, SegmentStatus};
 
 #[tokio::test(start_paused = true)]
 async fn editing_one_of_fifty_paragraphs_makes_exactly_one_call() {
@@ -124,4 +124,45 @@ async fn skipped_segments_are_never_sent() {
         .map(|r| r.source)
         .collect();
     assert_eq!(sources, vec!["Title", "Body text."]);
+}
+
+/// Text the editor sent for an earlier document (before a swap or another
+/// file) is refused, not applied to the new one.
+#[tokio::test(start_paused = true)]
+async fn text_for_an_earlier_document_is_refused() {
+    let h = harness(EngineSettings::default());
+    let english = join(&paragraphs(2));
+    let first = h
+        .engine
+        .load(english.clone(), biwrite_core::Mode::Plain)
+        .document;
+    settle(&h.engine).await;
+    let edited = english.replace("number 1", "number one");
+    assert!(h.engine.update_in(first, edited.clone()).is_ok());
+    settle(&h.engine).await;
+
+    let swapped = h.engine.swap(edited.clone()).unwrap();
+    let second = swapped.snapshot.document;
+    assert_ne!(first, second);
+    // A save or flush sent before the swap arrives after it.
+    assert_eq!(
+        h.engine.update_in(first, edited.clone()).unwrap_err(),
+        EngineError::Stale
+    );
+    assert_eq!(
+        h.engine
+            .set_mode_in(first, biwrite_core::Mode::Markdown, edited)
+            .unwrap_err(),
+        EngineError::Stale
+    );
+    assert_eq!(
+        h.engine.text(),
+        swapped.text,
+        "the swapped document is untouched"
+    );
+    assert_eq!(h.engine.document(), second);
+    assert!(h.engine.update_in(second, swapped.text.clone()).is_ok());
+    // Loading a file is a new document too.
+    let third = h.engine.load(english, biwrite_core::Mode::Plain).document;
+    assert!(third > second);
 }

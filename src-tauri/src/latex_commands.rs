@@ -18,8 +18,7 @@ use biwrite_core::utf16::{byte_to_utf16, utf16_to_byte};
 use biwrite_core::{Direction, Mode, SegmentId};
 use biwrite_latex::{
     self as latex, EN_MIRROR_DIR, Engine, Issue, Job, MIRROR_DIR, Outcome, PdfBox, Severity,
-    Template, Toolchain,
-    templates,
+    Template, Toolchain, templates,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State, WebviewWindow};
@@ -459,11 +458,10 @@ pub async fn latex_compile(
     state: State<'_, AppState>,
     lang: Lang,
     text: String,
+    document: u64,
 ) -> CommandResult<BuildView> {
     let tc = require_toolchain(&state).await?;
-    if state.engine.text() != text {
-        state.engine.update(text.clone());
-    }
+    state.sync_text(document, &text)?;
     let direction = state.engine.direction();
     // The language of the file on disk.
     let file_lang = source_lang(state.file().home);
@@ -647,7 +645,13 @@ fn source_lang(direction: Direction) -> Lang {
 
 /// A line of the paired mirror (as on disk) as the range of the linked
 /// paragraph in the editor's `text`. `None` unless `file` is the mirror.
-fn mirror_hit(state: &AppState, file: &Path, line: usize, text: &str) -> Option<Range16> {
+fn mirror_hit(
+    state: &AppState,
+    file: &Path,
+    line: usize,
+    text: &str,
+    document: u64,
+) -> Option<Range16> {
     let id = {
         let fs = state.file();
         let pair = fs.pair.as_ref().filter(|p| canonical(&p.path) == file)?;
@@ -659,9 +663,8 @@ fn mirror_hit(state: &AppState, file: &Path, line: usize, text: &str) -> Option<
             pair.links.iter().map(|(id, u)| (*u, *id)).collect();
         (0..=j).rev().find_map(|k| by_unit.get(&k).copied())?
     };
-    if state.engine.text() != text {
-        state.engine.update(text.to_owned());
-    }
+    // A click resolved after another file was opened or a swap: no place.
+    state.sync_text(document, text).ok()?;
     let snapshot = state.engine.snapshot();
     let seg = snapshot.layout.iter().find(|s| s.id == id)?;
     Some(Range16 {
@@ -672,10 +675,13 @@ fn mirror_hit(state: &AppState, file: &Path, line: usize, text: &str) -> Option<
 
 /// The mirror's file and line for the paragraph at `offset` (UTF-16) of
 /// the editor's `text`.
-fn mirror_line(state: &AppState, offset: usize, text: &str) -> Option<(PathBuf, usize)> {
-    if state.engine.text() != text {
-        state.engine.update(text.to_owned());
-    }
+fn mirror_line(
+    state: &AppState,
+    offset: usize,
+    text: &str,
+    document: u64,
+) -> Option<(PathBuf, usize)> {
+    state.sync_text(document, text).ok()?;
     let snapshot = state.engine.snapshot();
     let ids: Vec<SegmentId> = snapshot
         .layout
@@ -773,6 +779,7 @@ pub async fn latex_export_tex(
     window: WebviewWindow,
     state: State<'_, AppState>,
     text: String,
+    document: u64,
 ) -> CommandResult<Option<String>> {
     if let Some(pair) = state.file().pair.as_ref() {
         return Err(fail(format!(
@@ -780,9 +787,7 @@ pub async fn latex_export_tex(
             crate::state::display_name(Some(&pair.path))
         )));
     }
-    if state.engine.text() != text {
-        state.engine.update(text.clone());
-    }
+    state.sync_text(document, &text)?;
     let target = match source_lang(state.file().home) {
         Lang::En => Lang::Zh,
         Lang::Zh => Lang::En,
@@ -880,6 +885,7 @@ pub async fn latex_inverse(
     span: String,
     click: usize,
     text: String,
+    document: u64,
 ) -> CommandResult<Option<SyncHit>> {
     let tc = require_toolchain(&state).await?;
     let pdf = pdf_of(&state, lang)?;
@@ -894,7 +900,7 @@ pub async fn latex_inverse(
     let file = canonical(&point.file);
     let line = point.line as usize;
     let current = state.file().path.as_deref().map(canonical);
-    if let Some(range) = mirror_hit(&state, &file, line, &text) {
+    if let Some(range) = mirror_hit(&state, &file, line, &text, document) {
         return Ok(Some(SyncHit {
             file: file.display().to_string(),
             line: point.line,
@@ -1005,7 +1011,10 @@ fn checked_point(
         .into_iter()
         .map(|f| canonical(&f))
         .filter(|f| *f != build.doc_file);
-    for file in std::iter::once(build.doc_file.clone()).chain(others).take(400) {
+    for file in std::iter::once(build.doc_file.clone())
+        .chain(others)
+        .take(400)
+    {
         let Some(text) = source(&file) else {
             continue;
         };
@@ -1047,12 +1056,13 @@ pub async fn latex_forward(
     lang: Lang,
     offset: usize,
     text: String,
+    document: u64,
 ) -> CommandResult<Vec<PdfBox>> {
     let tc = require_toolchain(&state).await?;
     let at = utf16_to_byte(&text, offset);
     let current = state.file().path.as_deref().map(canonical);
     if lang != source_lang(state.engine.direction())
-        && let Some((input, line)) = mirror_line(&state, offset, &text)
+        && let Some((input, line)) = mirror_line(&state, offset, &text, document)
     {
         let pdf = pdf_of(&state, lang)?;
         return latex::synctex::forward(&tc, &pdf, &input, line as u32, 0)

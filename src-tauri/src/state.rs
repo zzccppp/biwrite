@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use biwrite_core::{Direction, LineEnding, Mode, TextFile};
-use biwrite_engine::{Engine, Snapshot, TranslationCache};
+use biwrite_engine::{Engine, EngineError, Snapshot, TranslationCache};
 use biwrite_providers::HttpProvider;
 use serde::Serialize;
 
@@ -43,8 +43,14 @@ impl FileState {
         display_name(self.path.as_deref())
     }
 
+    /// Something isn't on disk: the editor's text, or edits of the paired
+    /// file swapped away from (the frontend only reports the editor).
+    pub fn unsaved(&self) -> bool {
+        self.dirty || self.pair.as_ref().is_some_and(|p| p.text != p.file.text())
+    }
+
     pub fn window_title(&self) -> String {
-        let marker = if self.dirty { "• " } else { "" };
+        let marker = if self.unsaved() { "• " } else { "" };
         format!("{marker}{} — BiWrite", self.display_name())
     }
 }
@@ -60,7 +66,10 @@ pub struct AppState {
     /// The engine's translation cache, for viewing and clearing it.
     pub cache: Arc<dyn TranslationCache>,
     file: Mutex<FileState>,
-    /// Saves run one at a time (held across the async write).
+    /// Saves and changes of document (opening a file, swapping, reading
+    /// the file as the other language, pairing) run one at a time, so a
+    /// save never records its path on a document swapped in meanwhile.
+    /// Held across the async write.
     pub save_lock: tokio::sync::Mutex<()>,
     /// Set once the user agreed to discard changes while closing/quitting.
     discard_confirmed: AtomicBool,
@@ -115,12 +124,26 @@ impl AppState {
         }
     }
 
+    /// Bring the engine to the editor's `text`, which the editor sent for
+    /// `document` (see [`Snapshot::document`]). Text sent before another
+    /// file was opened or the languages were swapped is refused, never
+    /// applied to the new document.
+    pub fn sync_text(&self, document: u64, text: &str) -> Result<(), CommandError> {
+        if self.engine.document() != document {
+            return Err(EngineError::Stale.into());
+        }
+        if self.engine.text() != text {
+            self.engine.update_in(document, text.to_owned())?;
+        }
+        Ok(())
+    }
+
     pub fn file(&self) -> MutexGuard<'_, FileState> {
         self.file.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.file().dirty
+        self.file().unsaved()
     }
 
     /// Closing or quitting must ask first.
@@ -155,7 +178,7 @@ impl AppState {
             path: fs.path.as_ref().map(|p| p.display().to_string()),
             name: fs.display_name(),
             text: self.engine.text(),
-            dirty: fs.dirty,
+            dirty: fs.unsaved(),
             auto_translate: settings.auto_translate,
             line_ending: fs.file.line_ending(),
             bom: fs.file.has_bom(),

@@ -187,7 +187,11 @@ fn unit_of(text: &str, needle: &str) -> usize {
 /// The only paragraph of `b` that differs from `a`.
 fn one_changed<'a>(a: &str, b: &'a str) -> &'a str {
     let changed = changed_units(a, b);
-    assert_eq!(changed.len(), 1, "exactly one paragraph changed: {changed:?}");
+    assert_eq!(
+        changed.len(),
+        1,
+        "exactly one paragraph changed: {changed:?}"
+    );
     let unit = &biwrite_core::pair::units(b, Mode::Latex)[changed[0]];
     &b[unit.content.clone()]
 }
@@ -218,7 +222,9 @@ async fn new_paper(state: &AppState, dir: &Path, id: &str) -> (PathBuf, PathBuf,
         "{id}: every paragraph translated"
     );
     let own = home_text(state, text.clone()).unwrap();
-    write_document(state, main.clone(), own, None).await.unwrap();
+    write_document(state, main.clone(), own, None)
+        .await
+        .unwrap();
     assert_eq!(read(&main), text, "{id}: saved as written");
     assert!(!state.file().dirty);
     (project, main, text)
@@ -226,14 +232,25 @@ async fn new_paper(state: &AppState, dir: &Path, id: &str) -> (PathBuf, PathBuf,
 
 /// Both PDFs of the open document, and the links between PDF and source.
 async fn both_pdfs(state: &tauri::State<'_, AppState>, text: &str, sentence: &str, id: &str) {
-    let en = latex_compile(state.clone(), Lang::En, text.to_owned())
-        .await
-        .unwrap();
+    let en = latex_compile(
+        state.clone(),
+        Lang::En,
+        text.to_owned(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
     assert!(en.has_pdf, "{id}: English PDF\n{}", en.output);
     let at = text.find(sentence).unwrap();
-    let boxes = latex_forward(state.clone(), Lang::En, utf16(text, at) + 3, text.to_owned())
-        .await
-        .unwrap();
+    let boxes = latex_forward(
+        state.clone(),
+        Lang::En,
+        utf16(text, at) + 3,
+        text.to_owned(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
     assert!(!boxes.is_empty(), "{id}: the cursor is found in the PDF");
     let b = &boxes[0];
     let hit = latex_inverse(
@@ -245,6 +262,7 @@ async fn both_pdfs(state: &tauri::State<'_, AppState>, text: &str, sentence: &st
         sentence.to_owned(),
         2,
         text.to_owned(),
+        state.engine.document(),
     )
     .await
     .unwrap()
@@ -261,17 +279,34 @@ async fn both_pdfs(state: &tauri::State<'_, AppState>, text: &str, sentence: &st
         "{id}: the click selects the clicked sentence ({:?} vs {from}..{to})",
         (range.from, range.to)
     );
-    assert!(range.to - range.from < 400, "{id}: a sentence, not the document");
+    assert!(
+        range.to - range.from < 400,
+        "{id}: a sentence, not the document"
+    );
 
-    let zh = latex_compile(state.clone(), Lang::Zh, text.to_owned())
-        .await
-        .unwrap();
+    let zh = latex_compile(
+        state.clone(),
+        Lang::Zh,
+        text.to_owned(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
     assert!(zh.has_pdf, "{id}: Chinese PDF\n{}", zh.output);
     assert_eq!(zh.untranslated, 0, "{id}: every paragraph in Chinese");
-    let boxes = latex_forward(state.clone(), Lang::Zh, utf16(text, at) + 3, text.to_owned())
-        .await
-        .unwrap();
-    assert!(!boxes.is_empty(), "{id}: the paragraph is found in the Chinese PDF");
+    let boxes = latex_forward(
+        state.clone(),
+        Lang::Zh,
+        utf16(text, at) + 3,
+        text.to_owned(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !boxes.is_empty(),
+        "{id}: the paragraph is found in the Chinese PDF"
+    );
 }
 
 #[tokio::test]
@@ -303,15 +338,26 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
 
     // 2. Both PDFs, and the links between PDF and source.
     both_pdfs(&state, &text, "We assign one cleaning action", "iclr2027").await;
-    assert!(project.join(".biwrite/zh").join(main.file_name().unwrap()).with_extension("pdf").is_file());
+    assert!(
+        project
+            .join(".biwrite/zh")
+            .join(main.file_name().unwrap())
+            .with_extension("pdf")
+            .is_file()
+    );
 
     // 3. Swap, edit the Chinese of one paragraph, save: only that paragraph
     // of the English file changes; swapping back shows it.
     let swapped = swap(&state, text.clone(), false).unwrap();
     assert_eq!(swapped.snapshot.direction, Direction::ZhEn);
     let ours_zh = to_zh("We assign one cleaning action per row and test it on twelve datasets.");
-    assert!(swapped.text.contains(&ours_zh), "the Chinese of our paragraph");
-    let edited = swapped.text.replacen(&ours_zh, &format!("{ours_zh} 补充"), 1);
+    assert!(
+        swapped.text.contains(&ours_zh),
+        "the Chinese of our paragraph"
+    );
+    let edited = swapped
+        .text
+        .replacen(&ours_zh, &format!("{ours_zh} 补充"), 1);
     state.engine.update(edited.clone());
     settle(&state).await;
     let own = home_text(&state, edited.clone()).unwrap();
@@ -320,7 +366,9 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
         vec![unit_of(&text, "We assign one")],
         "only the edited paragraph of the English file changes"
     );
-    write_document(&state, main.clone(), own.clone(), None).await.unwrap();
+    write_document(&state, main.clone(), own.clone(), None)
+        .await
+        .unwrap();
     assert_eq!(read(&main), own);
     let back = swap(&state, edited, false).unwrap();
     assert_eq!(back.text, own, "swapping back shows the saved English");
@@ -336,23 +384,40 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
     );
     state.engine.update(added.clone());
     let early = swap(&state, added.clone(), true).unwrap();
-    assert!(early.text.contains("A paragraph written just before swapping."));
+    assert!(
+        early
+            .text
+            .contains("A paragraph written just before swapping.")
+    );
     settle(&state).await;
-    assert!(fills.0.lock().unwrap().is_empty(), "paused: nothing filled yet");
+    assert!(
+        fills.0.lock().unwrap().is_empty(),
+        "paused: nothing filled yet"
+    );
     assert_eq!(state.engine.continue_translation(true), 1);
     settle(&state).await;
     let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
     assert_eq!(filled.len(), 1);
-    assert!(filled[0].old.contains("A paragraph written just before swapping."));
+    assert!(
+        filled[0]
+            .old
+            .contains("A paragraph written just before swapping.")
+    );
     let now = early.text.replacen(&filled[0].old, &filled[0].new, 1);
     state.engine.update(now.clone());
     settle(&state).await;
-    assert_eq!(home_text(&state, now.clone()).unwrap(), added, "the English file is as written");
+    assert_eq!(
+        home_text(&state, now.clone()).unwrap(),
+        added,
+        "the English file is as written"
+    );
     let back = swap(&state, now, false).unwrap();
     assert_eq!(back.text, added);
     state.engine.set_auto_translate(true);
     let text = added;
-    write_document(&state, main.clone(), text.clone(), None).await.unwrap();
+    write_document(&state, main.clone(), text.clone(), None)
+        .await
+        .unwrap();
 
     // 5. The glossary: a machine-translated paragraph with the term is
     // translated again; the rest, and Chinese the author wrote while
@@ -370,10 +435,16 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
         translation: Some("十二个基准".into()),
     }]);
     settle(&state).await;
-    assert_eq!(translator.calls(), calls + 1, "one paragraph mentions the term");
+    assert_eq!(
+        translator.calls(),
+        calls + 1,
+        "one paragraph mentions the term"
+    );
     state.engine.set_glossary(Vec::new());
     settle(&state).await;
-    write_document(&state, main.clone(), text.clone(), None).await.unwrap();
+    write_document(&state, main.clone(), text.clone(), None)
+        .await
+        .unwrap();
 
     // 6. The Chinese version as a file next to the paper: reopening pairs
     // them, and an edit on either side changes one paragraph of the other.
@@ -388,14 +459,23 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
     assert_eq!(pair.paired, pair.units, "every paragraph pairs up");
     let calls = translator.calls();
     settle(&state).await;
-    assert_eq!(translator.calls(), calls, "the Chinese file is the translation, so no requests");
+    assert_eq!(
+        translator.calls(),
+        calls,
+        "the Chinese file is the translation, so no requests"
+    );
     let edited = text.replacen("do well on small tasks", "do very well on small tasks", 1);
     state.engine.update(edited.clone());
     settle(&state).await;
     let saved = write_document(&state, main.clone(), edited.clone(), None)
         .await
         .unwrap();
-    assert!(saved.mirror.as_ref().is_some_and(|m| m.written && m.changed == 1));
+    assert!(
+        saved
+            .mirror
+            .as_ref()
+            .is_some_and(|m| m.written && m.changed == 1)
+    );
     let zh_now = read(&zh_path);
     assert!(
         one_changed(&chinese, &zh_now).contains(&to_zh("do very well")),
@@ -425,19 +505,29 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
     assert_eq!(state.file().path.as_deref(), Some(main.as_path()));
     let renamed = main.with_file_name("draft.tex");
     let mirror_to = pairing::mirror_path_for(&main, &renamed, &zh_path);
-    write_document(&state, renamed.clone(), back.text.clone(), Some(mirror_to.clone()))
-        .await
-        .unwrap();
+    write_document(
+        &state,
+        renamed.clone(),
+        back.text.clone(),
+        Some(mirror_to.clone()),
+    )
+    .await
+    .unwrap();
     assert_eq!(read(&renamed), back.text);
     assert_eq!(read(&mirror_to), zh_edited);
     assert_eq!(read(&main), en_now, "the old English file is untouched");
-    assert_eq!(read(&zh_path), zh_edited, "the old Chinese file is untouched");
+    assert_eq!(
+        read(&zh_path),
+        zh_edited,
+        "the old Chinese file is untouched"
+    );
 
     // 8. A section in its own file: opened, built through the main file, and
     // a click in the PDF lands in the section.
     let section = project.join("sections").join("background.tex");
     std::fs::create_dir_all(section.parent().unwrap()).unwrap();
-    let section_text = "\\section{Background}\nPrior work cleans tables before training the model.\n";
+    let section_text =
+        "\\section{Background}\nPrior work cleans tables before training the model.\n";
     std::fs::write(&section, section_text).unwrap();
     let with_input = en_now.replacen(
         "\\section{Our study}\n",
@@ -447,12 +537,18 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
     open_path(&state, main.clone()).await.unwrap();
     state.engine.update(with_input.clone());
     settle(&state).await;
-    write_document(&state, main.clone(), with_input, None).await.unwrap();
+    write_document(&state, main.clone(), with_input, None)
+        .await
+        .unwrap();
     let view = open_path(&state, section.clone()).await.unwrap();
     assert!(view.pair.is_none());
     settle(&state).await;
     both_pdfs(&state, section_text, "Prior work cleans tables", "section").await;
-    assert!(project.join(".biwrite/zh/sections/background.tex").is_file());
+    assert!(
+        project
+            .join(".biwrite/zh/sections/background.tex")
+            .is_file()
+    );
 
     // 9. A table and a plot from the assistant, inserted the way the window
     // inserts them: after a paragraph, with the packages they need added to
@@ -470,18 +566,34 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
     let missing = biwrite_latex::packages::missing(figures, &loaded);
     let mut sorted = missing.clone();
     sorted.sort();
-    assert_eq!(sorted, ["booktabs", "pgfplots"], "the ICLR template loads neither");
+    assert_eq!(
+        sorted,
+        ["booktabs", "pgfplots"],
+        "the ICLR template loads neither"
+    );
     let after = main_text.find("We assign one").unwrap();
     let end = after + main_text[after..].find("\n\n").unwrap();
     let mut with_figures = main_text.clone();
     with_figures.insert_str(end, &format!("\n\n{figures}"));
     let at = with_figures.find("\\begin{document}").unwrap();
-    let lines: String = missing.iter().map(|p| format!("\\usepackage{{{p}}}\n")).collect();
+    let lines: String = missing
+        .iter()
+        .map(|p| format!("\\usepackage{{{p}}}\n"))
+        .collect();
     with_figures.insert_str(at, &lines);
     state.engine.update(with_figures.clone());
     settle(&state).await;
-    write_document(&state, main.clone(), with_figures.clone(), None).await.unwrap();
-    let built = latex_compile(state.clone(), Lang::En, with_figures.clone()).await.unwrap();
+    write_document(&state, main.clone(), with_figures.clone(), None)
+        .await
+        .unwrap();
+    let built = latex_compile(
+        state.clone(),
+        Lang::En,
+        with_figures.clone(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
     assert!(built.has_pdf, "{}", built.output);
     let bad: Vec<_> = built
         .issues
@@ -493,12 +605,26 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
         })
         .map(|i| i.message.clone())
         .collect();
-    assert!(bad.is_empty(), "the inserted table and plot compile: {bad:?}");
+    assert!(
+        bad.is_empty(),
+        "the inserted table and plot compile: {bad:?}"
+    );
     // Once loaded, nothing is missing any more.
     let (loaded, _) = crate::latex_commands::document_packages(&state, &with_figures).unwrap();
     assert!(biwrite_latex::packages::missing(figures, &loaded).is_empty());
-    let zh = latex_compile(state.clone(), Lang::Zh, with_figures).await.unwrap();
-    assert!(zh.has_pdf, "the Chinese PDF with the figures: {}", zh.output);
+    let zh = latex_compile(
+        state.clone(),
+        Lang::Zh,
+        with_figures,
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        zh.has_pdf,
+        "the Chinese PDF with the figures: {}",
+        zh.output
+    );
 
     // 10. The project as a template, imported again and used.
     let zip = dir.join("lab.zip");
@@ -532,12 +658,22 @@ async fn workflow_clicks_in_a_real_paper_land_in_its_sections() {
     let state = app.state::<AppState>();
     let view = open_path(&state, main.clone()).await.unwrap();
     settle(&state).await;
-    let built = latex_compile(state.clone(), Lang::En, view.text.clone())
-        .await
-        .unwrap();
+    let built = latex_compile(
+        state.clone(),
+        Lang::En,
+        view.text.clone(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
     assert!(built.has_pdf, "{}", built.output);
     let mut checked = 0;
-    for name in ["01_intro.tex", "03_problem.tex", "04_method.tex", "05_experiments.tex"] {
+    for name in [
+        "01_intro.tex",
+        "03_problem.tex",
+        "04_method.tex",
+        "05_experiments.tex",
+    ] {
         let section = root.join("sections_en").join(name);
         if !section.is_file() {
             continue;
@@ -547,16 +683,27 @@ async fn workflow_clicks_in_a_real_paper_land_in_its_sections() {
         // A plain sentence of prose: a long line without commands.
         let Some(sentence) = text
             .lines()
-            .filter(|l| l.len() > 80 && !l.contains('\\') && !l.contains('$') && !l.starts_with('%'))
+            .filter(|l| {
+                l.len() > 80 && !l.contains('\\') && !l.contains('$') && !l.starts_with('%')
+            })
             .find_map(|l| l.split(". ").find(|s| s.len() > 50 && s.is_ascii()))
         else {
             continue;
         };
         let at = text.find(sentence).unwrap();
-        let boxes = latex_forward(state.clone(), Lang::En, utf16(&text, at) + 3, text.clone())
-            .await
-            .unwrap();
-        assert!(!boxes.is_empty(), "{name}: the sentence is found in the PDF");
+        let boxes = latex_forward(
+            state.clone(),
+            Lang::En,
+            utf16(&text, at) + 3,
+            text.clone(),
+            state.engine.document(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !boxes.is_empty(),
+            "{name}: the sentence is found in the PDF"
+        );
         let b = &boxes[0];
         let hit = latex_inverse(
             state.clone(),
@@ -567,6 +714,7 @@ async fn workflow_clicks_in_a_real_paper_land_in_its_sections() {
             sentence.to_owned(),
             sentence.len() / 3,
             text.clone(),
+            state.engine.document(),
         )
         .await
         .unwrap()
@@ -677,9 +825,23 @@ async fn workflow_figures_the_assistant_writes_compile_in_every_template() {
         let (project, main, text) = new_paper(&state, &dir, id).await;
         std::fs::create_dir_all(project.join("figures")).unwrap();
         std::fs::write(project.join("figures/sample.png"), PNG).unwrap();
-        let before = latex_compile(state.clone(), Lang::En, text.clone()).await.unwrap();
+        let before = latex_compile(
+            state.clone(),
+            Lang::En,
+            text.clone(),
+            state.engine.document(),
+        )
+        .await
+        .unwrap();
         assert!(before.has_pdf, "{id}: {}", before.output);
-        let before_zh = latex_compile(state.clone(), Lang::Zh, text.clone()).await.unwrap();
+        let before_zh = latex_compile(
+            state.clone(),
+            Lang::Zh,
+            text.clone(),
+            state.engine.document(),
+        )
+        .await
+        .unwrap();
 
         // Inserted as the window does: after a paragraph, with the missing
         // packages before \begin{document}.
@@ -691,24 +853,44 @@ async fn workflow_figures_the_assistant_writes_compile_in_every_template() {
         let mut with = text.clone();
         with.insert_str(end, &format!("\n\n{FIGURES}"));
         let at = with.find("\\begin{document}").unwrap();
-        let lines: String = missing.iter().map(|p| format!("\\usepackage{{{p}}}\n")).collect();
+        let lines: String = missing
+            .iter()
+            .map(|p| format!("\\usepackage{{{p}}}\n"))
+            .collect();
         with.insert_str(at, &lines);
         state.engine.update(with.clone());
         settle(&state).await;
-        write_document(&state, main.clone(), with.clone(), None).await.unwrap();
+        write_document(&state, main.clone(), with.clone(), None)
+            .await
+            .unwrap();
 
-        let after = latex_compile(state.clone(), Lang::En, with.clone()).await.unwrap();
+        let after = latex_compile(
+            state.clone(),
+            Lang::En,
+            with.clone(),
+            state.engine.document(),
+        )
+        .await
+        .unwrap();
         assert!(after.has_pdf, "{id}: {}", after.output);
         let new: Vec<String> = errors(&after.issues)
             .into_iter()
             .filter(|e| !errors(&before.issues).contains(e))
             .collect();
-        assert!(new.is_empty(), "{id}: the figures add errors {new:?} (packages added {missing:?})");
+        assert!(
+            new.is_empty(),
+            "{id}: the figures add errors {new:?} (packages added {missing:?})"
+        );
         let (loaded, _) = crate::latex_commands::document_packages(&state, &with).unwrap();
-        assert!(biwrite_latex::packages::missing(FIGURES, &loaded).is_empty(), "{id}");
+        assert!(
+            biwrite_latex::packages::missing(FIGURES, &loaded).is_empty(),
+            "{id}"
+        );
 
         // The Chinese PDF carries them too.
-        let zh = latex_compile(state.clone(), Lang::Zh, with).await.unwrap();
+        let zh = latex_compile(state.clone(), Lang::Zh, with, state.engine.document())
+            .await
+            .unwrap();
         assert!(zh.has_pdf, "{id} Chinese: {}", zh.output);
         let zh_new: Vec<String> = errors(&zh.issues)
             .into_iter()

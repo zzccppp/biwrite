@@ -49,6 +49,9 @@ export interface SessionUsage {
 }
 
 export interface Snapshot {
+  /** Changes when the document is replaced (a file opened, a swap); text
+   * sent to Rust carries it, and text for an earlier document is refused. */
+  document: number;
   revision: number;
   mode: Mode;
   direction: Direction;

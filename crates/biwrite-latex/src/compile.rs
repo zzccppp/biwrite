@@ -5,7 +5,7 @@
 //! compile future is dropped or times out, so cancelling a build leaves no
 //! engine running.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -64,6 +64,11 @@ pub enum CompileError {
     NoEngine(&'static str),
     #[error("{0} does not exist")]
     NoRoot(String),
+    #[error(
+        "{0} can't be compiled: rename it to letters, digits, spaces and . _ - + , ( ) [ ] @ = ' \
+         only, not starting with '-' (other characters can run commands)"
+    )]
+    UnsafeName(String),
     #[error("could not start {tool}: {source}")]
     Spawn {
         tool: String,
@@ -85,6 +90,12 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
     let dir = job.dir.clone();
     if !dir.join(&job.root).is_file() {
         return Err(CompileError::NoRoot(job.root.display().to_string()));
+    }
+    // The root comes from the project (`% !TEX root = …`, a file name), so
+    // a project could name a file `-shell-escape` and have it taken for
+    // that option.
+    if unsafe_name(&job.root) {
+        return Err(CompileError::UnsafeName(job.root.display().to_string()));
     }
     if !tc.has(job.engine) {
         return Err(CompileError::NoEngine(job.engine.as_str()));
@@ -279,6 +290,29 @@ async fn direct(
     })
 }
 
+/// A root a tool could take for something other than a file name. TeX reads
+/// a leading `-` as an option, `&` as a format and `\` as code, and latexmk
+/// runs the engine through the shell with the name in double quotes, where
+/// `` ` `` and `$` run commands. So each part of the path, and the stem
+/// (which goes to BibTeX and Biber on its own), may hold only letters,
+/// digits and a few plain marks, and may not start with `-`.
+fn unsafe_name(root: &Path) -> bool {
+    let plain = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('-')
+            && part
+                .chars()
+                .all(|c| c.is_alphanumeric() || " ._-+,()[]@='".contains(c))
+    };
+    let parts = root.components().all(|c| match c {
+        Component::Normal(part) => part.to_str().is_some_and(plain),
+        Component::CurDir => true,
+        _ => false,
+    });
+    let stem = root.file_stem().and_then(|s| s.to_str()).is_some_and(plain);
+    !(parts && stem)
+}
+
 fn wants_rerun(log: &str) -> bool {
     log.contains("Rerun to get")
         || log.contains("Label(s) may have changed")
@@ -353,7 +387,12 @@ pub(crate) fn command(tc: &Toolchain, program: &Path, args: &[String], dir: &Pat
     #[cfg(unix)]
     cmd.process_group(0);
     #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        // Windows looks for a program in the current folder (the project)
+        // before `PATH`: a `pdflatex.exe` shipped with a project would run.
+        cmd.env("NoDefaultCurrentDirectoryInExePath", "1");
+    }
     cmd
 }
 
@@ -446,5 +485,41 @@ mod tests {
             "Running bibtex\nI couldn't open database file refs.bib\nbibtex: Error found\nLatexmk: done\n",
         );
         assert_eq!(issue.message, "bibtex: Error found");
+    }
+
+    #[test]
+    fn names_a_tool_would_misread_are_refused() {
+        for bad in [
+            "-shell-escape",
+            "-pdflatex=touch x.tex",
+            "&latex",
+            "\\input{x}.tex",
+            "*main.tex",
+            "sub/-norc.tex",
+            "a\nb.tex",
+            "`touch x`.tex",
+            "$(touch x).tex",
+            "a\"b.tex",
+            "50%.tex",
+            "~x.tex",
+            "a;b.tex",
+            "../main.tex",
+            "/abs/main.tex",
+            "",
+        ] {
+            assert!(unsafe_name(Path::new(bad)), "{bad}");
+        }
+        for good in [
+            "main.tex",
+            "sub/main.tex",
+            "paper-2.tex",
+            "论文.tex",
+            "my paper.tex",
+            "Bob's paper (v2).tex",
+            ".biwrite/zh/main.tex",
+            "./main.tex",
+        ] {
+            assert!(!unsafe_name(Path::new(good)), "{good}");
+        }
     }
 }

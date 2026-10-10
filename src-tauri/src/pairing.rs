@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use biwrite_core::lang::{chinese_share, written_in};
+use biwrite_core::lang::{chinese_of_two, written_in};
 use biwrite_core::pair::{Edit, Origin, align, patch, units};
 use biwrite_core::{Direction, Mode, SegmentId, TextFile};
 use serde::Serialize;
@@ -122,7 +122,10 @@ pub fn counterpart(path: &Path) -> Option<PathBuf> {
 
 /// Pair `text` (the open document, at `path`) with the mirror at
 /// `mirror_path`, and load the engine with the mirror's paragraphs as
-/// translations. The language with more Chinese characters is Chinese.
+/// translations. The two must plainly read as two languages, the one with
+/// more Chinese being Chinese: a copy in the same language (a translation
+/// just started with `cp paper.tex paper_zh.tex`) is never written into as
+/// the translation.
 pub fn load_paired(
     state: &AppState,
     path: &Path,
@@ -132,6 +135,17 @@ pub fn load_paired(
     mirror: TextFile,
 ) -> CommandResult<(biwrite_engine::Snapshot, PairState)> {
     let other = mirror.text().to_owned();
+    let direction = match chinese_of_two(text, &other, mode) {
+        Some(true) => Direction::ZhEn,
+        Some(false) => Direction::EnZh,
+        None => {
+            return Err(fail(format!(
+                "{} and {} are not one in English and one in Chinese",
+                display_name(Some(path)),
+                display_name(Some(&mirror_path)),
+            )));
+        }
+    };
     let pairing = align(text, &other, mode);
     if pairing.pairs.is_empty() || pairing.coverage() < MIN_COVERAGE {
         return Err(fail(format!(
@@ -142,11 +156,6 @@ pub fn load_paired(
             pairing.a_units.max(pairing.b_units)
         )));
     }
-    let direction = if chinese_share(text) > chinese_share(&other) {
-        Direction::ZhEn
-    } else {
-        Direction::EnZh
-    };
     let (ua, ub) = (units(text, mode), units(&other, mode));
     let known: Vec<(usize, String)> = pairing
         .pairs
@@ -205,7 +214,9 @@ pub fn open(
     // A Chinese file is the Chinese side: translated into English.
     let alone = |state: &AppState, text: &str| {
         let home = written_in(text, mode).unwrap_or_default();
-        state.engine.load_known(text.to_owned(), mode, home, Vec::new())
+        state
+            .engine
+            .load_known(text.to_owned(), mode, home, Vec::new())
     };
     let snapshot = match mirror {
         Some((mirror_path, mirror)) => {
@@ -455,6 +466,7 @@ pub async fn import_mirror(
     window: WebviewWindow,
     state: tauri::State<'_, AppState>,
     text: String,
+    document: u64,
 ) -> CommandResult<Option<SessionView>> {
     let Some(path) = state.file().path.clone() else {
         return Err(fail(
@@ -476,6 +488,11 @@ pub async fn import_mirror(
         ));
     }
     let mirror = files::read_text_file(mirror_path.clone()).await?;
+    let _no_save_meanwhile = state.save_lock.lock().await;
+    state.sync_text(document, &text)?;
+    if state.file().path.as_ref() != Some(&path) {
+        return Err(CommandError::Engine(biwrite_engine::EngineError::Stale));
+    }
     let mode = state.engine.mode();
     // The file's own text: the editor's, or composed from the translations
     // while the other language is edited.
@@ -497,7 +514,15 @@ pub async fn import_mirror(
 /// Stop writing to the mirror. Its paragraphs stay as the translations.
 #[tauri::command]
 pub async fn close_mirror(state: tauri::State<'_, AppState>) -> CommandResult<()> {
-    if let Some(pair) = state.file().pair.take() {
+    let mut fs = state.file();
+    // After a swap, edits of the other file may live only here.
+    if let Some(pair) = fs.pair.as_ref().filter(|p| p.text != p.file.text()) {
+        return Err(fail(format!(
+            "{} has unsaved changes: save first, then stop pairing.",
+            display_name(Some(&pair.path))
+        )));
+    }
+    if let Some(pair) = fs.pair.take() {
         log::info!("unpaired {}", display_name(Some(&pair.path)));
     }
     Ok(())
@@ -506,15 +531,15 @@ pub async fn close_mirror(state: tauri::State<'_, AppState>) -> CommandResult<()
 /// Write the mirror now (after its translations arrived).
 #[tauri::command]
 pub async fn write_mirror(state: tauri::State<'_, AppState>) -> CommandResult<Option<MirrorSaved>> {
+    let _one_at_a_time = state.save_lock.lock().await;
     save_mirror(&state).await
 }
 
 /// Swap in a pair: the mirror (with the current translations) becomes the
 /// edited document and the edited text becomes the mirror.
+///
+/// The engine holds `text` already ([`AppState::sync_text`]).
 pub fn swap(state: &AppState, text: String) -> CommandResult<SessionView> {
-    if state.engine.text() != text {
-        state.engine.update(text.clone());
-    }
     let mode = state.engine.mode();
     let (new_text, links) = {
         let fs = state.file();
@@ -573,7 +598,8 @@ pub fn swap(state: &AppState, text: String) -> CommandResult<SessionView> {
         fs.path = Some(old_pair.path);
         fs.file = old_pair.file;
         fs.home = direction;
-        fs.dirty = new_text != fs.file.text();
+        // Unsaved edits of the side swapped away live on in the pair.
+        fs.dirty = new_text != fs.file.text() || text != old_file.text();
         fs.pair = old_path.map(|path| PairState {
             path,
             file: old_file,

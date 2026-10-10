@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use biwrite_core::compose::fit;
 use biwrite_core::glossary::{self, Glossary};
+use biwrite_core::lang::moved_into;
 use biwrite_core::utf16::byte_to_utf16;
 use biwrite_core::{ContentHash, Direction, DocumentModel, Protector, SegmentId};
 use tokio::task::AbortHandle;
@@ -177,6 +178,9 @@ pub(crate) struct State {
     /// originals share the hash. Per-segment seeds live in [`SegMeta::seed`].
     pub seeds: HashMap<ContentHash, Option<String>>,
     pub meta: HashMap<SegmentId, SegMeta>,
+    /// Bumped whenever the document is replaced (a file loaded, a swap), so
+    /// text sent for an earlier one can be refused.
+    pub document: u64,
     pub revision: u64,
     pub version_seq: u64,
     pub queue: VecDeque<SegmentId>,
@@ -200,6 +204,7 @@ impl State {
             direction: Direction::default(),
             seeds: HashMap::new(),
             meta: HashMap::new(),
+            document: 0,
             revision: 0,
             version_seq: 0,
             queue: VecDeque::new(),
@@ -265,6 +270,12 @@ impl State {
     /// `translation` (into the edited language): the editor is sent the new
     /// text (a [`Fill`]), and once it arrives the paragraph's translation is
     /// its present text, exactly.
+    ///
+    /// Refused when the paragraph turns out to be in the edited language
+    /// already (taken for the other one by mistake, like Chinese dense with
+    /// English names): the "translation" didn't change the language, or the
+    /// paragraph has an exact original that isn't its own text. It is then
+    /// translated the usual way round instead, and its original kept.
     pub fn fill(&mut self, id: SegmentId, translation: &str) {
         let Some(seg) = self.doc.get(id) else {
             return;
@@ -273,6 +284,16 @@ impl State {
         let (range, content) = (seg.segment.range.clone(), seg.segment.content.clone());
         let present = text[content.clone()].to_owned();
         let shaped = fit(translation.trim(), seg.kind(), self.doc.mode(), &present);
+        let current = seg.hash;
+        let has_original = self.meta.get(&id).is_some_and(|m| {
+            m.exact
+                && m.translated_hash == Some(current)
+                && m.translation.as_deref() != Some(present.as_str())
+        });
+        if has_original || !moved_into(self.direction, &present, &shaped, self.doc.mode()) {
+            self.refuse_fill(id, current);
+            return;
+        }
         let fill = (!shaped.trim().is_empty() && shaped != present).then(|| Fill {
             id,
             old: text[range.clone()].to_owned(),
@@ -294,7 +315,6 @@ impl State {
                 })
                 .or_insert_with(|| Some(present.clone()));
         }
-        let current = seg.hash;
         self.update(id, |m| {
             m.fill = None;
             m.forced = false;
@@ -308,6 +328,29 @@ impl State {
             }
         });
         self.fills.extend(fill);
+    }
+
+    /// The paragraph `id` (with hash `current`) is in the edited language
+    /// after all: no fill. It keeps an up-to-date translation; without one it
+    /// is translated the usual way round.
+    fn refuse_fill(&mut self, id: SegmentId, current: ContentHash) {
+        let mut queue = false;
+        let auto = self.settings.auto_translate;
+        self.update(id, |m| {
+            m.fill = None;
+            m.partial = None;
+            m.error = None;
+            if m.translated_hash == Some(current) {
+                m.status = SegmentStatus::Translated;
+                m.forced = false;
+            } else {
+                queue = m.forced || auto;
+                m.status = SegmentStatus::Stale;
+            }
+        });
+        if queue {
+            self.enqueue_all(&[id], Priority::Normal);
+        }
     }
 
     /// Set a status (and clear transient fields) only if it differs.
@@ -432,6 +475,7 @@ impl State {
             self.take_touched()
         };
         Snapshot {
+            document: self.document,
             revision: self.revision,
             mode: self.doc.mode(),
             direction: self.direction,

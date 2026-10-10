@@ -63,13 +63,13 @@ export class LatexStore {
     }
   }
 
-  /** Build one PDF from the editor's `text`. `null` when it was replaced by a newer build or failed to run. */
-  async compile(lang: PdfLang, text: string): Promise<BuildView | null> {
+  /** Build one PDF from the editor's `text` (of `document`). `null` when it was replaced by a newer build or failed to run. */
+  async compile(lang: PdfLang, text: string, document: number): Promise<BuildView | null> {
     const n = ++this.#started[lang];
     this.building[lang] = true;
     this.failure[lang] = null;
     try {
-      const build = await latexIpc.compile(lang, text);
+      const build = await latexIpc.compile(lang, text, document);
       if (n === this.#started[lang]) this.builds[lang] = build;
       return build;
     } catch (err) {

@@ -103,9 +103,10 @@ pub async fn export_bilingual(
     window: WebviewWindow,
     state: State<'_, AppState>,
     text: String,
+    document: u64,
 ) -> CommandResult<Option<ExportView>> {
     // Normally a no-op: the frontend flushes edits first.
-    state.engine.update(text);
+    state.sync_text(document, &text)?;
     let current = state.file().path.clone();
     let suggested = format!("{}.bilingual.md", file_stem(current.as_deref()));
     let dir = current.as_deref().and_then(Path::parent);

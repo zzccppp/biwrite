@@ -39,8 +39,12 @@ fn temp(name: &str) -> PathBuf {
 fn open(state: &AppState, path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
     let file = TextFile::decode(std::fs::read(path).unwrap()).unwrap();
-    let mirror = pairing::counterpart(path)
-        .map(|m| (m.clone(), TextFile::decode(std::fs::read(m).unwrap()).unwrap()));
+    let mirror = pairing::counterpart(path).map(|m| {
+        (
+            m.clone(),
+            TextFile::decode(std::fs::read(m).unwrap()).unwrap(),
+        )
+    });
     pairing::open(state, path.to_owned(), file, mirror);
 }
 
@@ -95,9 +99,12 @@ async fn a_chinese_file_taken_for_english_is_read_as_chinese() {
     let state = app_state(&dir);
     open(&state, &dir.join("paper.tex"), ZH_PAPER);
     // As before this version: every file was taken for English.
-    state
-        .engine
-        .load_known(ZH_PAPER.into(), biwrite_core::Mode::Latex, Direction::EnZh, Vec::new());
+    state.engine.load_known(
+        ZH_PAPER.into(),
+        biwrite_core::Mode::Latex,
+        Direction::EnZh,
+        Vec::new(),
+    );
     state.file().home = Direction::EnZh;
     settle(&state).await;
 
@@ -148,7 +155,11 @@ async fn reading_again_while_swapped_starts_from_the_files_text() {
             .is_none()
     );
     let s = retarget(&state, swapped.text, false).unwrap().unwrap();
-    assert_eq!(state.engine.text(), EN_PAPER, "the file's own text comes back first");
+    assert_eq!(
+        state.engine.text(),
+        EN_PAPER,
+        "the file's own text comes back first"
+    );
     assert_eq!(s.direction, Direction::ZhEn);
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -204,30 +215,59 @@ async fn build_both(paper: &str, name: &str) {
     };
     let other = if own == Lang::Zh { Lang::En } else { Lang::Zh };
 
-    let disk = latex_compile(state.clone(), own, paper.to_owned())
-        .await
-        .unwrap();
+    let disk = latex_compile(
+        state.clone(),
+        own,
+        paper.to_owned(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
     assert!(disk.has_pdf, "{own:?} PDF from disk: {}", disk.output);
     assert!(dir.join("main.pdf").is_file());
     assert_eq!(disk.untranslated, 0);
 
-    let translated = latex_compile(state.clone(), other, paper.to_owned())
-        .await
-        .unwrap();
+    let translated = latex_compile(
+        state.clone(),
+        other,
+        paper.to_owned(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
     assert!(translated.has_pdf, "{other:?} PDF: {}", translated.output);
-    let folder = if other == Lang::En { ".biwrite/en" } else { ".biwrite/zh" };
+    let folder = if other == Lang::En {
+        ".biwrite/en"
+    } else {
+        ".biwrite/zh"
+    };
     assert!(dir.join(folder).join("main.pdf").is_file(), "{folder}");
     // The translated PDF reads like the translation, not the file.
     let built = std::fs::read_to_string(dir.join(folder).join("main.tex")).unwrap();
-    assert!(!built.contains("We assign one") && !built.contains("本文提出"), "{built}");
+    assert!(
+        !built.contains("We assign one") && !built.contains("本文提出"),
+        "{built}"
+    );
 
     // The cursor's paragraph is found in both.
-    let at = paper.find(if own == Lang::Zh { "本文提出" } else { "We assign" }).unwrap();
+    let at = paper
+        .find(if own == Lang::Zh {
+            "本文提出"
+        } else {
+            "We assign"
+        })
+        .unwrap();
     let offset = paper[..at].encode_utf16().count();
     for lang in [own, other] {
-        let boxes = latex_forward(state.clone(), lang, offset, paper.to_owned())
-            .await
-            .unwrap();
+        let boxes = latex_forward(
+            state.clone(),
+            lang,
+            offset,
+            paper.to_owned(),
+            state.engine.document(),
+        )
+        .await
+        .unwrap();
         assert!(!boxes.is_empty(), "{lang:?}: no box for the cursor");
     }
     std::fs::remove_dir_all(&dir).unwrap();
@@ -243,4 +283,58 @@ async fn a_chinese_file_builds_its_english_pdf_from_the_translation() {
 #[ignore = "needs a TeX distribution"]
 async fn an_english_file_builds_its_chinese_pdf_from_the_translation() {
     build_both(EN_PAPER, "tex-en").await;
+}
+
+/// Text the editor sent before a swap (a save pressed during it) is
+/// refused instead of being applied to the swapped document.
+#[tokio::test]
+async fn text_sent_before_a_swap_is_refused() {
+    let dir = temp("stale");
+    let state = app_state(&dir);
+    open(&state, &dir.join("paper.tex"), EN_PAPER);
+    settle(&state).await;
+    let before = state.engine.document();
+    let view = crate::commands::swap(&state, EN_PAPER.into(), false).unwrap();
+    assert_eq!(view.snapshot.document, state.engine.document());
+    assert!(state.sync_text(before, EN_PAPER).is_err());
+    assert_eq!(
+        state.engine.text(),
+        view.text,
+        "the swapped document is untouched"
+    );
+    assert_eq!(state.engine.direction(), Direction::ZhEn);
+    assert!(state.sync_text(view.snapshot.document, &view.text).is_ok());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Swapping back to the file's own language never keeps paragraphs in the
+/// other language: the file would be saved with them.
+#[tokio::test]
+async fn swapping_back_home_waits_for_every_translation() {
+    let dir = temp("back");
+    let state = app_state(&dir);
+    open(&state, &dir.join("paper.tex"), EN_PAPER);
+    settle(&state).await;
+    let swapped = crate::commands::swap(&state, EN_PAPER.into(), false).unwrap();
+    // A paragraph of the other language edited; its translation is on its way.
+    let edited = format!(
+        "{}\n",
+        swapped
+            .text
+            .trim_end()
+            .replacen("\\end{document}", "Extra words.\n\\end{document}", 1)
+    );
+    state.engine.update(edited.clone());
+    assert!(state.engine.pending() > 0);
+    let Err(err) = crate::commands::swap(&state, edited.clone(), true) else {
+        panic!("swapped back with a paragraph still in Chinese");
+    };
+    assert!(err.to_string().contains("not translated yet"), "{err}");
+    assert_eq!(state.engine.direction(), Direction::ZhEn, "still swapped");
+    // Once translated, it swaps back, and the file reads in its language.
+    settle(&state).await;
+    let back = crate::commands::swap(&state, edited, true).unwrap();
+    assert_eq!(state.engine.direction(), Direction::EnZh);
+    assert!(back.text.contains("\\section{Introduction}"));
+    std::fs::remove_dir_all(&dir).unwrap();
 }

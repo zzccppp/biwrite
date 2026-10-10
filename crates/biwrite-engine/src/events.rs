@@ -67,6 +67,9 @@ pub struct SessionUsage {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    /// Changes when the document is replaced (a file loaded, a swap): text
+    /// from the editor is accepted only with the current number.
+    pub document: u64,
     /// Increases with every text/mode change.
     pub revision: u64,
     pub mode: Mode,

@@ -48,26 +48,31 @@ import type {
 export const ipc = {
   getSession: () => invoke<SessionView>("get_session"),
   openFile: () => invoke<SessionView | null>("open_file"),
-  saveFile: (text: string) => invoke<SavedView | null>("save_file", { text }),
-  saveFileAs: (text: string) => invoke<SavedView | null>("save_file_as", { text }),
-  updateDocument: (text: string) => invoke<Snapshot>("update_document", { text }),
-  setMode: (mode: Mode, text: string) => invoke<Snapshot>("set_mode", { mode, text }),
+  // `document` (Snapshot.document) says which document `text` is for.
+  saveFile: (text: string, document: number) => invoke<SavedView | null>("save_file", { text, document }),
+  saveFileAs: (text: string, document: number) => invoke<SavedView | null>("save_file_as", { text, document }),
+  /** `null`: the text was for a document replaced meanwhile, and was dropped. */
+  updateDocument: (text: string, document: number) =>
+    invoke<Snapshot | null>("update_document", { text, document }),
+  setMode: (mode: Mode, text: string, document: number) =>
+    invoke<Snapshot | null>("set_mode", { mode, text, document }),
   retranslateSegment: (id: number) => invoke<void>("retranslate_segment", { id }),
   retranslateAll: () => invoke<void>("retranslate_all"),
   setAutoTranslate: (on: boolean) => invoke<void>("set_auto_translate", { on }),
   setDirty: (dirty: boolean) => invoke<void>("set_dirty", { dirty }),
   /** `keep`: swap now, untranslated paragraphs stay as they are. */
-  swapLanguages: (text: string, keep = false) => invoke<SessionView>("swap_languages", { text, keep }),
+  swapLanguages: (text: string, document: number, keep = false) =>
+    invoke<SessionView>("swap_languages", { text, document, keep }),
   /**
    * Read the file as written in the other language (a Chinese file opened
    * as English). `onlyIfNeeded`: only when its text plainly is; `null`
    * when nothing changed.
    */
-  retargetLanguage: (text: string, onlyIfNeeded: boolean) =>
-    invoke<SessionView | null>("retarget_language", { text, onlyIfNeeded }),
+  retargetLanguage: (text: string, document: number, onlyIfNeeded: boolean) =>
+    invoke<SessionView | null>("retarget_language", { text, document, onlyIfNeeded }),
   /** Translate what is left; returns how many paragraphs were taken up. */
-  continueTranslation: (text: string) => invoke<number>("continue_translation", { text }),
-  exportBilingual: (text: string) => invoke<ExportView | null>("export_bilingual", { text }),
+  continueTranslation: (text: string, document: number) => invoke<number>("continue_translation", { text, document }),
+  exportBilingual: (text: string, document: number) => invoke<ExportView | null>("export_bilingual", { text, document }),
   /** Open a known link ("skill", "repo", "releases") in the browser. */
   openLink: (name: "skill" | "repo" | "releases") => invoke<void>("open_link", { name }),
   /** The user guide on GitHub, in the browser. */
@@ -151,17 +156,26 @@ export const latexIpc = {
   /** Open another .tex file of the project (relative to its folder). */
   open: (file: string) => invoke<SessionView | null>("latex_open", { file }),
   openFolder: () => invoke<SessionView | null>("latex_open_folder"),
-  compile: (lang: PdfLang, text: string) => invoke<BuildView>("latex_compile", { lang, text }),
+  compile: (lang: PdfLang, text: string, document: number) =>
+    invoke<BuildView>("latex_compile", { lang, text, document }),
   cancel: (lang: PdfLang) => invoke<void>("latex_cancel", { lang }),
   pdf: (lang: PdfLang) => invoke<ArrayBuffer>("latex_pdf", { lang }),
   revealPdf: (lang: PdfLang) => invoke<void>("latex_reveal_pdf", { lang }),
   savePdf: (lang: PdfLang) => invoke<string | null>("latex_save_pdf", { lang }),
   /** Save the Chinese version as a .tex that compiles on its own. */
-  exportTex: (text: string) => invoke<string | null>("latex_export_tex", { text }),
-  inverse: (lang: PdfLang, page: number, x: number, y: number, span: string, click: number, text: string) =>
-    invoke<SyncHit | null>("latex_inverse", { lang, page, x, y, span, click, text }),
-  forward: (lang: PdfLang, offset: number, text: string) =>
-    invoke<PdfBox[]>("latex_forward", { lang, offset, text }),
+  exportTex: (text: string, document: number) => invoke<string | null>("latex_export_tex", { text, document }),
+  inverse: (
+    lang: PdfLang,
+    page: number,
+    x: number,
+    y: number,
+    span: string,
+    click: number,
+    text: string,
+    document: number,
+  ) => invoke<SyncHit | null>("latex_inverse", { lang, page, x, y, span, click, text, document }),
+  forward: (lang: PdfLang, offset: number, text: string, document: number) =>
+    invoke<PdfBox[]>("latex_forward", { lang, offset, text, document }),
   locate: (text: string, line: number, span: string, click: number) =>
     invoke<Range16>("latex_locate", { text, line, span, click }),
   goto: (lang: PdfLang, line: number, text: string) => invoke<Range16 | null>("latex_goto", { lang, line, text }),
@@ -176,7 +190,7 @@ export const latexIpc = {
 /** The open document's pair: a file in the other language kept in step. */
 export const pairIpc = {
   /** Pair with a file the user picks (its paragraphs become the translations). */
-  importMirror: (text: string) => invoke<SessionView | null>("import_mirror", { text }),
+  importMirror: (text: string, document: number) => invoke<SessionView | null>("import_mirror", { text, document }),
   close: () => invoke<void>("close_mirror"),
   /** Write the paired file once its translations arrived. */
   write: () => invoke<MirrorSaved | null>("write_mirror"),

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use biwrite_core::glossary::Glossary;
-use biwrite_core::lang::paragraph_written_in;
+use biwrite_core::lang::{moved_into, plainly_written_in};
 use biwrite_core::{ComposeError, ContentHash, Direction, GlossaryEntry, Mode, SegmentId};
 use tokio::runtime::Handle;
 
@@ -31,6 +31,11 @@ pub enum EngineError {
         .index + 1
     )]
     UnsafeTranslation { index: usize },
+    #[error(
+        "the document changed while this was on its way (another file was opened or the \
+         languages were swapped); try again"
+    )]
+    Stale,
 }
 
 impl From<ComposeError> for EngineError {
@@ -122,7 +127,9 @@ impl Inner {
         };
         let forced = meta.forced;
         match meta.fill {
-            Some(fill) if fill == hash => return self.reconcile_fill(st, id, hash, content, forced),
+            Some(fill) if fill == hash => {
+                return self.reconcile_fill(st, id, hash, content, forced);
+            }
             // Edited since: a paragraph of the edited language like any other.
             Some(_) => st.update(id, |m| m.fill = None),
             None => {}
@@ -284,6 +291,7 @@ impl Engine {
         st.meta.clear();
         st.direction = Direction::EnZh;
         st.seeds.clear();
+        st.document += 1;
         st.doc = biwrite_core::DocumentModel::new(st.doc.next_id());
         st.doc.apply(text, mode);
         self.inner.reconcile(&mut st, &HashSet::new());
@@ -311,6 +319,7 @@ impl Engine {
         st.meta.clear();
         st.direction = direction;
         st.seeds.clear();
+        st.document += 1;
         st.doc = biwrite_core::DocumentModel::new(st.doc.next_id());
         st.doc.apply(text, mode);
         let segments: Vec<(SegmentId, biwrite_core::ContentHash)> =
@@ -353,20 +362,54 @@ impl Engine {
 
     /// New text from the editor (after debounce).
     pub fn update(&self, text: String) -> Snapshot {
-        self.apply(text, None)
+        self.apply(self.inner.lock(), text, None)
+    }
+
+    /// [`Self::update`], only if the text is for `document` (see
+    /// [`Snapshot::document`]): text the editor sent before another file
+    /// was loaded or the languages were swapped is refused, not applied to
+    /// the new document.
+    pub fn update_in(&self, document: u64, text: String) -> Result<Snapshot, EngineError> {
+        let st = self.locked_for(document)?;
+        Ok(self.apply(st, text, None))
     }
 
     /// Change the mode (and pick up the latest text at the same time).
     pub fn set_mode(&self, mode: Mode, text: String) -> Snapshot {
-        self.apply(text, Some(mode))
+        self.apply(self.inner.lock(), text, Some(mode))
     }
 
-    fn apply(&self, text: String, mode: Option<Mode>) -> Snapshot {
-        let mut st = self.inner.lock();
+    /// [`Self::set_mode`] for `document` (see [`Self::update_in`]).
+    pub fn set_mode_in(
+        &self,
+        document: u64,
+        mode: Mode,
+        text: String,
+    ) -> Result<Snapshot, EngineError> {
+        let st = self.locked_for(document)?;
+        Ok(self.apply(st, text, Some(mode)))
+    }
+
+    /// The state, if `document` is still the current document.
+    fn locked_for(&self, document: u64) -> Result<MutexGuard<'_, State>, EngineError> {
+        let st = self.inner.lock();
+        if st.document == document {
+            Ok(st)
+        } else {
+            Err(EngineError::Stale)
+        }
+    }
+
+    fn apply(&self, mut st: MutexGuard<'_, State>, text: String, mode: Option<Mode>) -> Snapshot {
         self.apply_locked(&mut st, text, mode);
         let snapshot = st.snapshot(false);
         self.inner.release(st);
         snapshot
+    }
+
+    /// The number of the current document (see [`Snapshot::document`]).
+    pub fn document(&self) -> u64 {
+        self.inner.lock().document
     }
 
     /// Re-segment, align, reconcile and schedule. No-op if nothing changed.
@@ -466,7 +509,18 @@ impl Engine {
             let Some(m) = st.meta.get(&s.id) else {
                 continue;
             };
-            if other_language && paragraph_written_in(content, mode) == Some(target) {
+            // Translated into the other language already, so written in the
+            // edited one, however it reads (Chinese dense with English names
+            // reads as English). A paragraph kept by an early swap has itself
+            // as its translation.
+            let translated_away = m.translated_hash == Some(s.hash)
+                && m.translation
+                    .as_deref()
+                    .is_some_and(|t| moved_into(target, content, t, mode));
+            // Plainly in the other language: Chinese dense with English
+            // names reads as English, and putting it "into Chinese" would
+            // make the Chinese its exact original.
+            if other_language && !translated_away && plainly_written_in(target, content, mode) {
                 fills.push((s.id, s.hash));
             } else if m.translated_hash != Some(s.hash) || m.status == SegmentStatus::Error {
                 rest.push(s.id);
