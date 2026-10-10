@@ -67,7 +67,10 @@ impl Tray {
 
     pub fn set_visible(&self, visible: bool) {
         if let Err(e) = self.icon.set_visible(visible) {
-            log::warn!("failed to {} the tray icon: {e}", if visible { "show" } else { "hide" });
+            log::warn!(
+                "failed to {} the tray icon: {e}",
+                if visible { "show" } else { "hide" }
+            );
         }
     }
 

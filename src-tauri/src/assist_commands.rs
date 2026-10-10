@@ -462,7 +462,10 @@ pub(crate) fn reference_text(name: &str, raw: &str) -> (String, bool) {
         let start = raw
             .find("\\begin{document}")
             .map_or(0, |i| i + "\\begin{document}".len());
-        let end = raw.rfind("\\end{document}").filter(|e| *e >= start).unwrap_or(raw.len());
+        let end = raw
+            .rfind("\\end{document}")
+            .filter(|e| *e >= start)
+            .unwrap_or(raw.len());
         let mut out = String::with_capacity(end - start);
         for line in raw[start..end].lines() {
             // A comment starts at an unescaped %.
@@ -533,7 +536,9 @@ pub async fn load_reference(
     let name = crate::state::display_name(Some(&path));
     let (text, truncated) = reference_text(&name, file.text());
     if text.trim().is_empty() {
-        return Err(CommandError::Settings(format!("{name} has no text to imitate")));
+        return Err(CommandError::Settings(format!(
+            "{name} has no text to imitate"
+        )));
     }
     Ok(Some(ReferenceView {
         chars: text.chars().count(),

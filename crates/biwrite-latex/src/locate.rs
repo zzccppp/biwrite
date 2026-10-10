@@ -278,11 +278,17 @@ The repair step runs after detection.\n";
         let long = format!("{}{SOURCE}", "Other words on a line.\n".repeat(10));
         assert_eq!(find_words(&long, Some(1), span, click), None);
         assert_eq!(find_words(&long, None, span, click), long.find("step runs"));
-        assert_eq!(find_words(&long, Some(14), span, click), long.find("step runs"));
+        assert_eq!(
+            find_words(&long, Some(14), span, click),
+            long.find("step runs")
+        );
         // One common word alone is not enough to be sure.
         assert_eq!(find_words(SOURCE, None, "the budget of others", 5), None);
         // A short run counts when all of it matches.
-        assert_eq!(find_words(SOURCE, None, "row-level", 1), SOURCE.find("row-level"));
+        assert_eq!(
+            find_words(SOURCE, None, "row-level", 1),
+            SOURCE.find("row-level")
+        );
     }
 
     #[test]

@@ -301,14 +301,26 @@ fn write_requests_imitate_the_references_and_insert_new_text() {
         ..Default::default()
     };
     let p = build(&req, &skill());
-    assert!(p.system.contains("ANATOMY"), "writing new text uses the paper anatomy");
+    assert!(
+        p.system.contains("ANATOMY"),
+        "writing new text uses the paper anatomy"
+    );
     assert!(p.system.contains("DEAI RULES"));
     // The paragraph before is context, sent as written (nothing to restore).
-    assert!(p.user.contains("<target>\nErrors cost accuracy \\cite{x} for $k=5$ models.\n</target>"));
+    assert!(
+        p.user
+            .contains("<target>\nErrors cost accuracy \\cite{x} for $k=5$ models.\n</target>")
+    );
     assert_eq!(p.protector.len(), 0);
-    assert!(p.user.contains("<reference_text n=\"1\">\n\\section{Introduction}"));
+    assert!(
+        p.user
+            .contains("<reference_text n=\"1\">\n\\section{Introduction}")
+    );
     assert!(p.user.contains("imitate closely"));
-    assert!(p.user.contains("never copy their sentences, claims, numbers or citations"));
+    assert!(
+        p.user
+            .contains("never copy their sentences, claims, numbers or citations")
+    );
     assert!(p.user.contains("never invent results"));
     assert!(p.user.contains("paragraphs separated by a blank line"));
 
@@ -316,11 +328,20 @@ fn write_requests_imitate_the_references_and_insert_new_text() {
                  <translation>\n第一段 \\cite{x}。\n\n第二段。\n</translation>\n\
                  <changes_zh>\n- 两段动机\n</changes_zh>\n<changes_en>\n- two paragraphs\n</changes_en>";
     let a = parse(Action::Write, reply, &p.protector).unwrap();
-    assert_eq!(a.revision.as_deref(), Some("First paragraph \\cite{x}.\n\nSecond paragraph."));
-    assert_eq!(a.translation.as_deref(), Some("第一段 \\cite{x}。\n\n第二段。"));
+    assert_eq!(
+        a.revision.as_deref(),
+        Some("First paragraph \\cite{x}.\n\nSecond paragraph.")
+    );
+    assert_eq!(
+        a.translation.as_deref(),
+        Some("第一段 \\cite{x}。\n\n第二段。")
+    );
     assert_eq!(a.changes_zh, ["两段动机"]);
     assert!(Action::Write.inserts() && Action::Figure.inserts() && !Action::Edit.inserts());
-    assert_eq!(parse(Action::Write, "no tags", &p.protector), Err(AssistError::NoRevision));
+    assert_eq!(
+        parse(Action::Write, "no tags", &p.protector),
+        Err(AssistError::NoRevision)
+    );
 }
 
 #[test]
@@ -335,10 +356,19 @@ fn figures_are_told_which_packages_the_document_loads() {
         ..Default::default()
     };
     let p = build(&req, &skill());
-    assert!(p.user.contains("<loaded_packages>\nbooktabs, graphicx\n</loaded_packages>"));
+    assert!(
+        p.user
+            .contains("<loaded_packages>\nbooktabs, graphicx\n</loaded_packages>")
+    );
     assert!(p.user.contains("never \\usepackage"));
     // Unknown packages: the old wording.
-    let p = build(&Request { packages: None, ..req }, &skill());
+    let p = build(
+        &Request {
+            packages: None,
+            ..req
+        },
+        &skill(),
+    );
     assert!(!p.user.contains("<loaded_packages>"));
     assert!(p.user.contains("compile on its own"));
 }
@@ -355,11 +385,23 @@ fn a_figure_with_a_reference_image_imitates_its_style() {
     };
     let p = build(&req, &skill());
     assert!(p.user.contains("show the figure to imitate"));
-    assert!(p.user.contains("layout, colour scheme, marks, line styles, fonts and legend placement"));
+    assert!(
+        p.user
+            .contains("layout, colour scheme, marks, line styles, fonts and legend placement")
+    );
     assert!(p.user.contains("in TikZ or pgfplots"));
-    assert!(p.user.contains("Never take numbers or labels from the image"));
+    assert!(
+        p.user
+            .contains("Never take numbers or labels from the image")
+    );
     // Other tasks keep the general wording.
-    let edit = build(&Request { action: Action::Edit, ..req }, &skill());
+    let edit = build(
+        &Request {
+            action: Action::Edit,
+            ..req
+        },
+        &skill(),
+    );
     assert!(edit.user.contains("follow their layout and style"));
     assert!(!edit.user.contains("figure to imitate"));
 }

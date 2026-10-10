@@ -543,19 +543,29 @@ async fn reference_images_reach_the_model_in_each_api() {
     server.push(openai_ok(&["<revision>x</revision>"]));
     let calls = Arc::new(AtomicUsize::new(0));
     let p = build_http(
-        &config(ProviderKind::OpenaiCompatible, &format!("{}/v1", server.base), "gpt-x"),
+        &config(
+            ProviderKind::OpenaiCompatible,
+            &format!("{}/v1", server.base),
+            "gpt-x",
+        ),
         key_fn(calls),
         Arc::new(DefaultPrompts),
         Arc::new(NoObserver),
     )
     .unwrap();
     let model: Arc<dyn ChatModel> = p;
-    model.complete(&chat(vec![image.clone()]), &|_| {}).await.unwrap();
+    model
+        .complete(&chat(vec![image.clone()]), &|_| {})
+        .await
+        .unwrap();
     let body = server.requests()[0].json();
     let content = &body["messages"][1]["content"];
     assert_eq!(content[0]["type"], "text");
     assert_eq!(content[1]["type"], "image_url");
-    assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,iVBORw0KGgo=");
+    assert_eq!(
+        content[1]["image_url"]["url"],
+        "data:image/png;base64,iVBORw0KGgo="
+    );
     // Without images, the content stays a plain string.
     server.push(openai_ok(&["<revision>x</revision>"]));
     model.complete(&chat(Vec::new()), &|_| {}).await.unwrap();
