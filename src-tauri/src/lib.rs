@@ -33,6 +33,8 @@ mod pair_tests;
 #[cfg(test)]
 mod pdf_click_tests;
 #[cfg(test)]
+mod upgrade_tests;
+#[cfg(test)]
 mod workflow_tests;
 
 use std::path::PathBuf;

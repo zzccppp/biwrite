@@ -674,6 +674,7 @@ resolve to their target and permissions are preserved.
 | 0.2 | LaTeX PDF with SyncTeX and templates, pairs with a hand-made translation, writing assistant on research-builder, key pools, request log, updates, Chinese interface | done |
 | 0.2.2 | The file's own language, early swaps filled in, continue, writing in the manner of a reference paper, figure packages, PDF clicks through rulers, tray | done |
 | 0.2.3 | Fixes from the review of 0.2–0.2.2: wrong-language and stale text kept out of files, safe TeX roots, pairs that never overwrite or misplace the paired file, assistant placement, key pools and key storage, checked batch answers and installs | done |
+| 0.2.4 | PDFs built before a pairing, an unpairing or a swap without a pair are built again before clicks map, PDF clicks keep the editor on the selected sentence, 0.2.2 settings and keys checked on upgrade | done |
 
 Revise prompting (M4 tuning): a glossary-only change (same source, new
 entries) sends just `<previous_translation>` with "revise it minimally so it
