@@ -64,7 +64,7 @@
   {:else if job.state === "failed"}
     <p class="error">{t("assist.failed", { error: job.error ?? "" })}</p>
     <div class="row">
-      <button class="btn small" onclick={() => onagain(job)}>{t("assist.again")}</button>
+      {#if !stale}<button class="btn small" disabled={job.restarting} onclick={() => onagain(job)}>{t("assist.again")}</button>{/if}
       <button class="btn small" onclick={() => ondiscard(job)}>{t("assist.discard")}</button>
     </div>
   {:else if job.state === "applied"}
@@ -146,18 +146,18 @@
       <p class="warn">{job.to > job.from ? t("assist.conflict") : t("assist.gone")}</p>
       <div class="row">
         {#if job.to > job.from}
-          <button class="btn small primary" onclick={() => onreapply(job)}>{t("assist.reapply")}</button>
+          <button class="btn small primary" disabled={job.restarting} onclick={() => onreapply(job)}>{t("assist.reapply")}</button>
         {/if}
         <button class="btn small" onclick={() => ondiscard(job)}>{t("assist.discard")}</button>
       </div>
     {:else}
       <div class="row">
         {#if r.revision && !unchanged}
-          <button class="btn small primary" onclick={() => onaccept(job)}>
+          <button class="btn small primary" disabled={job.applying || job.restarting} onclick={() => onaccept(job)}>
             {job.target.insert ? t("assist.insert") : t("assist.accept")}
           </button>
         {/if}
-        <button class="btn small" onclick={() => onagain(job)}>{t("assist.again")}</button>
+        <button class="btn small" disabled={job.restarting} onclick={() => onagain(job)}>{t("assist.again")}</button>
         {#if r.revision || r.answer}
           <button class="btn small" onclick={() => copy(r.revision ?? r.answer ?? "")}>
             {copied ? t("assist.copied") : t("assist.copy")}

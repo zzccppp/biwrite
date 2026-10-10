@@ -19,7 +19,7 @@ use crate::glossary::GlossaryEntry;
 use crate::lang::{Direction, is_cjk};
 use crate::mode::Mode;
 use crate::protect::{Protector, SpanKind, placeholder_at, spans};
-use crate::segment::segment;
+use crate::segment::{Segment, SegmentKind, SkipReason, segment};
 
 /// What the assistant is asked to do.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -385,14 +385,56 @@ impl fmt::Display for AssistError {
 
 impl std::error::Error for AssistError {}
 
+/// The blocks an answer is made of.
+const BLOCKS: [&str; 5] = [
+    "revision",
+    "translation",
+    "changes_zh",
+    "changes_en",
+    "answer",
+];
+
 /// Content of the first `<name>…</name>` block, trimmed and without a
 /// surrounding code fence.
 pub fn tag<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    find_block(text, name).map(|(_, content)| strip_fence(text[content].trim()))
+}
+
+/// The first `<name>…</name>` block: its whole span and its content. Its
+/// opening tag is taken at the start of a line if there is one there, else
+/// mid-line only with its closing tag after it (a tag merely mentioned in
+/// the text isn't one). It ends at its closing tag,
+/// or before a repeated opening tag, or (unclosed) where the next block
+/// opens on a line of its own, or at the end: a forgotten `</revision>`
+/// doesn't pull the translation into it.
+fn find_block(text: &str, name: &str) -> Option<(Range<usize>, Range<usize>)> {
     let open = format!("<{name}>");
     let close = format!("</{name}>");
-    let start = text.find(&open)? + open.len();
-    let end = text[start..].find(&close).map_or(text.len(), |e| start + e);
-    Some(strip_fence(text[start..end].trim()))
+    let at_line_start = text.match_indices(&open).map(|(at, _)| at).find(|&at| {
+        text[..at]
+            .rsplit('\n')
+            .next()
+            .is_some_and(|l| l.trim().is_empty())
+    });
+    // Mid-line, only a block that is closed: a mere mention isn't one.
+    let at =
+        at_line_start.or_else(|| text.find(&open).filter(|&at| text[at..].contains(&close)))?;
+    let start = at + open.len();
+    let rest = &text[start..];
+    let again = rest.find(&format!("\n{open}"));
+    match rest.find(&close) {
+        Some(e) if again.is_none_or(|a| e < a) => {
+            Some((at..start + e + close.len(), start..start + e))
+        }
+        _ => {
+            let end = BLOCKS
+                .iter()
+                .filter_map(|b| rest.find(&format!("\n<{b}>")))
+                .min()
+                .map_or(text.len(), |e| start + e);
+            Some((at..end, start..end))
+        }
+    }
 }
 
 fn strip_fence(t: &str) -> &str {
@@ -442,18 +484,40 @@ fn placeholder_counts(text: &str) -> BTreeMap<usize, usize> {
 
 /// Read the model's answer for `action`.
 pub fn parse(action: Action, text: &str, protector: &Protector) -> Result<Answer, AssistError> {
-    let revision_raw = tag(text, "revision");
-    let translation_raw = tag(text, "translation");
+    parse_for(action, text, protector, "")
+}
+
+/// [`parse`] for the answer about `target`: a target that is a fenced code
+/// block keeps the fence its revision comes in.
+pub fn parse_for(
+    action: Action,
+    text: &str,
+    protector: &Protector,
+    target: &str,
+) -> Result<Answer, AssistError> {
+    let fenced = target.trim_start().starts_with("```");
+    let revision = find_block(text, "revision");
+    let revision_raw = revision.as_ref().map(|(_, content)| {
+        let r = text[content.clone()].trim();
+        if fenced { r } else { strip_fence(r) }
+    });
+    // The other blocks are looked for outside the revision, which may well
+    // mention their tags.
+    let others = match &revision {
+        Some((whole, _)) => format!("{}{}", &text[..whole.start], &text[whole.end..]),
+        None => text.to_owned(),
+    };
+    let translation_raw = tag(&others, "translation");
     if action != Action::Ask && revision_raw.is_none() {
         return Err(AssistError::NoRevision);
     }
     let mut answer = Answer {
-        changes_zh: lines(tag(text, "changes_zh")),
-        changes_en: lines(tag(text, "changes_en")),
+        changes_zh: lines(tag(&others, "changes_zh")),
+        changes_en: lines(tag(&others, "changes_en")),
         ..Answer::default()
     };
     if action == Action::Ask {
-        let free = tag(text, "answer").map(str::to_owned).or_else(|| {
+        let free = tag(&others, "answer").map(str::to_owned).or_else(|| {
             // No tags at all: the whole reply is the answer.
             (!text.contains("<revision>")).then(|| text.trim().to_owned())
         });
@@ -596,6 +660,98 @@ pub fn diff(old: &str, new: &str) -> Vec<DiffPart> {
         }
     }
     out
+}
+
+/// Floating environments: new text never goes inside one.
+const FLOATS: &[&str] = &[
+    "figure",
+    "figure*",
+    "table",
+    "table*",
+    "wrapfigure",
+    "wraptable",
+    "sidewaysfigure",
+    "sidewaystable",
+    "algorithm",
+    "algorithm*",
+];
+
+/// Where new text written at `pos` goes (a figure, new paragraphs): after
+/// the whole segment around `pos`, never inside it, so not between a
+/// heading's title and its closing brace or into a math block; after the
+/// whole float when `pos` is in a figure or table (its caption or other
+/// lines); `pos` itself between segments. `None` from `\end{document}` on,
+/// where nothing is typeset.
+pub fn insertion_point(text: &str, mode: Mode, pos: usize) -> Option<usize> {
+    let segments = segment(text, mode);
+    let markup = SegmentKind::Skipped {
+        reason: SkipReason::Markup,
+    };
+    let end_of_document = segments
+        .iter()
+        .find(|s| {
+            s.kind == markup
+                && text[s.range.clone()]
+                    .trim_start()
+                    .starts_with("\\end{document}")
+        })
+        .map(|s| s.range.start);
+    if end_of_document.is_some_and(|at| pos >= at) {
+        return None;
+    }
+    let Some(i) = segments
+        .iter()
+        .position(|s| s.range.start <= pos && pos <= s.range.end)
+    else {
+        return Some(pos);
+    };
+    let here = segments[i].range.end;
+    let inside =
+        |s: &Segment| !matches!(s.kind, SegmentKind::Paragraph | SegmentKind::Heading { .. });
+    let opens =
+        |s: &Segment, env: &str| text[s.range.clone()].contains(&format!("\\begin{{{env}}}"));
+    let closes =
+        |s: &Segment, env: &str| text[s.range.clone()].contains(&format!("\\end{{{env}}}"));
+    if !matches!(
+        segments[i].kind,
+        SegmentKind::Caption
+            | SegmentKind::Skipped {
+                reason: SkipReason::Float | SkipReason::Table
+            }
+    ) {
+        return Some(here);
+    }
+    // The float around `pos`: its opening line, looking back (past a closed
+    // float means `pos` is in none).
+    let mut env = None;
+    for (j, s) in segments[..=i].iter().enumerate().rev() {
+        if !inside(s) {
+            break;
+        }
+        if let Some(name) = FLOATS.iter().find(|f| closes(s, f)) {
+            if j < i {
+                break;
+            }
+            if !opens(s, name) {
+                return Some(here);
+            }
+        }
+        if let Some(name) = FLOATS.iter().find(|f| opens(s, f)) {
+            env = Some(*name);
+            break;
+        }
+    }
+    let Some(env) = env else {
+        return Some(here);
+    };
+    // Its closing line.
+    Some(
+        segments[i..]
+            .iter()
+            .take_while(|s| inside(s))
+            .find(|s| closes(s, env))
+            .map_or(here, |s| s.range.end),
+    )
 }
 
 /// Byte range of the translatable content (paragraph, heading title,

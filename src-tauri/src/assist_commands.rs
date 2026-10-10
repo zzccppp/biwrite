@@ -40,6 +40,8 @@ const MAX_DOCUMENT_CHARS: usize = 300_000;
 const MAX_IMAGE_BYTES: u64 = 8_000_000;
 /// Longest reference text from a file, in characters (a long paper's body).
 const MAX_REFERENCE_CHARS: usize = 120_000;
+/// Largest reference file read (it is then cut to `MAX_REFERENCE_CHARS`).
+const MAX_REFERENCE_BYTES: u64 = 8_000_000;
 /// Minimum interval between streamed updates of one job.
 const PARTIAL_EVERY: Duration = Duration::from_millis(80);
 
@@ -154,29 +156,43 @@ struct Resolved {
     insert: bool,
 }
 
-/// Resolve the cursor or selection (byte offsets) into a target.
+/// Resolve the cursor or selection (byte offsets) into a target. New text
+/// (a figure, new paragraphs) goes after the whole segment of the cursor
+/// or of the selection's end, never inside it (see
+/// [`assist::insertion_point`]).
 fn resolve(text: &str, mode: Mode, action: Action, a: usize, b: usize) -> Result<Resolved, String> {
     let (a, b) = (a.min(b), a.max(b));
+    let insert_at = |pos: usize| {
+        assist::insertion_point(text, mode, pos).ok_or_else(|| {
+            "nothing after \\end{document} is typeset: put the cursor in the document".to_owned()
+        })
+    };
     if a == b {
         return match (assist::paragraph_at(text, mode, a), action.inserts()) {
-            (Some(p), true) => Ok(Resolved {
-                range: p.end..p.end,
-                text: text[p].to_owned(),
-                whole_paragraph: false,
-                insert: true,
-            }),
+            (Some(p), true) => {
+                let at = insert_at(a)?;
+                Ok(Resolved {
+                    range: at..at,
+                    text: text[p].to_owned(),
+                    whole_paragraph: false,
+                    insert: true,
+                })
+            }
             (Some(p), false) => Ok(Resolved {
                 text: text[p.clone()].to_owned(),
                 range: p,
                 whole_paragraph: true,
                 insert: false,
             }),
-            (None, true) => Ok(Resolved {
-                range: a..a,
-                text: String::new(),
-                whole_paragraph: false,
-                insert: true,
-            }),
+            (None, true) => {
+                let at = insert_at(a)?;
+                Ok(Resolved {
+                    range: at..at,
+                    text: String::new(),
+                    whole_paragraph: false,
+                    insert: true,
+                })
+            }
             (None, false) => Err("put the cursor in a paragraph or select text first".into()),
         };
     }
@@ -187,8 +203,9 @@ fn resolve(text: &str, mode: Mode, action: Action, a: usize, b: usize) -> Result
         return Err("the selection is empty".into());
     }
     if action.inserts() {
+        let at = insert_at(end)?;
         return Ok(Resolved {
-            range: end..end,
+            range: at..at,
             text: text[start..end].to_owned(),
             whole_paragraph: false,
             insert: true,
@@ -364,7 +381,7 @@ async fn run(job: Job) {
             id: job.id,
             message: e.to_string(),
         },
-        Ok(out) => match assist::parse(job.action, &out.text, &job.protector) {
+        Ok(out) => match assist::parse_for(job.action, &out.text, &job.protector, &job.original) {
             Err(e) => AssistEvent::Failed {
                 id: job.id,
                 message: e.to_string(),
@@ -532,7 +549,12 @@ pub async fn load_reference(
     else {
         return Ok(None);
     };
-    let file = crate::files::read_text_file(path.clone()).await?;
+    // Checked before reading: a reference is prose, never this large.
+    let bytes = crate::files::read_small_file(path.clone(), MAX_REFERENCE_BYTES).await?;
+    let file = biwrite_core::TextFile::decode(bytes).map_err(|source| CommandError::Decode {
+        path: path.display().to_string(),
+        source,
+    })?;
     let name = crate::state::display_name(Some(&path));
     let (text, truncated) = reference_text(&name, file.text());
     if text.trim().is_empty() {
@@ -761,9 +783,74 @@ mod tests {
         let at = blank.find("\n\n\n").unwrap() + 2;
         let r = resolve(blank, Mode::Plain, Action::Write, at, at).unwrap();
         assert!(r.insert && r.text.is_empty() && r.range == (at..at));
-        // A selection: after it.
+        // A selection: after its paragraph, not inside it.
         let r = resolve(DOC, Mode::Plain, Action::Write, 0, 6).unwrap();
-        assert_eq!((r.text.as_str(), r.range.start), ("First", 5));
+        assert_eq!(
+            (r.text.as_str(), r.range.start),
+            ("First", "First paragraph.".len())
+        );
+    }
+
+    #[test]
+    fn new_text_never_goes_inside_a_heading_or_a_figure() {
+        let doc = "\\section{Introduction}\\label{sec:intro}\nText.\n\n\\begin{figure}\n\\centering\n\
+                   \\caption{A plot.}\n\\end{figure}\n\nAfter.\n\n\\begin{equation}\nx = 1\n\\end{equation}\n\
+                   \\end{document}\ntrailing notes\n";
+        let mode = Mode::Latex;
+        // In a heading's title: after its whole line, closing brace included.
+        let pos = doc.find("Intro").unwrap();
+        let r = resolve(doc, mode, Action::Write, pos, pos).unwrap();
+        assert_eq!(r.range.start, doc.find("\nText.").unwrap());
+        let r = resolve(doc, mode, Action::Figure, pos, pos + 5).unwrap();
+        assert_eq!(r.range.start, doc.find("\nText.").unwrap());
+        // In a figure (its caption or another line): after the whole float.
+        let after_float = doc.find("\\end{figure}").unwrap() + "\\end{figure}".len();
+        for word in ["plot", "centering"] {
+            let pos = doc.find(word).unwrap();
+            let r = resolve(doc, mode, Action::Figure, pos, pos).unwrap();
+            assert_eq!(r.range.start, after_float, "{word}");
+        }
+        // In math: after the block.
+        let pos = doc.find("x = 1").unwrap();
+        let r = resolve(doc, mode, Action::Write, pos, pos).unwrap();
+        assert_eq!(
+            &doc[r.range.start - "\\end{equation}".len()..r.range.start],
+            "\\end{equation}"
+        );
+        // After \end{document}: refused, nothing there is typeset, even at
+        // the very end of the file.
+        let pos = doc.find("trailing").unwrap();
+        assert!(resolve(doc, mode, Action::Write, pos, pos).is_err());
+        assert!(resolve(doc, mode, Action::Write, doc.len(), doc.len()).is_err());
+    }
+
+    #[test]
+    fn a_float_ends_at_its_own_end() {
+        let doc = "Text.\n\n\\begin{figure}\n\\centering\n\\caption{A.}\n\\end{figure}\n\n\
+                   \\begin{table}\n\\caption{B.}\n\\begin{tabular}{l}\nx\\\\\n\\end{tabular}\n\\end{table}\n\n\
+                   \\begin{tabular}{l}\ny\\\\\n\\end{tabular}\n\n\\begin{figure}\n\\caption{C.}\n\\end{figure}\n\nEnd.\n";
+        let mode = Mode::Latex;
+        let end = |env_end: &str, nth: usize| {
+            doc.match_indices(env_end)
+                .nth(nth)
+                .map(|(at, _)| at + env_end.len())
+                .unwrap()
+        };
+        let at = |word: &str| {
+            let pos = doc.find(word).unwrap();
+            resolve(doc, mode, Action::Figure, pos, pos)
+                .unwrap()
+                .range
+                .start
+        };
+        // The first figure, not past the table after it.
+        assert_eq!(at("centering"), end("\\end{figure}", 0));
+        assert_eq!(at("A."), end("\\end{figure}", 0));
+        // The table, from its caption or its tabular.
+        assert_eq!(at("B."), end("\\end{table}", 0));
+        assert_eq!(at("x\\\\"), end("\\end{table}", 0));
+        // A tabular of its own: after it, not after the next figure.
+        assert_eq!(at("y\\\\"), end("\\end{tabular}", 1));
     }
 
     #[test]

@@ -187,6 +187,10 @@ export const messages = {
     en: "Inserting also adds these packages to the preamble: {packages}",
     zh: "插入时会同时在导言区加入这些宏包：{packages}",
   },
+  "assist.packagesNotAdded": {
+    en: "Inserted, but \\begin{document} was not found before it: add these to the preamble by hand: {packages}",
+    zh: "已插入，但前面找不到 \\begin{document}，请手动在导言区加入：{packages}",
+  },
   "assist.packagesNeeded": {
     en: "The document does not load every package this needs. Add to the main file's preamble: {packages}",
     zh: "文档还没有加载这段代码需要的全部宏包，请在主文件导言区加入：{packages}",

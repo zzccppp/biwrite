@@ -496,6 +496,20 @@ resolve to their target and permissions are preserved.
   task. Jobs stream in the background as events, the frontend keeps each
   job's target mapped through later edits and applies a revision where its
   text is now.
+  * New text (Write, Figure) goes after the whole segment of the cursor or
+    the selection's end (`assist::insertion_point`): never inside a
+    heading's braces or a math block, after the whole figure or table when
+    the cursor is in one, and never after `\end{document}`. On
+    accept it is placed at a line end with a blank line on each side
+    (`assistText.ts`), and text typed at that spot meanwhile stays before
+    it.
+  * Accept hands over translations first, then works out positions from
+    the document as it is and edits in one go; a second Accept meanwhile
+    does nothing. A target that moved (its range collapsed) is found again
+    if it occurs once; one that was edited is a conflict to re-apply.
+    Edits made while a job starts are mapped onto its target, and its
+    events are kept until the job is known. Jobs of a document no longer
+    open can't be applied, run again or followed up.
 * **Key pools and the request log** (`biwrite-providers::keys`,
   `observe`, `src-tauri/src/request_log.rs`). Keys stay in the keychain
   (primary account plus `#pool`), records hold metadata only.

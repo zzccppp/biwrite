@@ -405,3 +405,56 @@ fn a_figure_with_a_reference_image_imitates_its_style() {
     assert!(edit.user.contains("follow their layout and style"));
     assert!(!edit.user.contains("figure to imitate"));
 }
+
+#[test]
+fn a_block_without_its_closing_tag_ends_at_the_next_block() {
+    let protector = Protector::new(Mode::Plain);
+    let reply = "<revision>\nBetter text.\n<translation>\n更好的文本。\n</translation>\n<changes_en>\n- tighter\n</changes_en>";
+    let a = parse(Action::Polish, reply, &protector).unwrap();
+    assert_eq!(a.revision.as_deref(), Some("Better text."));
+    assert_eq!(a.translation.as_deref(), Some("更好的文本。"));
+    assert_eq!(a.changes_en, ["tighter"]);
+}
+
+#[test]
+fn a_fenced_code_block_keeps_its_fence() {
+    let protector = Protector::new(Mode::Markdown);
+    let target = "```python\nprint( 1 )\n```";
+    let reply = "<revision>\n```python\nprint(1)\n```\n</revision>";
+    let a = parse_for(Action::Polish, reply, &protector, target).unwrap();
+    assert_eq!(a.revision.as_deref(), Some("```python\nprint(1)\n```"));
+    // Prose that came wrapped in a fence loses it.
+    let reply = "<revision>\n```\nBetter prose.\n```\n</revision>";
+    let a = parse_for(Action::Polish, reply, &protector, "Prose.").unwrap();
+    assert_eq!(a.revision.as_deref(), Some("Better prose."));
+}
+
+#[test]
+fn tags_mentioned_inside_the_revision_are_text() {
+    let protector = Protector::new(Mode::Plain);
+    let reply = "<revision>\nUse <translation> tags, see the <answer> element.\n</revision>\n<translation>\n译文。\n</translation>";
+    let a = parse(Action::Polish, reply, &protector).unwrap();
+    assert_eq!(
+        a.revision.as_deref(),
+        Some("Use <translation> tags, see the <answer> element.")
+    );
+    assert_eq!(a.translation.as_deref(), Some("译文。"));
+    // Unclosed, a tag mentioned mid-line doesn't cut it short either.
+    let reply = "<revision>\nSee the <answer> element.\n<translation>\n译文。";
+    let a = parse(Action::Polish, reply, &protector).unwrap();
+    assert_eq!(a.revision.as_deref(), Some("See the <answer> element."));
+    assert_eq!(a.translation.as_deref(), Some("译文。"));
+}
+
+#[test]
+fn a_repeated_opening_tag_ends_the_block() {
+    let protector = Protector::new(Mode::Plain);
+    let reply = "<revision>\nA.\n<revision>\nB.\n</revision>\n<translation>\n甲。\n</translation>";
+    let a = parse(Action::Polish, reply, &protector).unwrap();
+    assert_eq!(a.revision.as_deref(), Some("A."));
+    assert_eq!(a.translation.as_deref(), Some("甲。"));
+    // An answer that mentions the revision tag mid-line has no revision.
+    let reply = "<answer>\nWrap it in a <revision> tag.\n</answer>";
+    let a = parse(Action::Ask, reply, &protector).unwrap();
+    assert_eq!(a.answer.as_deref(), Some("Wrap it in a <revision> tag."));
+}

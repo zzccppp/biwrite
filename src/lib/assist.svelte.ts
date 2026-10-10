@@ -6,7 +6,7 @@
 import type { ChangeDesc } from "@codemirror/state";
 import { assistIpc } from "./ipc";
 
-export { reapplyInstruction, uniqueIndex } from "./assistText";
+export { asParagraph, insertionAt, reapplyInstruction, uniqueIndex } from "./assistText";
 import type {
   AssistAction,
   AssistEvent,
@@ -93,6 +93,10 @@ export class AssistJob {
   error = $state<string | null>(null);
   /** Applying found the target changed; offer to re-apply with the model. */
   conflict = $state(false);
+  /** Being applied: a second Accept meanwhile does nothing. */
+  applying = $state(false);
+  /** Being run again (Again, Re-apply): its buttons wait for that. */
+  restarting = $state(false);
 
   constructor(
     started: AssistStarted,
@@ -119,6 +123,18 @@ export class AssistJob {
   }
 }
 
+/** Map a job's target through an edit. Text typed right where new text
+ * goes stays before it (the new paragraph follows what the author added). */
+function mapTarget(job: AssistJob, changes: ChangeDesc): void {
+  if (job.target.insert) {
+    job.from = job.to = changes.mapPos(job.from, 1);
+    return;
+  }
+  if (changes.touchesRange(job.from, job.to)) job.touched = true;
+  job.from = changes.mapPos(job.from, 1);
+  job.to = Math.max(job.from, changes.mapPos(job.to, -1));
+}
+
 export class AssistStore {
   jobs = $state<AssistJob[]>([]);
   attachments = $state<AttachmentView[]>([]);
@@ -128,8 +144,12 @@ export class AssistStore {
   );
   scope = $state<AssistScope>(load(SCOPE_KEY, ["target", "neighbors", "document"] as const, "neighbors"));
   instruction = $state("");
-  /** Bumped when another document is loaded. */
-  epoch = 0;
+  /** Bumped when another document is loaded (reactive: cards turn stale). */
+  epoch = $state(0);
+  /** Edits made while jobs were being started, to map their targets through. */
+  #starting = new Set<{ changes: ChangeDesc | null }>();
+  /** Events of jobs whose start has not returned yet (they can come first). */
+  #early = new Map<number, AssistEvent[]>();
 
   running = $derived(this.jobs.filter((j) => j.state === "running").length);
   ready = $derived(this.jobs.filter((j) => j.state === "done").length);
@@ -145,9 +165,23 @@ export class AssistStore {
   }
 
   async start(request: AssistRequest, reapplies: number | null = null): Promise<AssistJob> {
-    const started = await assistIpc.start(request);
-    const job = new AssistJob(started, request, this.epoch, reapplies);
+    // The document the request's text belongs to, before anything else loads.
+    const epoch = this.epoch;
+    const edits: { changes: ChangeDesc | null } = { changes: null };
+    this.#starting.add(edits);
+    let started: AssistStarted;
+    try {
+      started = await assistIpc.start(request);
+    } finally {
+      this.#starting.delete(edits);
+    }
+    const job = new AssistJob(started, request, epoch, reapplies);
+    // Edits of its own document only (another one may have loaded since).
+    if (edits.changes && epoch === this.epoch) mapTarget(job, edits.changes);
     this.jobs = [job, ...this.jobs];
+    const early = this.#early.get(job.id) ?? [];
+    this.#early.delete(job.id);
+    for (const e of early) this.onEvent(e);
     return job;
   }
 
@@ -157,7 +191,15 @@ export class AssistStore {
 
   onEvent(e: AssistEvent): void {
     const job = this.find(e.id);
-    if (!job || job.state !== "running") return;
+    if (!job) {
+      // Its start has not returned yet: kept for it (the last partial and
+      // the outcome; a few jobs at most).
+      const kept = (this.#early.get(e.id) ?? []).filter((k) => k.kind !== "partial" || e.kind !== "partial");
+      this.#early.set(e.id, [...kept, e]);
+      if (this.#early.size > 16) this.#early.delete(this.#early.keys().next().value as number);
+      return;
+    }
+    if (job.state !== "running") return;
     if (e.kind === "partial") {
       job.partial = e.text;
     } else if (e.kind === "done") {
@@ -169,23 +211,21 @@ export class AssistStore {
     }
   }
 
-  /** Keep every open job's target in step with an edit. */
+  /** Keep the targets of open and failed jobs (Again runs there) in step
+   * with an edit, and of jobs still being started. */
   map(changes: ChangeDesc): void {
+    for (const edits of this.#starting) edits.changes = edits.changes ? edits.changes.composeDesc(changes) : changes;
     for (const job of this.jobs) {
-      if (!job.open || job.epoch !== this.epoch) continue;
-      if (job.target.insert) {
-        job.from = job.to = changes.mapPos(job.from, -1);
-        continue;
-      }
-      if (changes.touchesRange(job.from, job.to)) job.touched = true;
-      job.from = changes.mapPos(job.from, 1);
-      job.to = Math.max(job.from, changes.mapPos(job.to, -1));
+      if ((!job.open && job.state !== "failed") || job.epoch !== this.epoch) continue;
+      mapTarget(job, changes);
     }
   }
 
-  /** Another document was loaded: open jobs can no longer be applied. */
+  /** Another document was loaded: open jobs can no longer be applied, and
+   * edits of the new one don't concern jobs still being started. */
   newDocument(): void {
     this.epoch++;
+    this.#starting.clear();
   }
 
   cancel(job: AssistJob): void {

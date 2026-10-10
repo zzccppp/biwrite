@@ -2,7 +2,14 @@
   import { ChangeSet, type Text } from "@codemirror/state";
   import type { ViewUpdate } from "@codemirror/view";
   import { onMount } from "svelte";
-  import { type AssistJob, AssistStore, reapplyInstruction, uniqueIndex } from "./lib/assist.svelte";
+  import {
+    type AssistJob,
+    AssistStore,
+    asParagraph,
+    insertionAt,
+    reapplyInstruction,
+    uniqueIndex,
+  } from "./lib/assist.svelte";
   import AssistPanel from "./lib/components/AssistPanel.svelte";
   import GlossaryPanel from "./lib/components/GlossaryPanel.svelte";
   import LogPanel from "./lib/components/LogPanel.svelte";
@@ -1012,24 +1019,28 @@
   interface RunOptions {
     action?: AssistAction;
     scope?: AssistScope;
-    from?: number;
-    to?: number;
+    /** The target, read once edits are flushed (a job's mapped range). */
+    at?: () => { from: number; to: number };
     instruction?: string;
     history?: [string, string][];
     reapplies?: number;
   }
 
-  /** Start an assistant job on the selection or the paragraph at the cursor. */
-  async function runAssist(o: RunOptions = {}): Promise<void> {
-    if (!editor) return;
+  /** Start an assistant job on the selection or the paragraph at the cursor.
+   * `true` once it started. */
+  async function runAssist(o: RunOptions = {}): Promise<boolean> {
+    if (!editor) return false;
     await settleEdits();
+    if (!editor) return false;
+    // Positions and text of the same moment: nothing waits from here on.
     const sel = editor.view.state.selection.main;
+    const at = o.at?.() ?? { from: sel.from, to: sel.to };
     const request: AssistRequest = {
       action: o.action ?? assist.action,
       scope: o.scope ?? assist.scope,
       text: editor.text(),
-      from: o.from ?? sel.from,
-      to: o.to ?? sel.to,
+      from: at.from,
+      to: at.to,
       instruction: o.instruction ?? assist.instruction.trim(),
       references: assist.samples.map((s) => s.text),
       images: assist.attachments.map((a) => a.id),
@@ -1039,108 +1050,144 @@
       await assist.start(request, o.reapplies ?? null);
       if (o.instruction === undefined) assist.instruction = "";
       if (!showAssist) setAssistOpen(true);
+      return true;
     } catch (err) {
       fail(err);
+      return false;
     }
   }
 
-  /** Apply an approved revision where its target is now. If the target text
-   * moved, it is found again; if it was edited, the model re-applies. */
+  /** Apply an approved revision where its target is now. Translations are
+   * handed over first; the edit is then worked out from the document as it
+   * is at that moment and made in one go. A target that moved (its place is
+   * gone) is found again if it occurs once; one that was edited is a
+   * conflict, which the model can re-apply. */
   async function acceptJob(job: AssistJob): Promise<void> {
     const r = job.result;
-    if (!editor || !r?.revision || job.epoch !== assist.epoch) return;
+    if (!editor || !r?.revision || job.state !== "done" || job.applying || job.restarting) return;
+    if (job.epoch !== assist.epoch) return;
     // The editor is about to be replaced by the other language.
     if (swapping) {
       session.flash(t("doc.busySwapping"));
       return;
     }
-    await settleEdits();
-    const doc = editor.doc;
-    let from = Math.min(job.from, doc.length);
-    let to = Math.min(job.to, doc.length);
-    let insert = r.revision;
-    if (job.target.insert) {
-      to = from;
-      // At the start of the document or of an empty line, no blank line first.
-      const lead = from === 0 || doc.sliceString(Math.max(0, from - 2), from) === "\n\n" ? "" : "\n\n";
-      insert = `${lead}${r.revision.trim()}`;
-    } else if (doc.sliceString(from, to) !== job.target.text) {
-      const at = uniqueIndex(doc.toString(), job.target.text);
-      if (at < 0) {
-        job.conflict = true;
+    job.applying = true;
+    try {
+      await settleEdits();
+      if (!job.target.insert && job.target.wholeParagraph && r.translation && r.translationMatches) {
+        // Else the paragraph is translated again.
+        await assistIpc.offer(r.revision, r.translation).catch(() => {});
+      }
+      // New paragraphs come with their translation, paragraph for paragraph.
+      if (job.action === "write" && r.translation) {
+        const paragraphs = (s: string) => s.trim().split(/\n\s*\n/).map((p) => p.trim());
+        const [en, zh] = [paragraphs(r.revision), paragraphs(r.translation)];
+        if (en.length === zh.length) {
+          await Promise.all(en.map((p, i) => assistIpc.offer(p, zh[i]).catch(() => {})));
+        }
+      }
+      // From here on nothing waits: positions are those of this document.
+      if (!editor || job.state !== "done" || job.epoch !== assist.epoch) return;
+      if (swapping) {
+        session.flash(t("doc.busySwapping"));
         return;
       }
-      from = at;
-      to = at + job.target.text.length;
-    }
-    if (!job.target.insert && job.target.wholeParagraph && r.translation && r.translationMatches) {
-      try {
-        await assistIpc.offer(r.revision, r.translation);
-      } catch {
-        // The paragraph is translated again instead.
+      const doc = editor.doc;
+      const whole = doc.toString();
+      let from = Math.min(job.from, doc.length);
+      let to = Math.min(job.to, doc.length);
+      let insert = r.revision;
+      if (job.target.insert) {
+        from = to = insertionAt(whole, from);
+        insert = asParagraph(whole.slice(0, from), whole.slice(from), r.revision.trim());
+      } else if (doc.sliceString(from, to) !== job.target.text) {
+        // Moved (its place is gone): found again if it occurs once, and is a
+        // paragraph or long enough not to be a common phrase.
+        const findable = job.target.wholeParagraph || job.target.text.trim().length >= 24;
+        const at = to === from && findable ? uniqueIndex(whole, job.target.text) : -1;
+        if (at < 0) {
+          job.conflict = true;
+          return;
+        }
+        from = at;
+        to = at + job.target.text.length;
       }
-    }
-    // New paragraphs come with their translation, paragraph for paragraph.
-    if (job.action === "write" && r.translation) {
-      const paragraphs = (s: string) => s.trim().split(/\n\s*\n/).map((p) => p.trim());
-      const [en, zh] = [paragraphs(r.revision), paragraphs(r.translation)];
-      if (en.length === zh.length) {
-        await Promise.all(en.map((p, i) => assistIpc.offer(p, zh[i]).catch(() => {})));
-      }
-    }
-    const changes = [{ from, to, insert }];
-    // A figure's missing packages go into the preamble, when it is here.
-    let shift = 0;
-    if (job.action === "figure" && r.preambleHere && r.missingPackages.length) {
-      const at = doc.toString().search(/^\\begin\{document\}/m);
-      if (at >= 0 && at < from) {
+      const changes = [{ from, to, insert }];
+      // A figure's missing packages go into the preamble, when it is here.
+      let shift = 0;
+      if (job.action === "figure" && r.preambleHere && r.missingPackages.length) {
+        const at = whole.search(/^[ \t]*\\begin\{document\}/m);
         const lines = r.missingPackages.map((p) => `\\usepackage{${p}}\n`).join("");
-        changes.unshift({ from: at, to: at, insert: lines });
-        shift = lines.length;
+        if (at >= 0 && at < from) {
+          changes.unshift({ from: at, to: at, insert: lines });
+          shift = lines.length;
+        } else {
+          session.flash(t("assist.packagesNotAdded", { packages: lines.trim().split("\n").join(" ") }));
+        }
       }
+      editor.view.dispatch({
+        changes,
+        selection: { anchor: from + shift, head: from + shift + insert.length },
+        scrollIntoView: true,
+        userEvent: "input.assist",
+      });
+      job.state = "applied";
+      editor.focus();
+      void flush();
+    } finally {
+      job.applying = false;
     }
-    editor.view.dispatch({
-      changes,
-      selection: { anchor: from + shift, head: from + shift + insert.length },
-      scrollIntoView: true,
-      userEvent: "input.assist",
-    });
-    job.state = "applied";
-    editor.focus();
-    void flush();
+  }
+
+  /** Once a job's rerun started: the old card goes, unless it was applied meanwhile. */
+  function replaced(job: AssistJob, started: boolean): void {
+    job.restarting = false;
+    if (started && (job.state === "done" || job.state === "failed")) assist.discard(job);
   }
 
   function againJob(job: AssistJob): void {
+    if (job.restarting) return;
+    // Its place is in a document that is no longer open.
+    if (job.epoch !== assist.epoch) {
+      session.flash(t("assist.stale"));
+      return;
+    }
+    job.restarting = true;
     void runAssist({
       action: job.action,
       scope: job.scope,
-      from: job.from,
-      to: job.target.insert ? job.from : job.to,
+      at: () => ({ from: job.from, to: job.target.insert ? job.from : job.to }),
       instruction: job.instruction,
       history: job.history,
-    });
-    assist.discard(job);
+    }).then((started) => replaced(job, started));
   }
 
   function reapplyJob(job: AssistJob): void {
-    if (!job.result?.revision || job.to <= job.from) return;
+    if (!job.result?.revision || job.to <= job.from || job.restarting) return;
+    if (job.epoch !== assist.epoch) {
+      session.flash(t("assist.stale"));
+      return;
+    }
+    const revision = job.result.revision;
+    job.restarting = true;
     void runAssist({
       action: "edit",
       scope: job.scope,
-      from: job.from,
-      to: job.to,
-      instruction: reapplyInstruction(job.target.text, job.result.revision),
+      at: () => ({ from: job.from, to: job.to }),
+      instruction: reapplyInstruction(job.target.text, revision),
       reapplies: job.id,
-    });
-    assist.discard(job);
+    }).then((started) => replaced(job, started));
   }
 
   function followUp(job: AssistJob, question: string): void {
+    if (job.epoch !== assist.epoch) {
+      session.flash(t("assist.stale"));
+      return;
+    }
     void runAssist({
       action: "ask",
       scope: job.scope,
-      from: job.from,
-      to: job.to,
+      at: () => ({ from: job.from, to: job.to }),
       instruction: question,
       history: [...job.history, [job.instruction, job.result?.answer ?? ""]],
     });
@@ -1176,6 +1223,9 @@
       onCursor,
       onGeometry: () => sync.schedule(),
     });
+    // `editor` isn't reactive: what was derived before it existed (the
+    // assistant's target, with the dock open at startup) is worked out again.
+    highlightTick++;
     const scroller = editor.view.scrollDOM;
     const onEditorScroll = () => sync.onScroll("left");
     scroller.addEventListener("scroll", onEditorScroll, { passive: true });
