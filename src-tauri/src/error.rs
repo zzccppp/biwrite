@@ -28,6 +28,10 @@ pub enum CommandError {
     /// A newer request replaced this one (a build, for example).
     #[error("cancelled")]
     Cancelled,
+    /// The PDF was built before a swap, a pairing or an unpairing, so its
+    /// lines no longer map to the editor: it is built again first.
+    #[error("stale pdf")]
+    StalePdf,
     /// Provider errors are already redacted at the source.
     #[error(transparent)]
     Provider(#[from] TranslateError),

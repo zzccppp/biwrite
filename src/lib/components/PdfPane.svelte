@@ -377,6 +377,9 @@
   {#if build?.projectRc}
     <div class="problems"><p class="note warn">{t("pdf.projectRc", { file: build.projectRc })}</p></div>
   {/if}
+  {#if build && store.stale[lang]}
+    <div class="problems"><p class="note">{t("pdf.staleNote")}</p></div>
+  {/if}
   {#if build && (showProblems || build.outcome !== "ok") && (build.issues.length || build.outcome !== "ok")}
     <div class="problems">
       {#if build.stale && build.outcome !== "ok" && build.hasPdf}<p class="note">{t("pdf.stale")}</p>{/if}

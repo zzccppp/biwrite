@@ -22,7 +22,7 @@
   import TranslationPane from "./lib/components/TranslationPane.svelte";
   import { SourceEditor } from "./lib/editor/editor";
   import { count, language, t } from "./lib/i18n.svelte";
-  import { assistIpc, errorMessage, ipc, latexIpc, logIpc, pairIpc, settingsIpc, subscribe, updateIpc } from "./lib/ipc";
+  import { assistIpc, errorMessage, ipc, isStalePdf, latexIpc, logIpc, pairIpc, settingsIpc, subscribe, updateIpc } from "./lib/ipc";
   import { LatexStore } from "./lib/latex.svelte";
   import { RequestLogStore } from "./lib/requestLog.svelte";
   import { ScrollSync, type Side } from "./lib/scrollSync";
@@ -157,7 +157,9 @@
       // Not persisted; harmless.
     }
     if (tab === "pdf") {
-      if (compilable && latex.ready && !latex.builds[latex.lang] && !latex.building[latex.lang]) void compile();
+      // The hidden translation pane must not move the editor.
+      sync.driver = "left";
+      ensurePdf(latex.lang);
     } else {
       requestAnimationFrame(() => sync.schedule());
     }
@@ -495,6 +497,7 @@
         const at = cursorParagraph();
         const view = await ipc.retargetLanguage(editor.text(), session.document, true);
         if (view) {
+          latex.outdate();
           loadView(view);
           restoreCursor(at);
           session.flash(t("doc.retargetedAuto", { lang: langName(view.home), other: langName(view.home === "zh-en" ? "en-zh" : "zh-en") }));
@@ -525,8 +528,12 @@
       const at = cursorParagraph();
       // Skipped blocks are identical on both sides: keep expanded equations open.
       const expanded = session.expandedPositions();
+      const paired = session.pair !== null;
       const view = await ipc.swapLanguages(editor.text(), session.document, keep);
       swapping = false;
+      // A pair's PDFs are its two files and stay. Without a pair, the
+      // editor now holds the other language than the PDFs were built for.
+      if (!paired) latex.outdate();
       loadView(view);
       session.restoreExpanded(expanded);
       restoreCursor(at);
@@ -583,6 +590,7 @@
       const view = await ipc.retargetLanguage(editor.text(), session.document, false);
       swapping = false;
       if (!view) return;
+      latex.outdate();
       loadView(view);
       restoreCursor(at);
       session.flash(t("doc.retargeted", { lang: langName(view.home), other: langName(view.home === "zh-en" ? "en-zh" : "zh-en") }));
@@ -726,6 +734,7 @@
     try {
       const view = await pairIpc.importMirror(editor.text(), session.document);
       if (!view) return;
+      latex.outdate();
       loadView(view);
       if (view.pair) session.flash(t("pair.imported", { name: view.pair.name, paired: view.pair.paired, units: view.pair.units }));
     } catch (err) {
@@ -738,6 +747,8 @@
       await pairIpc.close();
       session.pair = null;
       mirrorWaiting = false;
+      latex.outdate();
+      if (showPdf) ensurePdf(latex.lang);
       // A save that marked the pair as waiting no longer applies.
       refreshDirty();
     } catch (err) {
@@ -790,6 +801,25 @@
     }
   }
 
+  /**
+   * Build the PDF of `lang` when there is none yet (saving first, as any
+   * build), or again when it is stale: then without saving, since nobody
+   * asked for a save.
+   */
+  function ensurePdf(lang: PdfLang): void {
+    if (!compilable || !latex.ready || latex.building[lang]) return;
+    if (!latex.builds[lang]) void compile(lang);
+    else if (latex.stale[lang]) void compile(lang, false);
+  }
+
+  /** A click or the cursor met a PDF built before a pairing or a swap. */
+  function rebuildStale(lang: PdfLang): void {
+    latex.markStale(lang);
+    pdfMenu = null;
+    session.flash(t("pdf.staleRebuilding"));
+    ensurePdf(lang);
+  }
+
   function showPdfTab(): void {
     if (rightTab !== "pdf") setRightTab("pdf");
   }
@@ -801,10 +831,18 @@
   async function pickInPdf(pick: PdfPick): Promise<void> {
     if (!editor) return;
     lastPick = pick;
+    // The editor follows the clicks: the hidden translation pane must not
+    // scroll it back.
+    sync.driver = "left";
+    const lang = latex.lang;
+    if (latex.stale[lang]) {
+      rebuildStale(lang);
+      return;
+    }
     const near = { page: pick.page, x: pick.x, y: pick.y };
     try {
       const hit = await latexIpc.inverse(
-        latex.lang,
+        lang,
         pick.page,
         pick.x,
         pick.y,
@@ -834,7 +872,8 @@
         pdfMenu = { ...near, here: false, paragraph: false, file: hit.open ?? hit.file, line: hit.line };
       }
     } catch (err) {
-      fail(err);
+      if (isStalePdf(err)) rebuildStale(lang);
+      else fail(err);
     }
   }
 
@@ -890,7 +929,7 @@
   function switchPdfLang(lang: PdfLang): void {
     latex.setLang(lang);
     pdfMenu = null;
-    if (compilable && latex.ready && !latex.builds[lang] && !latex.building[lang]) void compile(lang);
+    ensurePdf(lang);
   }
 
   async function exportTranslatedTex(): Promise<void> {
@@ -917,7 +956,16 @@
   async function gotoIssue(issue: IssueView): Promise<void> {
     if (!editor || issue.line === null) return;
     if (issue.here) {
-      const r = await latexIpc.goto(latex.lang, issue.line, editor.text()).catch(() => null);
+      const lang = latex.lang;
+      let r: Awaited<ReturnType<typeof latexIpc.goto>> = null;
+      try {
+        r = await latexIpc.goto(lang, issue.line, editor.text());
+      } catch (err) {
+        if (isStalePdf(err)) {
+          rebuildStale(lang);
+          return;
+        }
+      }
       const range = r ?? lineRange(issue.line);
       editor.select(range.from, range.to);
     } else if (issue.file) {
@@ -930,6 +978,10 @@
     if (!editor || !isLatex) return;
     showPdfTab();
     const lang = latex.lang;
+    if (latex.stale[lang]) {
+      rebuildStale(lang);
+      return;
+    }
     try {
       const head = editor.view.state.selection.main.head;
       const boxes = await latexIpc.forward(lang, head, editor.text(), session.document);
@@ -939,7 +991,8 @@
       }
       pdfMarks = { lang, boxes, tick: pdfMarks.tick + 1 };
     } catch (err) {
-      fail(err);
+      if (isStalePdf(err)) rebuildStale(lang);
+      else fail(err);
     }
   }
 

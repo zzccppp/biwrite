@@ -639,6 +639,18 @@ resolve to their target and permissions are preserved.
   are checked against the line SyncTeX names. When they are not there (a
   line-number ruler drawn over the page), `biwrite_latex::find_words` finds
   them in the document as compiled and the project's other files.
+* **Stale PDFs** (`latex_commands::build_is_current`). Each build records
+  what TeX read (the files on disk, or the composed translation) and the
+  editing direction. A pairing or an unpairing changes what the other
+  language's PDF is made from, and a swap without a pair puts the other
+  language in the editor: after either, clicks, the cursor and the problem
+  list refuse the PDF built before (`CommandError::StalePdf`), and the UI
+  builds it again without saving first. A swapped pair keeps both PDFs,
+  which map through the pair's links and the files on disk.
+* **Scroll sync and the PDF tab** (`scrollSync.ts`). A pane hidden behind
+  the PDF tab has no size, so its scroll position is neither read nor
+  written. Showing the PDF tab and clicking in the PDF make the editor the
+  side that drives.
 * **Writing and figures** (`Action::Write`, `biwrite_latex::packages`).
   Write inserts new paragraphs after the target in the manner of reference
   texts, which can be files (`load_reference` keeps a `.tex` body without

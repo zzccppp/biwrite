@@ -99,6 +99,8 @@ const state = {
   /** Blocks left in English by an early swap, filled in later. */
   kept: new Set<number>(),
   text: ZH_FILE ? "" : LATEX ? PAPER : SAMPLE,
+  /** Paired with paper_zh.tex through the import button. */
+  paired: false,
   revision: 1,
   version: 1,
   nextRecord: 1,
@@ -268,10 +270,28 @@ function session(): SessionView {
     autoTranslate: true,
     lineEnding: "lf",
     bom: false,
-    pair: null,
+    pair: state.paired ? PAIR : null,
     home: state.home,
     snapshot: snapshot(),
   };
+}
+
+const PAIR = { path: "/Users/me/papers/gnn-icl/paper_zh.tex", name: "paper_zh.tex", paired: 21, units: 21, dirty: false };
+
+/** What each PDF was built from, as the backend records it. */
+type Built = { source: "files" | "translation"; direction: "en-zh" | "zh-en" };
+const built: Record<"en" | "zh", Built | null> = { en: null, zh: null };
+
+function sourceNow(lang: "en" | "zh"): Built["source"] {
+  const fileLang = state.home === "zh-en" ? "zh" : "en";
+  return state.paired || lang === fileLang ? "files" : "translation";
+}
+
+/** As `build_is_current`: built from something else now, or (without a pair) for the other editing language. */
+function stalePdf(lang: unknown): boolean {
+  const b = built[lang === "zh" ? "zh" : "en"];
+  if (!b) return false;
+  return b.source !== sourceNow(lang === "zh" ? "zh" : "en") || (!state.paired && b.direction !== state.direction);
 }
 
 /** The sample paper with Chinese paragraphs, except the blocks in `keep`. */
@@ -514,7 +534,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
   latex_open: () => session(),
   latex_open_folder: () => session(),
   latex_compile: async (a): Promise<BuildView> => {
+    const lang = a.lang === "zh" ? "zh" : "en";
+    const record: Built = { source: sourceNow(lang), direction: state.direction };
     await wait(1200);
+    built[lang] = record;
     const zh = a.lang === "zh";
     return {
       id: nextBuild++,
@@ -539,13 +562,21 @@ const handlers: Record<string, (args: Args) => unknown> = {
   },
   latex_cancel: () => null,
   latex_export_tex: () => "/Users/me/papers/gnn-icl/paper_zh.tex",
-  import_mirror: () => ({ ...session(), pair: { path: "/Users/me/papers/gnn-icl/paper_zh.tex", name: "paper_zh.tex", paired: 21, units: 21, dirty: false } }),
-  close_mirror: () => null,
+  import_mirror: () => {
+    state.paired = true;
+    return session();
+  },
+  close_mirror: () => {
+    state.paired = false;
+    return null;
+  },
   write_mirror: () => ({ name: "paper_zh.tex", written: true, pending: 0, changed: 1 }),
   export_api_keys: () => "/Users/me/Desktop/AnyRouter-keys.txt",
   import_api_keys: () => state.settings,
   swap_languages: (a) => {
     state.direction = state.direction === "en-zh" ? "zh-en" : "en-zh";
+    // A pair swaps files: the other one is edited, in its own language.
+    if (state.paired) state.home = state.direction;
     if (state.direction === "zh-en" && LATEX) {
       // Swapping early keeps the untranslated paragraphs in English for now.
       state.kept = a.keep ? new Set(state.pending) : new Set();
@@ -584,12 +615,17 @@ const handlers: Record<string, (args: Args) => unknown> = {
   latex_reveal_pdf: () => null,
   latex_save_pdf: () => "/Users/me/papers/gnn-icl/paper.pdf",
   latex_inverse: (a) => {
+    if (stalePdf(a.lang)) throw new Error("stale pdf");
     const range = sentenceOf(String(a.span ?? ""));
     return { file: "paper.tex", line: 26, here: true, range, paragraph: false };
   },
-  latex_forward: () => [{ page: 1, left: 133, top: 470, width: 345, height: 12 }],
+  latex_forward: (a) => {
+    if (stalePdf(a.lang)) throw new Error("stale pdf");
+    return [{ page: 1, left: 133, top: 470, width: 345, height: 12 }];
+  },
   latex_locate: (a) => sentenceOf(String(a.span ?? "")),
   latex_goto: (a) => {
+    if (stalePdf(a.lang)) throw new Error("stale pdf");
     const lines = state.text.split("\n");
     const n = Math.min(Number(a.line), lines.length) - 1;
     const from = lines.slice(0, n).reduce((sum, l) => sum + l.length + 1, 0);

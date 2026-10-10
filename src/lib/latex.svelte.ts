@@ -23,8 +23,15 @@ export class LatexStore {
   failure = $state<Record<PdfLang, string | null>>({ en: null, zh: null });
   /** The PDF on show. */
   lang = $state<PdfLang>(loadLang());
+  /**
+   * The PDF was built before a pairing, an unpairing or a swap without a
+   * pair: its clicks and the cursor map nothing until it is built again.
+   */
+  stale = $state<Record<PdfLang, boolean>>({ en: false, zh: false });
   /** Builds started per language; a finished build only reports if it is the latest. */
   #started: Record<PdfLang, number> = { en: 0, zh: 0 };
+  /** Bumped by `outdate`: a build started before it is stale when it ends. */
+  #context = 0;
 
   get ready(): boolean {
     return !!this.status?.found;
@@ -60,17 +67,33 @@ export class LatexStore {
     if (!next || !before || before.folder !== next.folder || before.root !== next.root) {
       this.builds = { en: null, zh: null };
       this.failure = { en: null, zh: null };
+      this.stale = { en: false, zh: false };
     }
+  }
+
+  /** What the PDFs are built from changed (a pairing, an unpairing, a swap without a pair). */
+  outdate(): void {
+    this.#context++;
+    this.stale = { en: this.builds.en !== null, zh: this.builds.zh !== null };
+  }
+
+  /** The backend found the PDF of `lang` stale. */
+  markStale(lang: PdfLang): void {
+    if (this.builds[lang]) this.stale[lang] = true;
   }
 
   /** Build one PDF from the editor's `text` (of `document`). `null` when it was replaced by a newer build or failed to run. */
   async compile(lang: PdfLang, text: string, document: number): Promise<BuildView | null> {
     const n = ++this.#started[lang];
+    const context = this.#context;
     this.building[lang] = true;
     this.failure[lang] = null;
     try {
       const build = await latexIpc.compile(lang, text, document);
-      if (n === this.#started[lang]) this.builds[lang] = build;
+      if (n === this.#started[lang]) {
+        this.builds[lang] = build;
+        this.stale[lang] = context !== this.#context;
+      }
       return build;
     } catch (err) {
       const message = errorMessage(err);

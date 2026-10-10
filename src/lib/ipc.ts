@@ -240,3 +240,8 @@ export function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
 }
+
+/** The PDF was built before a pairing, an unpairing or a swap without a pair (`CommandError::StalePdf`). */
+export function isStalePdf(err: unknown): boolean {
+  return errorMessage(err) === "stale pdf";
+}

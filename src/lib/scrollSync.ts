@@ -19,6 +19,8 @@ export interface ScrollSyncDeps {
 }
 
 const clamp01 = (x: number) => (Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : 0);
+/** A pane hidden behind another tab has no size: its scroll position means nothing. */
+const shown = (el: HTMLElement) => el.clientHeight > 0;
 /** Space kept around the active block when revealing it. */
 const REVEAL_MARGIN = 24;
 
@@ -74,7 +76,7 @@ export class ScrollSync {
   private leftToRight(): void {
     const view = this.deps.editor();
     const right = this.deps.right();
-    if (!view || !right || this.deps.index.size === 0) return;
+    if (!view || !right || this.deps.index.size === 0 || !shown(right)) return;
     // Reading line: the top edge plus the content padding on each side, so
     // both panes at scrollTop 0 correspond exactly.
     const y = this.editorTop(view) + this.leadLeft(view);
@@ -124,7 +126,7 @@ export class ScrollSync {
   private rightToLeft(): void {
     const view = this.deps.editor();
     const right = this.deps.right();
-    if (!view || !right || this.deps.index.size === 0) return;
+    if (!view || !right || this.deps.index.size === 0 || !shown(right)) return;
     const y = right.scrollTop + this.lead(right);
     // Binary search for the first block whose bottom is below the reading line.
     let lo = 0;

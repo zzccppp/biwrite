@@ -53,6 +53,21 @@ struct Build {
     /// The open document's path when the build started.
     doc_path: PathBuf,
     basis: Basis,
+    /// What TeX read: the files on disk, or a document composed from the
+    /// translations.
+    source: Source,
+    /// The editing direction when the build started.
+    direction: Direction,
+}
+
+/// What a PDF is built from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    /// The project's files as saved (the file's own language, or either
+    /// language of a pair).
+    Files,
+    /// A document composed from the translations, in a mirror folder.
+    Translation,
 }
 
 #[derive(Default)]
@@ -486,7 +501,7 @@ pub async fn latex_compile(
     let root_rel = relative(&p.root, &p.dir).unwrap_or_default();
     let doc_is_root = p.path == p.root;
     let mut untranslated = 0;
-    let (job, doc_file, basis) = match lang {
+    let (job, doc_file, basis, source) = match lang {
         _ if paired || lang == file_lang => (
             Job {
                 dir: p.dir.clone(),
@@ -502,6 +517,7 @@ pub async fn latex_compile(
                 same_language: lang == source_lang(direction),
                 mode: Mode::Latex,
             },
+            Source::Files,
         ),
         _ => {
             // The editor's text if it is in this language, else composed
@@ -554,6 +570,7 @@ pub async fn latex_compile(
                     same_language: lang == source_lang(direction),
                     mode: Mode::Latex,
                 },
+                Source::Translation,
             )
         }
     };
@@ -615,9 +632,36 @@ pub async fn latex_compile(
                 .map(canonical)
                 .unwrap_or_default(),
             basis,
+            source,
+            direction,
         },
     );
     Ok(view)
+}
+
+/// What a build of `lang` is made from now (as [`latex_compile`] decides).
+fn source_now(state: &AppState, lang: Lang) -> Source {
+    let fs = state.file();
+    if fs.pair.is_some() || lang == source_lang(fs.home) {
+        Source::Files
+    } else {
+        Source::Translation
+    }
+}
+
+/// The PDF of `lang` still belongs to the document as it is edited now.
+/// It does not when a pairing or unpairing since the build changed what
+/// the PDF is made from (the translation, or the paired file), nor after a
+/// swap without a pair, which put the other language in the editor. Such a
+/// PDF is built again before clicks or the cursor map through it.
+fn build_is_current(state: &AppState, lang: Lang) -> bool {
+    let builds = state.latex.builds();
+    let Some(build) = builds.get(&lang) else {
+        return true;
+    };
+    let paired = state.file().pair.is_some();
+    build.source == source_now(state, lang)
+        && (paired || build.direction == state.engine.direction())
 }
 
 /// The editor holds the open file's own language (as on disk, give or
@@ -834,7 +878,7 @@ pub async fn latex_export_tex(
 // ── SyncTeX ──────────────────────────────────────────────────────────
 
 /// UTF-16 range in the editor's text.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Range16 {
     pub from: usize,
@@ -861,7 +905,7 @@ fn sentence_or_line(text: &str, at: usize, line: usize) -> Range16 {
     range16(text, from, to)
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncHit {
     /// Relative to the project folder (the original file for the mirror).
@@ -894,6 +938,9 @@ pub async fn latex_inverse(
     document: u64,
 ) -> CommandResult<Option<SyncHit>> {
     let tc = require_toolchain(&state).await?;
+    if !build_is_current(&state, lang) {
+        return Err(CommandError::StalePdf);
+    }
     let pdf = pdf_of(&state, lang)?;
     let Some(point) = latex::synctex::inverse(&tc, &pdf, page, x, y)
         .await
@@ -932,7 +979,10 @@ pub async fn latex_inverse(
         paragraph,
         open: None,
     };
-    if file == build.doc_file && current.as_ref() == Some(&build.doc_path) {
+    if file == build.doc_file
+        && current.as_ref() == Some(&build.doc_path)
+        && build.direction == state.engine.direction()
+    {
         return Ok(match build.basis.to_editor(line, &text) {
             Some(Place::Line(l)) => {
                 let at = latex::locate(&text, l as u32, &span, click);
@@ -1065,6 +1115,9 @@ pub async fn latex_forward(
     document: u64,
 ) -> CommandResult<Vec<PdfBox>> {
     let tc = require_toolchain(&state).await?;
+    if !build_is_current(&state, lang) {
+        return Err(CommandError::StalePdf);
+    }
     let at = utf16_to_byte(&text, offset);
     let current = state.file().path.as_deref().map(canonical);
     if lang != source_lang(state.engine.direction())
@@ -1083,7 +1136,8 @@ pub async fn latex_forward(
         let Some(pdf) = build.pdf.clone() else {
             return Ok(Vec::new());
         };
-        if current.as_ref() == Some(&build.doc_path) {
+        if current.as_ref() == Some(&build.doc_path) && build.direction == state.engine.direction()
+        {
             let Some(line) = build.basis.to_compiled(&text, at) else {
                 return Ok(Vec::new());
             };
@@ -1119,11 +1173,15 @@ pub async fn latex_goto(
     line: u32,
     text: String,
 ) -> CommandResult<Option<Range16>> {
+    if !build_is_current(&state, lang) {
+        return Err(CommandError::StalePdf);
+    }
     let current = state.file().path.as_deref().map(canonical);
+    let direction = state.engine.direction();
     let builds = state.latex.builds();
     let Some(build) = builds
         .get(&lang)
-        .filter(|b| current.as_ref() == Some(&b.doc_path))
+        .filter(|b| current.as_ref() == Some(&b.doc_path) && b.direction == direction)
     else {
         return Ok(None);
     };
@@ -1260,6 +1318,85 @@ pub async fn latex_reveal_templates(state: State<'_, AppState>) -> CommandResult
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn build_of(source: Source, direction: Direction) -> Build {
+        Build {
+            pdf: None,
+            dir: PathBuf::new(),
+            doc_file: PathBuf::new(),
+            doc_path: PathBuf::new(),
+            basis: Basis {
+                compiled: String::new(),
+                editor: String::new(),
+                same_language: true,
+                mode: Mode::Latex,
+            },
+            source,
+            direction,
+        }
+    }
+
+    /// A PDF stops mapping once it would be built from something else (a
+    /// pairing, an unpairing) or its lines are in the other language than
+    /// the editor's (a swap without a pair). A swapped pair keeps both.
+    #[tokio::test]
+    async fn a_pdf_is_stale_once_it_would_be_built_from_something_else() {
+        let dir = std::env::temp_dir().join(format!("biwrite-stale-{}", std::process::id()));
+        let state = crate::pair_tests::app_state(&dir);
+        let set = |lang, source, direction| {
+            state
+                .latex
+                .builds()
+                .insert(lang, build_of(source, direction));
+        };
+        let edit = |direction| {
+            state
+                .engine
+                .load_known("x".to_owned(), Mode::Latex, direction, Vec::new());
+        };
+        let current = |lang| build_is_current(&state, lang);
+
+        // An English file: its PDF from the file, the Chinese one from
+        // the translation.
+        set(Lang::En, Source::Files, Direction::EnZh);
+        set(Lang::Zh, Source::Translation, Direction::EnZh);
+        assert!(current(Lang::En) && current(Lang::Zh));
+
+        // Paired: the Chinese PDF is now the paired file's.
+        state.file().pair = Some(crate::pairing::PairState {
+            path: dir.join("paper_zh.tex"),
+            file: biwrite_core::TextFile::decode(b"x".to_vec()).unwrap(),
+            text: "x".to_owned(),
+            links: HashMap::new(),
+            unpaired: Default::default(),
+            behind: false,
+            exists: true,
+        });
+        assert!(current(Lang::En) && !current(Lang::Zh));
+        set(Lang::Zh, Source::Files, Direction::EnZh);
+        assert!(current(Lang::Zh));
+
+        // A swap of the pair: the Chinese file is edited, both still map.
+        edit(Direction::ZhEn);
+        state.file().home = Direction::ZhEn;
+        assert!(current(Lang::En) && current(Lang::Zh));
+
+        // Unpaired while editing the Chinese file: the English PDF should
+        // come from the translation, and the Chinese one was built for the
+        // English editor.
+        state.file().pair = None;
+        assert!(!current(Lang::En) && !current(Lang::Zh));
+        set(Lang::En, Source::Translation, Direction::ZhEn);
+        set(Lang::Zh, Source::Files, Direction::ZhEn);
+        assert!(current(Lang::En) && current(Lang::Zh));
+
+        // A swap without a pair: the editor holds the translation.
+        edit(Direction::EnZh);
+        assert!(!current(Lang::En) && !current(Lang::Zh));
+        // No PDF at all is not a stale one.
+        state.latex.builds().clear();
+        assert!(current(Lang::En) && current(Lang::Zh));
+    }
 
     #[test]
     fn mirror_files_map_to_their_originals() {

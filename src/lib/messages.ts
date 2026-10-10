@@ -265,6 +265,14 @@ export const messages = {
   "pdf.failed": { en: "No PDF was produced.", zh: "没有生成 PDF。" },
   "pdf.timedOut": { en: "Stopped after 5 minutes.", zh: "编译超过 5 分钟，已停止。" },
   "pdf.stale": { en: "This is the last PDF that compiled.", zh: "当前显示的是上一次编译成功的 PDF。" },
+  "pdf.staleNote": {
+    en: "Built before the pairing or the language swap: it is built again before a click finds its place.",
+    zh: "这份 PDF 编译于配对或切换语言之前，点击定位前会先重新编译。",
+  },
+  "pdf.staleRebuilding": {
+    en: "This PDF is from before the pairing or the language swap. Building it again, click once more when it is ready.",
+    zh: "这份 PDF 是配对或切换语言之前编译的，正在重新编译，完成后再点一次。",
+  },
   "pdf.projectRc": {
     en: "This project's own {file} ran with the build. It can run any command on your computer: build only projects you trust.",
     zh: "本项目自带的 {file} 已随编译运行。它可以在你的电脑上执行任意命令，请只编译你信任的项目。",

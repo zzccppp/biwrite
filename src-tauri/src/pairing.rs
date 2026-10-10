@@ -791,6 +791,19 @@ pub async fn import_mirror(
     else {
         return Ok(None);
     };
+    pair_with(&state, text, document, path, mirror_path)
+        .await
+        .map(Some)
+}
+
+/// Pair the open document at `path` with the file at `mirror_path`.
+pub(crate) async fn pair_with(
+    state: &AppState,
+    text: String,
+    document: u64,
+    path: PathBuf,
+    mirror_path: PathBuf,
+) -> CommandResult<SessionView> {
     if same_file(&mirror_path, &path) {
         return Err(fail(
             "Choose the other language's file, not the document itself.",
@@ -805,8 +818,8 @@ pub async fn import_mirror(
     let mode = state.engine.mode();
     // The file's own text: the editor's, or composed from the translations
     // while the other language is edited.
-    let text = home_text(&state, text)?;
-    let (snapshot, pair) = load_paired(&state, &path, &text, mode, mirror_path, mirror)?;
+    let text = home_text(state, text)?;
+    let (snapshot, pair) = load_paired(state, &path, &text, mode, mirror_path, mirror)?;
     let dirty = {
         let mut fs = state.file();
         fs.pair = Some(pair);
@@ -817,7 +830,7 @@ pub async fn import_mirror(
     let mut view = state.session_view(snapshot);
     // The editor keeps its (possibly unsaved) text.
     view.dirty = dirty;
-    Ok(Some(view))
+    Ok(view)
 }
 
 /// Stop writing to the mirror. Its paragraphs stay as the translations.
