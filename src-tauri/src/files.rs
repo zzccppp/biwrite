@@ -316,6 +316,18 @@ pub async fn write_file_atomic(path: PathBuf, bytes: Vec<u8>) -> CommandResult<(
 }
 
 pub(crate) fn write_atomic_blocking(path: &Path, bytes: &[u8]) -> CommandResult<()> {
+    write_atomic_with(path, bytes, false)
+}
+
+/// Like [`write_file_atomic`], for secrets: on Unix the file is readable by
+/// its owner only from the moment it is created, whatever was there before.
+pub async fn write_private_atomic(path: PathBuf, bytes: Vec<u8>) -> CommandResult<()> {
+    tokio::task::spawn_blocking(move || write_atomic_with(&path, &bytes, true))
+        .await
+        .map_err(|e| CommandError::Task(e.to_string()))?
+}
+
+fn write_atomic_with(path: &Path, bytes: &[u8], private: bool) -> CommandResult<()> {
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let dir = target.parent().unwrap_or(Path::new("."));
     let name = target
@@ -325,13 +337,19 @@ pub(crate) fn write_atomic_blocking(path: &Path, bytes: &[u8]) -> CommandResult<
     let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!(".{name}.{}-{n}.biwrite-tmp", std::process::id()));
     let result = (|| -> std::io::Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        if let Ok(meta) = fs::metadata(&target) {
+        if let Ok(meta) = fs::metadata(&target)
+            && !private
+        {
             fs::set_permissions(&tmp, meta.permissions())?;
         }
         fs::rename(&tmp, &target)?;
@@ -357,6 +375,29 @@ fn sync_dir(_dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn secrets_are_written_for_the_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("biwrite-private-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys.txt");
+        fs::write(&path, "old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        write_private_atomic(path.clone(), b"sk-secret".to_vec())
+            .await
+            .unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "sk-secret");
+        // Ordinary writes keep the file's permissions.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomic_blocking(&path, b"text").unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn fresh_names_count_up() {

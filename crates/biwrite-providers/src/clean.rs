@@ -31,7 +31,7 @@ const QUOTES: &[(char, char)] = &[('"', '"'), ('“', '”'), ('「', '」'), ('
 
 /// Strip wrappers the model added around the translation of `source`.
 pub fn clean_output(text: &str, source: &str) -> String {
-    let mut t = strip_think(text).trim().to_owned();
+    let mut t = strip_think(text, !mentions_think(source)).trim().to_owned();
     t = strip_fence(&t);
     t = strip_wrapper_tag(&t);
     if label_len(source.trim()).is_none() {
@@ -41,17 +41,43 @@ pub fn clean_output(text: &str, source: &str) -> String {
     t.trim().to_owned()
 }
 
-/// The text after any reasoning blocks at its start (`<think>…</think>`).
-pub fn strip_reasoning(text: &str) -> &str {
-    strip_think(text)
+/// The text after any reasoning blocks at its start (`<think>…</think>`),
+/// for an answer to `sent` (see [`strip_think`]).
+pub fn strip_reasoning<'a>(text: &'a str, sent: &str) -> &'a str {
+    strip_think(text, !mentions_think(sent))
 }
 
-/// Remove reasoning blocks at the start (complete ones only).
-fn strip_think(text: &str) -> &str {
+/// The text has a closing reasoning tag of its own (a paper about
+/// reasoning models may).
+fn mentions_think(text: &str) -> bool {
+    THINK_TAGS.iter().any(|(_, close)| text.contains(close))
+}
+
+/// Remove reasoning blocks at the start (complete ones only). With
+/// `orphans`, also reasoning whose opening tag the server left out: text up
+/// to a closing tag that ends its line, with no opening tag before it.
+/// (Callers pass `false` when what was sent mentions the tag itself.)
+fn strip_think(text: &str, orphans: bool) -> &str {
     let mut t = text.trim_start();
     loop {
         let Some((open, close)) = THINK_TAGS.iter().find(|(open, _)| t.starts_with(open)) else {
-            return t;
+            let orphan = THINK_TAGS
+                .iter()
+                .filter(|_| orphans)
+                .find_map(|(open, close)| {
+                    let end = t.find(close)?;
+                    let after = end + close.len();
+                    let rest = t[after..].trim_start_matches([' ', '\t']);
+                    let ends_line = rest.is_empty() || rest.starts_with(['\n', '\r']);
+                    (ends_line && !t[..end].contains(open)).then_some(after)
+                });
+            match orphan {
+                Some(after) => {
+                    t = t[after..].trim_start();
+                    continue;
+                }
+                None => return t,
+            }
         };
         match t.find(close) {
             Some(end) => t = t[end + close.len()..].trim_start(),
@@ -192,6 +218,34 @@ mod tests {
             "结果"
         );
         assert_eq!(clean_output("“结果”", "Result"), "结果");
+    }
+
+    #[test]
+    fn reasoning_without_its_opening_tag_is_dropped() {
+        assert_eq!(clean_output("Let me think.\n</think>\n\n结果", "x"), "结果");
+        assert_eq!(
+            strip_reasoning(
+                "<translation n=\"1\">草稿</translation></think>\n<translation n=\"1\">对</translation>",
+                "<source n=\"1\">Right.</source>"
+            ),
+            "<translation n=\"1\">对</translation>"
+        );
+        // Text that mentions the tag keeps it.
+        let about = "模型以 </think> 结束推理，之后给出答案。";
+        assert_eq!(clean_output(about, "x"), about);
+        let own_line = "推理以这个标签结束：\n</think>\n之后是答案。";
+        assert_eq!(
+            clean_output(
+                own_line,
+                "Reasoning ends with this tag:\n</think>\nthen the answer."
+            ),
+            own_line
+        );
+        // A complete block later in the text is the model's own text.
+        assert_eq!(
+            clean_output("结果 <think>x</think>", "x"),
+            "结果 <think>x</think>"
+        );
     }
 
     #[test]

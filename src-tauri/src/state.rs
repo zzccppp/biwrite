@@ -1,7 +1,7 @@
 //! Application state managed by Tauri.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use biwrite_core::{Direction, LineEnding, Mode, TextFile};
@@ -75,6 +75,10 @@ pub struct AppState {
     /// Set once the user agreed to discard changes while closing/quitting.
     discard_confirmed: AtomicBool,
     pub(crate) settings: Mutex<AppSettings>,
+    /// Changes of keys and providers (keychain, settings, providers in use)
+    /// run one at a time, so keys read for one host are never written back
+    /// after the provider moved to another. Held across keychain calls.
+    pub keys_lock: tokio::sync::Mutex<()>,
     pub paths: Paths,
     pub secrets: Arc<dyn SecretStore>,
     /// Document note for an untitled document (not persisted).
@@ -84,6 +88,9 @@ pub struct AppState {
     pub(crate) translation_http: Mutex<HttpInUse>,
     /// The provider the writing assistant uses, built on first use.
     pub(crate) assistant_http: Mutex<HttpInUse>,
+    /// Counts changes of the assistant's provider or its keys (bumped under
+    /// the `assistant_http` lock): a provider built across one is not kept.
+    pub(crate) assistant_epoch: AtomicU64,
     pub assist: AssistState,
     pub skills: SkillStore,
     pub latex: LatexState,
@@ -112,12 +119,14 @@ impl AppState {
             save_lock: tokio::sync::Mutex::new(()),
             discard_confirmed: AtomicBool::new(false),
             settings: Mutex::new(settings),
+            keys_lock: tokio::sync::Mutex::new(()),
             paths,
             secrets,
             untitled_note: Mutex::new(String::new()),
             request_log,
             translation_http: Mutex::new(None),
             assistant_http: Mutex::new(None),
+            assistant_epoch: AtomicU64::new(0),
             assist: AssistState::default(),
             skills,
             latex,

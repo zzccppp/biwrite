@@ -8,6 +8,7 @@ use std::time::Duration;
 use biwrite_core::{ContentHash, Protector, SegmentId, glossary, similarity};
 use tokio::time::Instant;
 
+use crate::batch_check;
 use crate::cache::CacheKey;
 use crate::engine::Inner;
 use crate::events::SegmentStatus;
@@ -86,14 +87,20 @@ impl Inner {
                         i += 1;
                     }
                 }
-                let jobs: Vec<Job> = ids
-                    .into_iter()
-                    .filter_map(|id| prepare_job(st, id))
-                    .collect();
+                // Each paragraph gets placeholder numbers of its own, so an
+                // answer under the wrong number fails to restore.
+                let mut first = 0;
+                let mut jobs: Vec<Job> = Vec::with_capacity(ids.len());
+                for id in ids {
+                    if let Some(job) = prepare_job(st, id, first) {
+                        first = job.protector.next_number();
+                        jobs.push(job);
+                    }
+                }
                 self.spawn_jobs(st, jobs);
                 continue;
             }
-            if let Some(job) = prepare_job(st, id) {
+            if let Some(job) = prepare_job(st, id, 0) {
                 self.spawn_jobs(st, vec![job]);
             }
         }
@@ -354,8 +361,9 @@ fn batch_group(st: &State, id: SegmentId) -> Option<bool> {
 }
 
 /// Build the request from the *current* document state and mark the segment
-/// as translating. Returns `None` if the segment vanished or needs no request.
-fn prepare_job(st: &mut State, id: SegmentId) -> Option<Job> {
+/// as translating; its placeholders are numbered from `first`. Returns
+/// `None` if the segment vanished or needs no request.
+fn prepare_job(st: &mut State, id: SegmentId, first: usize) -> Option<Job> {
     let idx = st.doc.index_of(id)?;
     let segments = st.doc.segments();
     let seg = &segments[idx];
@@ -389,13 +397,20 @@ fn prepare_job(st: &mut State, id: SegmentId) -> Option<Job> {
     };
     // Old and new text share one numbering, so unchanged math keeps its
     // placeholder in all three texts.
-    let mut protector = Protector::new(st.doc.mode());
+    let mut protector = Protector::numbered_from(st.doc.mode(), first);
     let masked = protector.mask(&source);
     let revision = previous.map(|(old_source, old_translation)| Revision {
         old_source: protector.mask_context(&old_source),
         old_translation: protector.mask_known(&old_translation),
     });
-    let glossary = st.glossary.relevant(&masked, direction);
+    // Matched on the text numbered from 0, as the cache key elsewhere is
+    // (`State::glossary_fp_toward`): a term like `12` may match inside `⟦12⟧`.
+    let glossary = if first == 0 {
+        st.glossary.relevant(&masked, direction)
+    } else {
+        let masked = Protector::new(st.doc.mode()).mask(&source);
+        st.glossary.relevant(&masked, direction)
+    };
     let key = st.cache_key_toward(direction, hash, glossary::fingerprint(&glossary));
     let request = TranslationRequest {
         direction,
@@ -448,6 +463,16 @@ async fn run_job(inner: Arc<Inner>, job: Job) {
     });
     let on_partial = |partial: &str| {
         if job.fill {
+            return;
+        }
+        if partial.is_empty() {
+            // The provider starts over (another key): clear at once.
+            buffer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .text
+                .clear();
+            inner.publish_partial(job.id, job.generation, None);
             return;
         }
         let due = {
@@ -531,6 +556,10 @@ async fn run_batch(inner: Arc<Inner>, jobs: Vec<Job>) {
         if job.fill {
             return;
         }
+        if partial.is_empty() {
+            inner.publish_partial(job.id, job.generation, None);
+            return;
+        }
         let due = {
             let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
             let now = Instant::now();
@@ -571,20 +600,53 @@ async fn run_batch(inner: Arc<Inner>, jobs: Vec<Job>) {
         }
     };
     let outcomes = match result {
-        Ok(texts) => jobs
-            .iter()
-            .enumerate()
-            .map(|(i, job)| match texts.get(i).cloned().flatten() {
-                Some(text) => match job.protector.restore(&text) {
-                    Ok(text) => Outcome::Done(text),
-                    Err(_) => Outcome::Alone,
-                },
-                None => Outcome::Alone,
-            })
-            .collect(),
+        Ok(texts) => {
+            let sources: Vec<&str> = requests.iter().map(|r| r.source.as_str()).collect();
+            let answers: Vec<Option<&str>> = (0..jobs.len())
+                .map(|i| texts.get(i).and_then(|t| t.as_deref()))
+                .collect();
+            let misplaced = batch_check::misplaced(first.request.direction, &sources, &answers);
+            jobs.iter()
+                .zip(answers)
+                .zip(misplaced)
+                .map(|((job, answer), misplaced)| match answer {
+                    Some(text) if !misplaced => match job.protector.restore(text) {
+                        Ok(text) => Outcome::Done(text),
+                        Err(_) => Outcome::Alone,
+                    },
+                    _ => Outcome::Alone,
+                })
+                .collect()
+        }
+        Err(e) if alone_might_work(&e) => jobs.iter().map(|_| Outcome::Alone).collect(),
         Err(e) => jobs.iter().map(|_| Outcome::Failed(e.clone())).collect(),
     };
     inner.finish_batch(jobs, outcomes);
+}
+
+/// Whether the paragraphs of a failed batch may fare better one by one: the
+/// error may come from what was sent (an answer too long for the output
+/// limit, a content filter, a refusal, a malformed reply), not from the key,
+/// the provider or the network, which would fail them alone just the same.
+fn alone_might_work(e: &TranslateError) -> bool {
+    match e {
+        TranslateError::InvalidResponse(_) => true,
+        TranslateError::Rejected { status, message } => {
+            // Some APIs report a bad key or an exhausted quota as a 400.
+            let lower = message.to_lowercase();
+            let about_the_account = [
+                "api key", "api_key", "apikey", "quota", "billing", "balance", "credit", "余额",
+                "额度",
+            ]
+            .iter()
+            .any(|n| lower.contains(n));
+            !matches!(status, 401 | 402 | 403 | 404 | 429) && !about_the_account
+        }
+        TranslateError::RateLimited { .. }
+        | TranslateError::Server { .. }
+        | TranslateError::Network(_)
+        | TranslateError::Config(_) => false,
+    }
 }
 
 #[cfg(test)]

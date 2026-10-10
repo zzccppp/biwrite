@@ -221,9 +221,14 @@ ten retries.
 * Name each key. Requests go to the least busy ready key, so the keys are
   used evenly.
 * A key that hits a rate limit cools down and the request moves to another
-  key. A key that is rejected is set aside.
+  key. A key that is rejected is set aside. A server or network error moves
+  the request to one other key at most, then it is retried after a pause.
 * *Requests per key* caps each key (AnyRouter allows two), and *Parallel
-  requests* can follow the pool.
+  requests* can follow the pool. When the ready keys are all busy, a request
+  waits for one of them rather than going to a key that is cooling down or
+  rejected.
+* Keys added or imported while paragraphs are being translated are used
+  from the next request on; requests already under way go on.
 * *Export to file…* saves the names and keys to a text file to move them or
   share them, and *Import from file…* reads one back. The keys go from the
   keychain to the file without passing through the window. The file holds

@@ -158,6 +158,10 @@ never spans a blank line, so an unmatched `$` stays text.
   source's spans are expected back.
 * **Streaming:** partials are shown restored; a trailing incomplete `⟦1` is
   hidden.
+* **Batches:** each paragraph of a batch request numbers its placeholders
+  after the previous one's (`Protector::numbered_from`), so an answer filed
+  under another paragraph's number fails to restore. A placeholder in the
+  translation of text that had none is unknown, so an error, too.
 * **Failure:** a mismatch is retried once immediately (no backoff; usage of
   both attempts is counted). A second mismatch is a non-retryable
   `InvalidResponse` ("the model changed protected text: missing ⟦3⟧
@@ -320,7 +324,10 @@ line, `$$…$$ text` on one line (the line is skipped as math), and
   fallback). A stream cut mid-event drops the unfinished event, which ends
   as a retryable `Network` error.
 * **Switching translator:** in-flight work is re-run with the new
-  translator. Output from the placeholder mock is redone when a real
+  translator. Adding or importing keys does not switch it: the pool reads
+  the keys again for its next request (`KeyPool::reload`, `AppState::reload_keys`),
+  requests in flight go on, a key that stays keeps its state and its slots,
+  and failed paragraphs are tried again (`Engine::retry_failed`). Output from the placeholder mock is redone when a real
   provider is selected, from scratch (it is never sent as a translation to
   revise). Real translations are kept across real providers.
 * **Usage:** every provider request is counted as soon as it returns, so a
@@ -340,13 +347,18 @@ line, `$$…$$ text` on one line (the line is skipped as math), and
   once, webview → Rust, over `set_api_key`. It is then cleared from the
   form.
 * `settings.json` (in the config dir) holds providers (no keys), the active
-  provider, concurrency and per-file document notes. A corrupt file is moved
-  to `settings.json.bad`.
+  provider, concurrency and per-file document notes. A corrupt file is
+  moved aside (`settings.json.bad`, `.bad-2`, …, never over an earlier
+  one). One that cannot be read (after a few tries: another program may
+  hold it) or moved stays where it is, and settings are not saved over it
+  (`AppSettings::keep_file`).
 * Base URLs must be https, or http on localhost, with no credentials. The
   cache identity is `kind:base_url`, so the same model name on another host
   is a different cache entry.
 * Changing a provider's API type or origin (scheme, host, port) deletes its
-  stored key, so a key is never sent to a host it wasn't entered for.
+  stored keys, even when the settings say it has none (a version without
+  pools may have left some), so a key is never sent to a host it wasn't
+  entered for.
 * A document's note is set before `load` starts its first requests.
 
 ## Frontend
@@ -511,10 +523,91 @@ resolve to their target and permissions are preserved.
     events are kept until the job is known. Jobs of a document no longer
     open can't be applied, run again or followed up.
 * **Key pools and the request log** (`biwrite-providers::keys`,
-  `observe`, `src-tauri/src/request_log.rs`). Keys stay in the keychain
-  (primary account plus `#pool`), records hold metadata only.
-* **Updates** (`src-tauri/src/updater.rs`). GitHub releases, SHA-256 checked
-  downloads, an in-place bundle swap on macOS and the installer on Windows.
+  `observe`, `src-tauri/src/request_log.rs`). Records hold metadata only.
+  * Requests go to the least busy ready key. While some key is ready, a
+    request waits for a slot on one (or for a paused key's pause to end)
+    rather than taking a cooling or rejected key; with none ready, the key
+    most likely to work goes out. A rejected key is tried again after ten
+    minutes. Faults are dated by when their request was sent, the latest
+    such request counting (a short server pause inside a rate limit leaves
+    its date), and a success clears only faults of requests sent before it;
+    a failure of a request sent before the latest success is old news. A rate limit or
+    rejection moves the request to every other key in turn, a server or
+    network error to one other key, then the queue backs off; keys added
+    while a request was under way are tried when it fails.
+  * Keys stay in the keychain: the first under the provider id (all that
+    0.1 reads), the rest one per line in `{id}#pool` (what 0.2.0–0.2.2
+    read). On Windows, which holds 2560 bytes of UTF-16 per credential, the
+    rest is split into parts of at most 1200 characters (`{id}#pool2`, …);
+    elsewhere one item keeps prompts down (macOS asks once per item after
+    an ad-hoc signed update). Parts are written first and the first key
+    last; a failed edit puts back what was there. An edit reads the keychain
+    once (each read may be a prompt), a replacement or deletion not at all,
+    so an unreadable item can still be replaced or deleted.
+  * Only as much of the rest is read as the settings vouch for
+    (`ProviderEntry::vouched`): nothing unless `keyCount` > 1 (0.1 drops it
+    when it saves), at most `keyParts` parts, and no more than `keyCount`
+    keys (0.2.x drops `keyParts` but keeps `keyCount` up to date, so the
+    count tells where its keys end). An older version may have replaced or
+    deleted keys or moved the provider to another host, leaving the rest
+    behind.
+  * Key and provider changes run one at a time (`AppState::keys_lock`),
+    from reading the keychain to the providers in use, so keys read for
+    one host are never written back after the provider moved. They are
+    refused while the settings file cannot be saved. A provider in use gets
+    added keys, and a cached one is reused, only if it was built for the
+    provider's current host (configuration); an assistant provider built
+    while its settings or keys changed is not kept (`assistant_epoch`).
+  * Pasted keys (`secrets::parse_named_keys`) are split into tokens at
+    spaces, `,;`, any non-ASCII punctuation or invisible character (curly
+    quotes, full-width colons, brackets, a byte-order mark) and where ASCII
+    meets other text (`主账号sk-…`). Keys may carry `+/` and `=` padding, be
+    quoted (`OPENAI_API_KEY="sk-…"`), sit in JSON or Markdown, or come with
+    URLs (skipped). Known prefixes (`sk-`, `AIza`, `eyJ`, `hf_`, `gsk_`,
+    `xai-`, `pplx-`, `bce-v3/`) make a key; otherwise it must be 20+
+    characters with digits, look random and not be words joined into an
+    identifier (a model id like `Qwen3-30B-A3B-Instruct-2507`, a host
+    name). A paste of one token of key characters is a key.
+  * Names live in `settings.json`, so a name is kept only if it is plainly
+    one (`secrets::plausible_name`: every run of key characters in it is
+    short, or simple parts joined by `-_.` with few letter–digit changes;
+    non-ASCII text only separates runs); any other name is dropped and its
+    key kept unnamed. Text that looks random enough to be a key refuses
+    the paste with a message. A rename is one line, never starts with `#`,
+    and is refused if it may be a key (`name_to_store`); names stored by
+    older versions that may be keys are dropped when the settings load.
+    A randomized test checks that random keys never become names, also in
+    Chinese or typographic surroundings. The exported pool file is
+    owner-only from its creation.
+* **Batches** (`queue.rs`, `batch_check.rs`). Fresh paragraphs share
+  requests up to the batch size. An answer is not used, and its paragraph
+  goes again on its own, when it fails to restore its placeholders or
+  seems written for another paragraph of the batch
+  (`batch_check::misplaced`). When an answer is missing, the model lost
+  count and the answers around the gap may be merged or shifted with
+  nothing to tell, so the whole batch goes again one by one. Names and numbers (acronyms, inner-capital
+  names, digits; plurals, ordinals and digit groups normalised) pass
+  through translation, so an answer sharing two more of them with another
+  paragraph than with its own is suspect, and so is one with none of its
+  own paragraph's three or more but some of another's. Its length is
+  judged against the median ratio of Chinese characters to English words
+  (names, commands, URLs and untranslated words left out) of at least two
+  other answers, and may stray by 1.75×. A batch failing with an error that
+  may be its content's (cut off, filtered, refused, malformed, a 4xx other
+  than 401/402/403/404/429 that is not about the key or quota) sends its
+  paragraphs one by one; a key, provider or network error fails them all.
+  The answer is parsed after any reasoning block, also one whose opening
+  tag is missing (a closing tag ending its line, when what was sent does
+  not mention the tag itself). The glossary of each paragraph is matched on its text
+  numbered from 0, as for the cache key.
+* **Updates** (`src-tauri/src/updater.rs`). GitHub releases, an in-place
+  bundle swap on macOS and the installer on Windows. An installer is
+  downloaded only from `github.com/zzccppp/biwrite/releases/download/` and
+  only when GitHub reports its SHA-256, which the download must match (the
+  URL is checked as parsed; a release without a checksum shows a note
+  instead of Install). The checksum comes from the same API listing as
+  the download URL, so it catches corruption, not a forged listing
+  (installers are not signed).
 * **Interface language** (`src/lib/messages.ts`, `i18n.svelte.ts`). Every
   string has English and Chinese, and `t()` follows the reactive language.
 

@@ -10,6 +10,7 @@ use biwrite_providers::{Effort, Preset, ProviderConfig, ProviderKind, WireApi, p
 use serde::{Deserialize, Serialize};
 
 use crate::request_log::LogSettings;
+use crate::secrets::Vouched;
 
 pub const MOCK_ID: &str = "mock";
 const DEFAULT_CONCURRENCY: usize = 4;
@@ -32,10 +33,41 @@ pub struct ProviderEntry {
     /// Names of the pool's keys, by key fingerprint (never the key itself).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub key_names: BTreeMap<String, String>,
+    /// Keychain items the keys after the first take (see `secrets`).
+    /// Versions that store them in one item drop it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub key_parts: usize,
 }
 
 fn is_zero(n: &usize) -> bool {
     *n == 0
+}
+
+/// Same API type and origin (scheme, host, port): the stored key may be
+/// reused.
+pub fn same_destination(a: &ProviderConfig, b: &ProviderConfig) -> bool {
+    let origin = |c: &ProviderConfig| {
+        reqwest::Url::parse(&c.base_url)
+            .map(|u| u.origin().ascii_serialization())
+            .unwrap_or_default()
+    };
+    a.kind == b.kind && origin(a) == origin(b)
+}
+
+impl ProviderEntry {
+    /// How much of the stored keys may be read. Versions without key pools
+    /// drop `key_count` when they save the settings (it then loads as 1),
+    /// versions that keep a pool in one item drop `key_parts` (then the
+    /// count tells where the keys end, as they keep it up to date), and
+    /// both may have replaced or deleted keys or moved the provider to
+    /// another host, leaving the rest of an older pool in the keychain.
+    pub fn vouched(&self) -> Vouched {
+        match (self.key_count, self.key_parts) {
+            (0 | 1, _) => Vouched::FIRST,
+            (keys, 0) => Vouched::counted(keys),
+            (keys, parts) => Vouched { keys, parts },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -62,6 +94,10 @@ pub struct AppSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skill_folder: Option<String>,
     pub latex: LatexSettings,
+    /// The settings file on disk could not be read nor moved aside: these
+    /// are defaults, and saving them would replace the user's file.
+    #[serde(skip)]
+    pub keep_file: bool,
     /// Look for a newer release at startup.
     pub check_updates: bool,
     /// Closing the window hides BiWrite in the menu bar or notification
@@ -104,6 +140,7 @@ impl Default for AppSettings {
             latex: LatexSettings::default(),
             check_updates: true,
             close_to_tray: true,
+            keep_file: false,
         }
     }
 }
@@ -126,6 +163,7 @@ fn mock_entry() -> ProviderEntry {
         has_key: false,
         key_count: 0,
         key_names: BTreeMap::new(),
+        key_parts: 0,
     }
 }
 
@@ -152,6 +190,10 @@ impl AppSettings {
             self.assistant_provider.clear();
         }
         for p in &mut self.providers {
+            // Names stored by versions that did not check them may hold a
+            // key: they are dropped.
+            p.key_names
+                .retain(|_, name| !crate::secrets::may_be_secret(name));
             p.key_count = match (p.has_key, p.key_count) {
                 (false, _) => 0,
                 (true, 0) => 1,
@@ -176,11 +218,13 @@ impl AppSettings {
         }
     }
 
-    /// Record how many keys provider `id` now has.
-    pub fn set_key_count(&mut self, id: &str, count: usize) -> bool {
+    /// Record how many keys provider `id` now has, and in how many
+    /// keychain items after the first.
+    pub fn set_key_count(&mut self, id: &str, count: usize, parts: usize) -> bool {
         match self.provider_mut(id) {
             Some(p) => {
                 p.key_count = count;
+                p.key_parts = parts;
                 p.has_key = count > 0;
                 true
             }
@@ -219,23 +263,90 @@ fn unreachable_mock() -> &'static ProviderEntry {
 /// Load settings; a missing file gives defaults, a corrupt one is moved
 /// aside (`settings.json.bad`) so the user's data isn't silently lost.
 pub fn load(path: &Path) -> AppSettings {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return AppSettings::default();
+    let text = match read_patiently(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AppSettings::default(),
+        Err(e) => {
+            // It may be fine (held by another program a moment longer):
+            // keep it, and save nothing over it.
+            log::error!(
+                "cannot read {} ({e}); starting with defaults, which will not be saved",
+                path.display()
+            );
+            return AppSettings {
+                keep_file: true,
+                ..AppSettings::default()
+            };
+        }
     };
-    match serde_json::from_str::<AppSettings>(&text) {
+    match serde_json::from_slice::<AppSettings>(&text) {
         Ok(s) => s.normalized(),
         Err(e) => {
             log::warn!(
                 "{} is invalid ({e}); starting with defaults",
                 path.display()
             );
-            let _ = std::fs::rename(path, path.with_extension("json.bad"));
+            set_aside(path)
+        }
+    }
+}
+
+/// Read `path`, trying again for a moment if another program holds it
+/// (antivirus or sync software on Windows).
+fn read_patiently(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::read(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound && attempt < 5 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Defaults in place of a settings file that cannot be used. The file is
+/// moved aside, next to earlier ones rather than over them, so saving the
+/// defaults does not destroy it; if it cannot be moved, saving is refused.
+fn set_aside(path: &Path) -> AppSettings {
+    let aside = (1..1000)
+        .map(|n| match n {
+            1 => path.with_extension("json.bad"),
+            n => path.with_extension(format!("json.bad-{n}")),
+        })
+        .find(|p| !p.exists());
+    let moved = match aside {
+        Some(aside) => std::fs::rename(path, &aside)
+            .map(|()| aside)
+            .map_err(|e| e.to_string()),
+        None => Err("too many earlier copies".to_owned()),
+    };
+    match moved {
+        Ok(aside) => {
+            log::warn!("the old settings are kept in {}", aside.display());
             AppSettings::default()
+        }
+        Err(e) => {
+            log::error!(
+                "cannot move {} aside ({e}); settings will not be saved",
+                path.display()
+            );
+            AppSettings {
+                keep_file: true,
+                ..AppSettings::default()
+            }
         }
     }
 }
 
 pub fn save(path: &Path, settings: &AppSettings) -> Result<(), String> {
+    if settings.keep_file && path.exists() {
+        return Err(format!(
+            "{} could not be read, and is kept as it is: fix or remove it, then restart BiWrite",
+            path.display()
+        ));
+    }
     let json = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
     crate::files::write_atomic_blocking(path, &json).map_err(|e| e.to_string())
 }
@@ -389,6 +500,7 @@ mod tests {
             has_key: true,
             key_count: 2,
             key_names: BTreeMap::new(),
+            key_parts: 0,
         }
     }
 
@@ -563,6 +675,11 @@ mod tests {
         let s = load(&path);
         let p = s.provider("p-1").unwrap();
         assert_eq!((p.has_key, p.key_count), (true, 1));
+        assert_eq!(
+            p.vouched(),
+            Vouched::FIRST,
+            "a pool left by a newer version is not used"
+        );
         assert_eq!(p.config.wire_api, WireApi::Chat);
         assert_eq!(
             s.assistant().config.id,
@@ -571,5 +688,96 @@ mod tests {
         );
         assert_eq!(s.request_log, LogSettings::default());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unusable_settings_file_is_kept() {
+        let dir = std::env::temp_dir().join(format!("biwrite-settings-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        // Invalid twice: each copy is kept, the earlier one too.
+        for text in ["{ not json", "[1, 2"] {
+            std::fs::write(&path, text).unwrap();
+            let s = load(&path);
+            assert!(!s.keep_file);
+            assert!(!path.exists());
+            save(&path, &s).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json.bad")).unwrap(),
+            "{ not json"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json.bad-2")).unwrap(),
+            "[1, 2"
+        );
+        // Not UTF-8: unreadable as settings, also kept.
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        load(&path);
+        assert_eq!(
+            std::fs::read(dir.join("settings.json.bad-3")).unwrap(),
+            [0xff, 0xfe, 0x00]
+        );
+        // A file that cannot be read stays where it is, and is not saved over.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&path, "{}").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let s = load(&path);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(s.keep_file);
+            assert!(save(&path, &s).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+            assert!(!dir.join("settings.json.bad-4").exists());
+        }
+        // A file that cannot be moved aside is never saved over.
+        std::fs::write(&path, "{ mine").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |m| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(m));
+            mode(0o555).unwrap();
+            let s = load(&path);
+            mode(0o755).unwrap();
+            assert!(s.keep_file);
+        }
+        let s = AppSettings {
+            keep_file: true,
+            ..AppSettings::default()
+        };
+        assert!(save(&path, &s).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ mine");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stored_keys_are_read_as_far_as_the_settings_vouch() {
+        let mut p = deepseek();
+        let vouched = |p: &ProviderEntry| p.vouched();
+        p.key_count = 1;
+        assert_eq!(vouched(&p), Vouched::FIRST);
+        // Written by this version: count and parts.
+        (p.key_count, p.key_parts) = (40, 2);
+        assert_eq!(vouched(&p), Vouched { keys: 40, parts: 2 });
+        // Saved by 0.2.x, which drops the parts but keeps the count.
+        p.key_parts = 0;
+        assert_eq!(vouched(&p), Vouched::counted(40));
+    }
+
+    #[test]
+    fn key_names_that_may_be_keys_are_dropped_on_load() {
+        let mut s = AppSettings::default();
+        let mut relay = deepseek();
+        relay.key_names.insert("aaaaaaaaaaaa".into(), "main".into());
+        relay.key_names.insert(
+            "bbbbbbbbbbbb".into(),
+            "“sk-proj-Ab3dE5gH7jK9mN1pQ3sT5vX7z".into(),
+        );
+        s.providers.push(relay);
+        let s = s.normalized();
+        let names = &s.provider("p-1").unwrap().key_names;
+        assert_eq!(names.len(), 1);
+        assert_eq!(names.get("aaaaaaaaaaaa").map(String::as_str), Some("main"));
     }
 }

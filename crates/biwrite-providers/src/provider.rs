@@ -21,7 +21,7 @@ use crate::chat::{ChatModel, ChatOutput, ChatRequest, ImageInput};
 use crate::clean::{clean_output, strip_reasoning};
 use crate::config::{ProviderConfig, ProviderKind, WireApi};
 use crate::http::{Core, error_from_response, invalid, send};
-use crate::keys::{KeyFn, KeyStatus, Lease};
+use crate::keys::{Failover, KeyFn, KeyStatus, Lease};
 use crate::observe::{Declared, RequestObserver, RequestRecord, Tap, endpoint_label};
 use crate::prompt::{self, PromptSource};
 use crate::{anthropic, openai, responses};
@@ -118,6 +118,17 @@ impl HttpProvider {
         self.core.keys.status()
     }
 
+    /// The configuration it was built for.
+    pub fn config(&self) -> &ProviderConfig {
+        &self.core.config
+    }
+
+    /// The keys changed: read them from `keys` before the next request.
+    /// Requests in flight go on; keys that stay keep their state.
+    pub fn reload_keys(&self, keys: KeyFn) {
+        self.core.keys.reload(keys);
+    }
+
     fn droppable(&self) -> &'static [(&'static str, &'static [&'static str])] {
         match self.wire {
             Wire::Chat => openai::DROPPABLE,
@@ -189,6 +200,7 @@ impl HttpProvider {
         let droppable = self.droppable();
         let mut param_retries = 0;
         let mut key_retries = 0;
+        let mut transient_retries = 0;
         loop {
             let lease = self.core.keys.acquire().await?;
             let body = self.body(system, user, images, purpose, lease.route);
@@ -232,9 +244,23 @@ impl HttpProvider {
                 on_partial("");
                 continue;
             }
-            let other_key = self.core.keys.report(&lease, &err);
-            if other_key && key_retries + 1 < lease.count {
+            // A server or network failure is most likely not the key's:
+            // one other key is tried, then the queue backs off and retries.
+            let transient = matches!(
+                err,
+                TranslateError::Server { .. } | TranslateError::Network(_)
+            );
+            let again = match self.core.keys.report(&lease, &err) {
+                Failover::No => false,
+                Failover::Now => {
+                    key_retries + 1 < lease.count && !(transient && transient_retries > 0)
+                }
+                // Keys were added meanwhile (once per reload).
+                Failover::KeysChanged => !(transient && transient_retries > 0),
+            };
+            if again {
                 key_retries += 1;
+                transient_retries += usize::from(transient);
                 tap.note(format!(
                     "key {} of {} set aside: retrying with another key",
                     lease.index + 1,
@@ -280,8 +306,14 @@ impl HttpProvider {
             });
         };
         let messages = prompt::build_batch(reqs, self.core.prompts.system_prompt(first.direction));
-        // Each block of the streamed answer goes to its own segment.
+        // Each block of the streamed answer goes to its own segment. An
+        // empty answer starts it again (another key): every segment's
+        // partial output is cleared.
         let show = |visible: &str| {
+            if visible.is_empty() {
+                (0..reqs.len()).for_each(|i| on_partial(i, ""));
+                return;
+            }
             for b in prompt::batch_blocks(visible) {
                 if let Some(i) = b.n.checked_sub(1).filter(|&i| i < reqs.len()) {
                     on_partial(i, &b.text);
@@ -291,7 +323,8 @@ impl HttpProvider {
         let out = self
             .exchange(TRANSLATE, &messages.system, &messages.user, &[], &show)
             .await?;
-        let texts = prompt::parse_batch(&out.text, reqs.len())
+        // Reasoning may mention blocks of its own: only the answer counts.
+        let texts = prompt::parse_batch(strip_reasoning(&out.text, &messages.user), reqs.len())
             .into_iter()
             .zip(reqs)
             .map(|(text, req)| {
@@ -319,7 +352,7 @@ impl HttpProvider {
                 on_partial,
             )
             .await?;
-        let text = strip_reasoning(&out.text).trim().to_owned();
+        let text = strip_reasoning(&out.text, &req.user).trim().to_owned();
         if text.is_empty() {
             return Err(invalid("the model returned an empty answer"));
         }

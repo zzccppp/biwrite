@@ -131,7 +131,9 @@
             <pre>{chosen.notes.trim()}</pre>
           </details>
         {/if}
-        {#if chosen.asset}
+        {#if chosen.asset && !chosen.asset.sha256}
+          <p class="hint">{t("updates.noChecksum")}</p>
+        {:else if chosen.asset}
           <div class="row">
             <button
               class="btn small primary"

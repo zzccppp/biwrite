@@ -153,6 +153,7 @@ mod tests {
             has_key: true,
             key_count: 1,
             key_names: Default::default(),
+            key_parts: 0,
         });
         assert_eq!(provider_label(&identity, &settings), "DeepSeek");
         assert_eq!(provider_label("mock", &settings), "Mock");

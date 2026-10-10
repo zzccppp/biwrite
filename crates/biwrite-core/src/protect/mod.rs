@@ -52,17 +52,32 @@ struct Protected {
 #[derive(Clone, Debug)]
 pub struct Protector {
     mode: Mode,
+    /// Number of the first placeholder.
+    first: usize,
     spans: Vec<Protected>,
     by_text: HashMap<String, usize>,
 }
 
 impl Protector {
     pub fn new(mode: Mode) -> Self {
+        Self::numbered_from(mode, 0)
+    }
+
+    /// A protector whose placeholders start at `⟦first⟧`. Paragraphs sent in
+    /// one request get numbers of their own, so a translation that carries
+    /// another paragraph's placeholders fails to restore.
+    pub fn numbered_from(mode: Mode, first: usize) -> Self {
         Self {
             mode,
+            first,
             spans: Vec::new(),
             by_text: HashMap::new(),
         }
+    }
+
+    /// The number after the last placeholder used.
+    pub fn next_number(&self) -> usize {
+        self.first + self.spans.len()
     }
 
     /// Number of distinct protected spans.
@@ -107,7 +122,7 @@ impl Protector {
                 self.spans[n].expected += 1;
             }
             out.push_str(&text[pos..span.range.start]);
-            out.push_str(&placeholder(n));
+            out.push_str(&placeholder(self.first + n));
             pos = span.range.end;
         }
         out.push_str(&text[pos..]);
@@ -125,7 +140,7 @@ impl Protector {
         for span in spans(text, self.mode) {
             if let Some(&n) = self.by_text.get(&text[span.range.clone()]) {
                 out.push_str(&text[pos..span.range.start]);
-                out.push_str(&placeholder(n));
+                out.push_str(&placeholder(self.first + n));
                 pos = span.range.end;
             }
         }
@@ -140,7 +155,7 @@ impl Protector {
     /// (the source's comments come back only through placeholders), so it is
     /// escaped as `\%` rather than left to comment out the rest of the line.
     pub fn restore(&self, translation: &str) -> Result<String, PlaceholderError> {
-        if self.spans.is_empty() {
+        if self.spans.is_empty() && !translation.contains(OPEN) {
             return Ok(self.model_text(translation).into_owned());
         }
         let (out, counts, unknown) = self.substitute(translation);
@@ -151,7 +166,7 @@ impl Protector {
             .enumerate()
             .filter(|(_, (span, found))| span.expected != *found)
             .map(|(index, (span, found))| Mismatch {
-                index,
+                index: self.first + index,
                 text: span.text.clone(),
                 expected: span.expected,
                 found,
@@ -220,12 +235,15 @@ impl Protector {
                 continue;
             };
             rest = &tail[len..];
-            let Some(span) = self.spans.get(n) else {
+            let Some((i, span)) = n
+                .checked_sub(self.first)
+                .and_then(|i| Some((i, self.spans.get(i)?)))
+            else {
                 unknown.push(n);
                 out.push_str(&tail[..len]);
                 continue;
             };
-            counts[n] += 1;
+            counts[i] += 1;
             out.push_str(&span.text);
             if span.kind == SpanKind::Comment {
                 // A comment runs to the end of the line: anything the model
@@ -292,6 +310,7 @@ impl RestoreReport {
 /// A placeholder that came back a different number of times than it was sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mismatch {
+    /// The placeholder's number.
     pub index: usize,
     /// The protected text.
     pub text: String,

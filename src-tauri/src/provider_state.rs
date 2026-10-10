@@ -2,6 +2,7 @@
 //! translator, key access, document notes, persistence.
 
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, MutexGuard, PoisonError};
 
 use biwrite_core::assist::Skill;
@@ -15,14 +16,15 @@ use crate::skills::SkillInfo;
 
 use crate::error::{CommandError, CommandResult};
 use crate::secrets::{self, SecretStore};
-use crate::settings::{self, AppSettings, ProviderEntry, SettingsView};
+use crate::settings::{self, AppSettings, ProviderEntry, SettingsView, same_destination};
 use crate::state::AppState;
 
-/// Key source for provider `id`, reading the OS credential store lazily.
-pub fn key_fn(store: &Arc<dyn SecretStore>, id: &str) -> KeyFn {
+/// Key source for provider `entry`, reading the OS credential store lazily.
+pub fn key_fn(store: &Arc<dyn SecretStore>, entry: &ProviderEntry) -> KeyFn {
     let store = Arc::clone(store);
-    let id = id.to_owned();
-    Arc::new(move || secrets::get_keys(store.as_ref(), &id))
+    let id = entry.config.id.clone();
+    let vouched = entry.vouched();
+    Arc::new(move || secrets::get_keys(store.as_ref(), &id, vouched))
 }
 
 /// A translator and, unless it is the mock, the HTTP provider behind it.
@@ -44,12 +46,7 @@ pub fn translator_for(
             http: None,
         });
     }
-    let http = build_http(
-        &entry.config,
-        key_fn(secrets, &entry.config.id),
-        prompts,
-        observer,
-    )?;
+    let http = build_http(&entry.config, key_fn(secrets, entry), prompts, observer)?;
     Ok(Built {
         translator: http.clone(),
         http: Some(http),
@@ -80,6 +77,11 @@ impl AppState {
         // engine on a different provider than settings. (The engine never
         // takes the settings lock, so this can't deadlock.)
         let settings = self.settings();
+        self.apply_provider_of(&settings)
+    }
+
+    /// [`Self::apply_active_provider`] with the settings lock held.
+    fn apply_provider_of(&self, settings: &AppSettings) -> CommandResult<()> {
         let built = translator_for(
             settings.active(),
             &self.secrets,
@@ -91,6 +93,68 @@ impl AppState {
             .set_concurrency(settings.effective_concurrency());
         self.set_translation_http(settings.active().config.id.clone(), built.http);
         log::info!("provider: {}", settings::label(&settings.active().config));
+        Ok(())
+    }
+
+    /// Keys were added to provider `id`: the providers in use read them
+    /// again for their next request. Requests in flight go on (a new
+    /// translator would cancel and redo them), failed paragraphs are tried
+    /// again.
+    pub fn reload_keys(&self, id: &str) -> CommandResult<()> {
+        // Held throughout, as in `apply_active_provider`: the active
+        // provider cannot change meanwhile.
+        let s = self.settings();
+        let Some(entry) = s.provider(id) else {
+            return Ok(());
+        };
+        let (concurrency, active) = (s.effective_concurrency(), s.active_provider == id);
+        let keys = key_fn(&self.secrets, entry);
+        // Only a provider built for this host gets the keys (one built from
+        // settings read just before a move is not).
+        let in_use = |slot: &std::sync::Mutex<crate::state::HttpInUse>| {
+            slot.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .filter(|(used, http)| used == id && same_destination(http.config(), &entry.config))
+                .map(|(_, http)| http)
+        };
+        {
+            let cached = self
+                .assistant_http
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some((_, http)) = cached
+                .as_ref()
+                .filter(|(used, http)| used == id && same_destination(http.config(), &entry.config))
+            {
+                http.reload_keys(Arc::clone(&keys));
+            }
+            // An assistant provider being built now read the old keys.
+            self.assistant_epoch.fetch_add(1, Ordering::AcqRel);
+        }
+        if !active {
+            return Ok(());
+        }
+        match in_use(&self.translation_http) {
+            Some(http) => {
+                http.reload_keys(keys);
+                self.engine.set_concurrency(concurrency);
+                self.engine.retry_failed();
+                Ok(())
+            }
+            None => self.apply_provider_of(&s),
+        }
+    }
+
+    /// Settings can be saved. Checked before keychain changes, so keys are
+    /// not changed when the settings recording them cannot be.
+    pub fn settings_writable(&self) -> CommandResult<()> {
+        if self.settings().keep_file {
+            return Err(CommandError::Settings(format!(
+                "{} could not be read, so settings are not saved: fix or remove it, then restart BiWrite",
+                self.paths.settings.display()
+            )));
+        }
         Ok(())
     }
 
@@ -106,38 +170,72 @@ impl AppState {
     /// translation provider, it shares that provider's key pool, so per-key
     /// limits hold across both.
     pub fn assistant_model(&self) -> CommandResult<Arc<HttpProvider>> {
-        let entry = self.settings().assistant().clone();
-        if entry.config.kind == ProviderKind::Mock {
-            return Err(CommandError::Settings(
-                "choose a model for the writing assistant in Settings (the offline mock cannot write)".into(),
-            ));
+        // Settings or keys may change while a provider is built: it is
+        // then built again (bounded), never kept for later requests.
+        for _ in 0..3 {
+            let epoch = self.assistant_epoch.load(Ordering::Acquire);
+            let entry = self.settings().assistant().clone();
+            if entry.config.kind == ProviderKind::Mock {
+                return Err(CommandError::Settings(
+                    "choose a model for the writing assistant in Settings (the offline mock cannot write)".into(),
+                ));
+            }
+            // A provider built from other settings (read before a change) is
+            // not used: its host may not be the provider's any more.
+            let built_for = |id: &String, http: &HttpProvider| {
+                *id == entry.config.id && *http.config() == entry.config
+            };
+            let shared = self
+                .translation_http
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .filter(|(id, http)| built_for(id, http));
+            if let Some((_, http)) = shared {
+                return Ok(http);
+            }
+            let cached = self
+                .assistant_http
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .filter(|(id, http)| built_for(id, http));
+            if let Some((_, http)) = cached {
+                return Ok(http);
+            }
+            let http = build_http(
+                &entry.config,
+                key_fn(&self.secrets, &entry),
+                Arc::new(DefaultPrompts),
+                self.request_log.clone(),
+            )?;
+            // No other lock is held while reading the settings: they come
+            // before the providers in use.
+            if self.settings().assistant().config != entry.config {
+                continue;
+            }
+            if self.keep_assistant(epoch, &entry.config.id, &http) {
+                return Ok(http);
+            }
         }
-        let shared = self
-            .translation_http
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-            .filter(|(id, _)| *id == entry.config.id);
-        if let Some((_, http)) = shared {
-            return Ok(http);
-        }
+        Err(CommandError::Settings(
+            "the assistant's provider changed meanwhile; try again".into(),
+        ))
+    }
+
+    /// Keep `http`, built for provider `id` when the assistant's epoch was
+    /// `epoch`, as the assistant's provider, unless its settings or keys
+    /// changed since. Returns whether it was kept.
+    pub(crate) fn keep_assistant(&self, epoch: u64, id: &str, http: &Arc<HttpProvider>) -> bool {
         let mut cached = self
             .assistant_http
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some((id, http)) = cached.as_ref()
-            && *id == entry.config.id
-        {
-            return Ok(Arc::clone(http));
+        if self.assistant_epoch.load(Ordering::Acquire) != epoch {
+            return false;
         }
-        let http = build_http(
-            &entry.config,
-            key_fn(&self.secrets, &entry.config.id),
-            Arc::new(DefaultPrompts),
-            self.request_log.clone(),
-        )?;
-        *cached = Some((entry.config.id.clone(), Arc::clone(&http)));
-        Ok(http)
+        *cached = Some((id.to_owned(), Arc::clone(http)));
+        true
     }
 
     /// The skill the assistant follows.
@@ -155,10 +253,12 @@ impl AppState {
     /// Drop the assistant's provider, so the next request builds it again
     /// from the current settings and keys.
     pub fn invalidate_assistant(&self) {
-        *self
+        let mut cached = self
             .assistant_http
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
+            .unwrap_or_else(PoisonError::into_inner);
+        *cached = None;
+        self.assistant_epoch.fetch_add(1, Ordering::AcqRel);
     }
 
     /// State of each key of provider `id`, if a provider in use has read them.

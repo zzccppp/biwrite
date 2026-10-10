@@ -375,6 +375,10 @@ export const messages = {
   "updates.notes": { en: "What changed", zh: "更新说明" },
   "updates.install": { en: "Install {version}", zh: "安装 {version}" },
   "updates.noAsset": { en: "This release has no installer for this computer.", zh: "该版本没有适用于本机的安装包。" },
+  "updates.noChecksum": {
+    en: "GitHub reports no checksum for this release's installer, so BiWrite cannot check it and does not install it. It can be downloaded from github.com/zzccppp/biwrite/releases.",
+    zh: "GitHub 未提供该版本安装包的校验值，BiWrite 无法校验，因此不安装。可在 github.com/zzccppp/biwrite/releases 手动下载。",
+  },
   "updates.saveFirst": {
     en: "Save the document first: installing restarts BiWrite.",
     zh: "请先保存文档，安装后需要重启 BiWrite。",

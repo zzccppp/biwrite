@@ -16,8 +16,8 @@ use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::provider_state::translator_for;
-use crate::secrets::{self, MAX_KEYS, NamedKey};
-use crate::settings::{MOCK_ID, ProviderEntry, SettingsView};
+use crate::secrets::{self, MAX_KEYS, NamedKey, Vouched};
+use crate::settings::{MOCK_ID, ProviderEntry, SettingsView, same_destination};
 use crate::state::AppState;
 
 const TEST_SENTENCE: &str =
@@ -45,16 +45,6 @@ fn new_provider_id() -> String {
     format!("p-{n:016x}")
 }
 
-/// Same API type and origin (scheme, host, port): the stored key may be reused.
-fn same_destination(a: &ProviderConfig, b: &ProviderConfig) -> bool {
-    let origin = |c: &ProviderConfig| {
-        reqwest::Url::parse(&c.base_url)
-            .map(|u| u.origin().ascii_serialization())
-            .unwrap_or_default()
-    };
-    a.kind == b.kind && origin(a) == origin(b)
-}
-
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> CommandResult<SettingsView> {
     Ok(state.settings_view())
@@ -79,12 +69,16 @@ pub async fn save_provider(
         config.id = new_provider_id();
     }
     let id = config.id.clone();
+    let _keys = state.keys_lock.lock().await;
     // A key belongs to one API type and host: never send it elsewhere.
+    // (Even without a key in the settings: a version without key pools may
+    // have left some behind.)
     let moved = state
         .settings()
         .provider(&id)
-        .is_some_and(|old| old.has_key && !same_destination(&old.config, &config));
+        .is_some_and(|old| !same_destination(&old.config, &config));
     if moved {
+        state.settings_writable()?;
         let store = state.secrets.clone();
         let account = id.clone();
         blocking(move || secrets::delete_keys(store.as_ref(), &account)).await?;
@@ -97,6 +91,7 @@ pub async fn save_provider(
                 if moved {
                     entry.has_key = false;
                     entry.key_count = 0;
+                    entry.key_parts = 0;
                 }
             }
             None if provider.id.is_empty() => s.providers.push(ProviderEntry {
@@ -104,6 +99,7 @@ pub async fn save_provider(
                 has_key: false,
                 key_count: 0,
                 key_names: Default::default(),
+                key_parts: 0,
             }),
             None => return Err(not_found(&id)),
         }
@@ -127,6 +123,8 @@ pub async fn delete_provider(
             "the mock provider can't be removed".into(),
         ));
     }
+    let _keys = state.keys_lock.lock().await;
+    state.settings_writable()?;
     let store = state.secrets.clone();
     let account = id.clone();
     blocking(move || secrets::delete_keys(store.as_ref(), &account)).await?;
@@ -178,14 +176,16 @@ pub async fn set_api_key(
     key: String,
 ) -> CommandResult<SettingsView> {
     let named = parse_named(&key)?;
+    let _keys = state.keys_lock.lock().await;
     if state.settings().provider(&id).is_none() {
         return Err(not_found(&id));
     }
+    state.settings_writable()?;
     let keys: Vec<String> = named.iter().map(|k| k.key.clone()).collect();
     let count = keys.len();
     let store = state.secrets.clone();
     let account = id.clone();
-    blocking(move || secrets::set_keys(store.as_ref(), &account, &keys)).await?;
+    let parts = blocking(move || secrets::set_keys(store.as_ref(), &account, &keys, None)).await?;
     {
         let mut s = state.settings();
         if let Some(entry) = s.provider_mut(&id) {
@@ -193,7 +193,7 @@ pub async fn set_api_key(
         }
     }
     remember_names(&state, &id, &named);
-    update_key_count(&state, &id, count)
+    update_key_count(&state, &id, count, parts)
 }
 
 /// Add the pasted keys (optionally named) to the provider's pool;
@@ -205,14 +205,19 @@ pub async fn add_api_keys(
     keys: String,
 ) -> CommandResult<SettingsView> {
     let named = parse_named(&keys)?;
-    if state.settings().provider(&id).is_none() {
-        return Err(not_found(&id));
-    }
+    let _keys = state.keys_lock.lock().await;
+    let vouched = state
+        .settings()
+        .provider(&id)
+        .ok_or_else(|| not_found(&id))?
+        .vouched();
+    state.settings_writable()?;
     let added: Vec<String> = named.iter().map(|k| k.key.clone()).collect();
     let store = state.secrets.clone();
     let account = id.clone();
-    let count = blocking(move || {
-        let mut pool = secrets::get_keys(store.as_ref(), &account)?;
+    let (count, parts) = blocking(move || {
+        let stored = secrets::read_stored(store.as_ref(), &account)?;
+        let mut pool = stored.keys(vouched);
         for key in added {
             if !pool.contains(&key) {
                 pool.push(key);
@@ -221,12 +226,21 @@ pub async fn add_api_keys(
         if pool.len() > MAX_KEYS {
             return Err(format!("at most {MAX_KEYS} keys per provider"));
         }
-        secrets::set_keys(store.as_ref(), &account, &pool)?;
-        Ok(pool.len())
+        let parts = secrets::set_keys(store.as_ref(), &account, &pool, Some(&stored))?;
+        Ok((pool.len(), parts))
     })
     .await?;
     remember_names(&state, &id, &named);
-    update_key_count(&state, &id, count)
+    {
+        let mut s = state.settings();
+        if !s.set_key_count(&id, count, parts) {
+            return Err(not_found(&id));
+        }
+        state.persist(&s)?;
+    }
+    // Added keys: requests in flight go on.
+    state.reload_keys(&id)?;
+    Ok(state.settings_view())
 }
 
 /// Largest key file read on import.
@@ -271,7 +285,8 @@ pub async fn export_api_keys(
         .ok_or_else(|| not_found(&id))?;
     let store = state.secrets.clone();
     let account = id.clone();
-    let keys = blocking(move || secrets::get_keys(store.as_ref(), &account)).await?;
+    let vouched = provider.vouched();
+    let keys = blocking(move || secrets::get_keys(store.as_ref(), &account, vouched)).await?;
     if keys.is_empty() {
         return Err(CommandError::Settings(
             "this provider has no keys to export".into(),
@@ -290,12 +305,7 @@ pub async fn export_api_keys(
         return Ok(None);
     };
     let text = pool_text(&provider, &keys);
-    crate::files::write_file_atomic(dest.clone(), text.into_bytes()).await?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o600));
-    }
+    crate::files::write_private_atomic(dest.clone(), text.into_bytes()).await?;
     log::info!("exported {} keys of {}", keys.len(), provider.config.name);
     Ok(Some(dest.display().to_string()))
 }
@@ -341,15 +351,14 @@ pub async fn list_api_keys(
     state: State<'_, AppState>,
     id: String,
 ) -> CommandResult<Vec<KeyEntryView>> {
-    let names = state
-        .settings()
-        .provider(&id)
-        .ok_or_else(|| not_found(&id))?
-        .key_names
-        .clone();
+    let (names, pool) = {
+        let s = state.settings();
+        let entry = s.provider(&id).ok_or_else(|| not_found(&id))?;
+        (entry.key_names.clone(), entry.vouched())
+    };
     let store = state.secrets.clone();
     let account = id.clone();
-    let keys = blocking(move || secrets::get_keys(store.as_ref(), &account)).await?;
+    let keys = blocking(move || secrets::get_keys(store.as_ref(), &account, pool)).await?;
     let live = state.key_status(&id).unwrap_or_default();
     Ok(keys
         .iter()
@@ -378,10 +387,10 @@ pub async fn rename_api_key(
     fingerprint: String,
     name: String,
 ) -> CommandResult<SettingsView> {
+    let name = secrets::name_to_store(&name).map_err(CommandError::Settings)?;
     {
         let mut s = state.settings();
         let entry = s.provider_mut(&id).ok_or_else(|| not_found(&id))?;
-        let name: String = name.trim().chars().take(40).collect();
         if name.is_empty() {
             entry.key_names.remove(&fingerprint);
         } else {
@@ -406,7 +415,8 @@ pub async fn test_api_key(
         .ok_or_else(|| not_found(&id))?;
     let store = state.secrets.clone();
     let account = id.clone();
-    let key = blocking(move || secrets::get_keys(store.as_ref(), &account))
+    let vouched = entry.vouched();
+    let key = blocking(move || secrets::get_keys(store.as_ref(), &account, vouched))
         .await?
         .into_iter()
         .find(|k| key_fingerprint(k) == fingerprint)
@@ -503,34 +513,41 @@ pub async fn remove_api_key(
     number: usize,
     tail: String,
 ) -> CommandResult<SettingsView> {
-    if state.settings().provider(&id).is_none() {
-        return Err(not_found(&id));
-    }
+    let _keys = state.keys_lock.lock().await;
+    let vouched = state
+        .settings()
+        .provider(&id)
+        .ok_or_else(|| not_found(&id))?
+        .vouched();
+    state.settings_writable()?;
     let store = state.secrets.clone();
     let account = id.clone();
     let count = blocking(move || {
-        let mut pool = secrets::get_keys(store.as_ref(), &account)?;
+        let stored = secrets::read_stored(store.as_ref(), &account)?;
+        let mut pool = stored.keys(vouched);
         let removed = match number.checked_sub(1).filter(|&i| i < pool.len()) {
             Some(i) if key_tail(&pool[i]) == tail => pool.remove(i),
             _ => return Err("the keys have changed; reopen the settings and try again".into()),
         };
-        secrets::set_keys(store.as_ref(), &account, &pool)?;
-        Ok((pool.len(), key_fingerprint(&removed)))
+        let parts = secrets::set_keys(store.as_ref(), &account, &pool, Some(&stored))?;
+        Ok((pool.len(), parts, key_fingerprint(&removed)))
     })
     .await?;
-    let (count, fingerprint) = count;
+    let (count, parts, fingerprint) = count;
     if let Some(entry) = state.settings().provider_mut(&id) {
         entry.key_names.remove(&fingerprint);
     }
-    update_key_count(&state, &id, count)
+    update_key_count(&state, &id, count, parts)
 }
 
 #[tauri::command]
 pub async fn clear_api_key(state: State<'_, AppState>, id: String) -> CommandResult<SettingsView> {
+    let _keys = state.keys_lock.lock().await;
+    state.settings_writable()?;
     let store = state.secrets.clone();
     let account = id.clone();
     blocking(move || secrets::delete_keys(store.as_ref(), &account)).await?;
-    update_key_count(&state, &id, 0)
+    update_key_count(&state, &id, 0, 0)
 }
 
 /// State of each key of provider `id` (ready, cooling down, rejected), once
@@ -543,10 +560,15 @@ pub async fn key_status(
     Ok(state.key_status(&id))
 }
 
-fn update_key_count(state: &AppState, id: &str, count: usize) -> CommandResult<SettingsView> {
+fn update_key_count(
+    state: &AppState,
+    id: &str,
+    count: usize,
+    parts: usize,
+) -> CommandResult<SettingsView> {
     let is_active = {
         let mut s = state.settings();
-        if !s.set_key_count(id, count) {
+        if !s.set_key_count(id, count, parts) {
             return Err(not_found(id));
         }
         state.persist(&s)?;
@@ -638,7 +660,7 @@ pub async fn list_provider_models(
     let key = if entry.config.kind.needs_key() {
         let store = state.secrets.clone();
         let account = id.clone();
-        blocking(move || secrets::get_keys(store.as_ref(), &account))
+        blocking(move || secrets::get_keys(store.as_ref(), &account, Vouched::FIRST))
             .await?
             .into_iter()
             .next()

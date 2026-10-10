@@ -7,11 +7,17 @@
 //! - A key that hits a rate limit cools down, one that fails with a server
 //!   or network error pauses briefly, and one the server rejects (invalid,
 //!   no permission, out of quota) moves to the back.
-//! - When no ready key has room, the pool still hands out the key most
-//!   likely to work, so a real request goes out and the server decides.
-//!   With one key and no limit this is a provider without a pool.
+//! - While some key is ready, requests go to ready keys only: when those are
+//!   full, a request waits for a free slot, or for a paused key's pause to
+//!   end, rather than going to a paused or rejected key.
+//! - When no key is ready, the pool still hands out the key most likely to
+//!   work, so a real request goes out and the server decides. With one key
+//!   and no limit this is a provider without a pool.
+//! - The keys can be read again ([`KeyPool::reload`]) while requests are in
+//!   flight: a key that stays keeps its state and its requests in flight.
 
 use std::pin::pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -23,7 +29,8 @@ use tokio::sync::Notify;
 use crate::observe::KeyUse;
 
 /// Fetches the provider's keys (from the OS keychain in the app), in pool
-/// order. Called at most once per translator, lazily, on a blocking thread.
+/// order. Called lazily on a blocking thread: once per translator, and again
+/// after [`KeyPool::reload`].
 pub type KeyFn = Arc<dyn Fn() -> Result<Vec<String>, String> + Send + Sync>;
 
 /// Cooldown after a rate limit that came without a `Retry-After` hint.
@@ -33,6 +40,9 @@ const MAX_COOLDOWN: Duration = Duration::from_secs(120);
 /// Pause after a server or network error, so the next request tries
 /// another key first.
 const TRANSIENT_PAUSE: Duration = Duration::from_secs(2);
+/// A rejected key is tried again after this long (an account topped up, a
+/// rejection that was not about the key after all).
+const REJECTED_RETRY: Duration = Duration::from_secs(600);
 
 /// The last four characters of a key.
 pub fn tail(key: &str) -> String {
@@ -64,18 +74,37 @@ pub struct KeyStatus {
 #[derive(Clone, Debug)]
 struct Slot {
     cool_until: Option<Instant>,
+    /// When the request that set the latest cooldown was sent.
+    cooled_at: Option<Instant>,
+    /// When the request the key was rejected for was sent, and why.
     rejected: Option<(Instant, String)>,
+    /// When the latest request that succeeded with this key was sent: a
+    /// failure of a request sent before it is old news.
+    ok_at: Option<Instant>,
     in_flight: u32,
     /// Routing salt for this key's `prompt_cache_key`. Relays route by that
     /// key, so it changes after a failure to leave a congested upstream.
     route: u64,
 }
 
+impl Slot {
+    /// Not paused, and not rejected (or rejected long enough ago to try
+    /// again).
+    fn ready(&self, now: Instant) -> bool {
+        self.rejected
+            .as_ref()
+            .is_none_or(|(at, _)| now.saturating_duration_since(*at) >= REJECTED_RETRY)
+            && self.cool_until.is_none_or(|t| t <= now)
+    }
+}
+
 impl Default for Slot {
     fn default() -> Self {
         Self {
             cool_until: None,
+            cooled_at: None,
             rejected: None,
+            ok_at: None,
             in_flight: 0,
             route: random_u64(),
         }
@@ -90,21 +119,67 @@ pub(crate) fn random_u64() -> u64 {
         .finish()
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct PoolState {
     next: usize,
+    /// The keys `slots` describe, in pool order, and the reading
+    /// ([`KeyPool::epoch`]) they come from.
+    keys: Arc<[String]>,
+    epoch: u64,
     slots: Vec<Slot>,
 }
+
+impl Default for PoolState {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            keys: Arc::from(Vec::new()),
+            epoch: 0,
+            slots: Vec::new(),
+        }
+    }
+}
+
+impl PoolState {
+    fn slot(&self, key: &str) -> Option<&Slot> {
+        let i = self.keys.iter().position(|k| k == key)?;
+        self.slots.get(i)
+    }
+
+    fn slot_mut(&mut self, key: &str) -> Option<&mut Slot> {
+        let i = self.keys.iter().position(|k| k == key)?;
+        self.slots.get_mut(i)
+    }
+
+    /// Describe `keys`, read under `epoch`. A key that was already in the
+    /// pool keeps its state, including its requests in flight.
+    fn adopt(&mut self, epoch: u64, keys: &Arc<[String]>) {
+        let slots = keys
+            .iter()
+            .map(|k| self.slot(k).cloned().unwrap_or_default())
+            .collect();
+        self.slots = slots;
+        self.keys = Arc::clone(keys);
+        self.epoch = epoch;
+    }
+}
+
+/// The keys as last read, with the reading they belong to.
+type Loaded = Option<(u64, Result<Arc<[String]>, TranslateError>)>;
 
 pub(crate) struct KeyPool {
     /// Provider name, for messages.
     name: String,
-    fetch: KeyFn,
+    /// Where the keys come from; [`reload`](Self::reload) may replace it.
+    fetch: Mutex<KeyFn>,
     /// Requests one key may carry at a time.
     limit: Option<u32>,
-    loaded: tokio::sync::Mutex<Option<Result<Arc<[String]>, TranslateError>>>,
+    /// Counts [`reload`](Self::reload)s: keys read before the latest one are
+    /// read again.
+    epoch: AtomicU64,
+    loaded: tokio::sync::Mutex<Loaded>,
     state: Mutex<PoolState>,
-    /// Signalled whenever a lease ends.
+    /// Signalled whenever a lease ends or the keys change.
     freed: Notify,
 }
 
@@ -116,6 +191,8 @@ pub(crate) struct Lease<'a> {
     pub key: String,
     /// The key's routing salt when it was handed out.
     pub route: u64,
+    /// When it was handed out.
+    started: Instant,
 }
 
 impl Lease<'_> {
@@ -131,7 +208,7 @@ impl Lease<'_> {
 
 impl Drop for Lease<'_> {
     fn drop(&mut self) {
-        if let Some(slot) = self.pool.state().slots.get_mut(self.index) {
+        if let Some(slot) = self.pool.state().slot_mut(&self.key) {
             slot.in_flight = slot.in_flight.saturating_sub(1);
         }
         self.pool.freed.notify_waiters();
@@ -142,7 +219,9 @@ impl Drop for Lease<'_> {
 #[derive(Debug, PartialEq, Eq)]
 enum Fault {
     None,
-    Cooldown(Duration),
+    /// A pause, and whether it is the key's doing (a rate limit) rather
+    /// than the server's or the network's.
+    Cooldown(Duration, bool),
     Rejected,
 }
 
@@ -152,9 +231,10 @@ fn fault(err: &TranslateError) -> Fault {
             retry_after
                 .unwrap_or(DEFAULT_COOLDOWN)
                 .clamp(Duration::from_millis(200), MAX_COOLDOWN),
+            true,
         ),
         TranslateError::Server { .. } | TranslateError::Network(_) => {
-            Fault::Cooldown(TRANSIENT_PAUSE)
+            Fault::Cooldown(TRANSIENT_PAUSE, false)
         }
         // 429 that was not mapped to `RateLimited` is an exhausted quota.
         TranslateError::Rejected {
@@ -181,12 +261,35 @@ fn mentions_quota(message: &str) -> bool {
     .any(|n| lower.contains(n))
 }
 
+/// What a failed request means for the next attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Failover {
+    /// No other key would do better now.
+    No,
+    /// Another key is ready and has room.
+    Now,
+    /// The keys were read again since the request started: try the new ones.
+    KeysChanged,
+}
+
+/// What [`KeyPool::pick`] found.
+enum Pick {
+    /// The key's index and routing salt; its slot is taken.
+    Key(usize, u64),
+    /// No key to use now: wait for a lease to end, or until the instant
+    /// when a paused key with room becomes ready.
+    Wait(Option<Instant>),
+    /// The keys were read again meanwhile: look again with the new ones.
+    Stale,
+}
+
 impl KeyPool {
     pub fn new(name: &str, fetch: KeyFn, limit: Option<u32>) -> Self {
         Self {
             name: name.to_owned(),
-            fetch,
+            fetch: Mutex::new(fetch),
             limit: limit.filter(|&n| n > 0),
+            epoch: AtomicU64::new(0),
             loaded: tokio::sync::Mutex::new(None),
             state: Mutex::new(PoolState::default()),
             freed: Notify::new(),
@@ -197,26 +300,41 @@ impl KeyPool {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The keys, read from the key source on first use. A failure to read
-    /// them is remembered, so a denied keychain prompt is not shown again for
-    /// every paragraph. (A new translator is built when the keys change.)
-    async fn keys(&self) -> Result<Arc<[String]>, TranslateError> {
+    /// Read the keys again before the next request, from `fetch` (the keys
+    /// changed). Requests in flight go on with their keys; a key that stays
+    /// keeps its state, so per-key limits still count its requests.
+    pub fn reload(&self, fetch: KeyFn) {
+        *self.fetch.lock().unwrap_or_else(PoisonError::into_inner) = fetch;
+        self.epoch.fetch_add(1, Ordering::AcqRel);
+        // Waiting requests look at the new keys.
+        self.freed.notify_waiters();
+    }
+
+    /// The keys, read from the key source on first use and after a reload,
+    /// with the reading they belong to. A failure to read them is
+    /// remembered, so a denied keychain prompt is not shown again for every
+    /// paragraph.
+    async fn keys(&self) -> Result<(u64, Arc<[String]>), TranslateError> {
         let mut loaded = self.loaded.lock().await;
-        if let Some(result) = loaded.as_ref() {
-            return result.clone();
+        let epoch = self.epoch.load(Ordering::Acquire);
+        if let Some((at, result)) = loaded.as_ref()
+            && *at == epoch
+        {
+            return result.clone().map(|keys| (epoch, keys));
         }
-        let fetch = Arc::clone(&self.fetch);
+        let fetch = Arc::clone(&self.fetch.lock().unwrap_or_else(PoisonError::into_inner));
         let fetched = tokio::task::spawn_blocking(move || fetch())
             .await
             .map_err(|e| TranslateError::Config(format!("reading the API key failed: {e}")))?;
         let name = &self.name;
         let result = match fetched {
-            Ok(keys) => {
-                let keys: Vec<String> = keys
-                    .iter()
-                    .map(|k| k.trim().to_owned())
-                    .filter(|k| !k.is_empty())
-                    .collect();
+            Ok(fetched) => {
+                let mut keys: Vec<String> = Vec::new();
+                for key in fetched.iter().map(|k| k.trim()).filter(|k| !k.is_empty()) {
+                    if !keys.iter().any(|k| k == key) {
+                        keys.push(key.to_owned());
+                    }
+                }
                 if keys.is_empty() {
                     Err(TranslateError::Config(format!(
                         "No API key for “{name}”. Add one in Settings."
@@ -229,103 +347,167 @@ impl KeyPool {
                 "Could not read the API key for “{name}”: {e}"
             ))),
         };
-        *loaded = Some(result.clone());
-        result
+        *loaded = Some((epoch, result.clone()));
+        result.map(|keys| (epoch, keys))
     }
 
-    /// The key for the next request: waits while every key is at its limit.
+    /// The key for the next request: waits while every usable key is at its
+    /// limit.
     pub async fn acquire(&self) -> Result<Lease<'_>, TranslateError> {
-        let keys = self.keys().await?;
-        let count = keys.len();
         loop {
+            let (epoch, keys) = self.keys().await?;
             // Registered before looking, so a slot freed meanwhile wakes us.
             let mut freed = pin!(self.freed.notified());
             freed.as_mut().enable();
-            if let Some((index, route)) = self.pick(count) {
-                return Ok(Lease {
-                    pool: self,
-                    index,
-                    count,
-                    key: keys[index].clone(),
-                    route,
-                });
+            match self.pick(epoch, &keys) {
+                Pick::Key(index, route) => {
+                    return Ok(Lease {
+                        pool: self,
+                        index,
+                        count: keys.len(),
+                        key: keys[index].clone(),
+                        route,
+                        started: Instant::now(),
+                    });
+                }
+                Pick::Stale => {}
+                Pick::Wait(None) => freed.await,
+                Pick::Wait(Some(until)) => {
+                    let until = tokio::time::Instant::from_std(until);
+                    let _ = tokio::time::timeout_at(until, freed).await;
+                }
             }
-            freed.await;
         }
     }
 
-    /// Choose a key with a free slot and take the slot. Returns the key's
-    /// index and routing salt.
-    fn pick(&self, count: usize) -> Option<(usize, u64)> {
+    /// Choose a key with a free slot and take the slot.
+    fn pick(&self, epoch: u64, keys: &Arc<[String]>) -> Pick {
         let mut st = self.state();
-        if st.slots.len() != count {
-            st.slots = vec![Slot::default(); count];
+        if epoch < st.epoch {
+            return Pick::Stale;
         }
+        if epoch > st.epoch || st.slots.len() != keys.len() {
+            st.adopt(epoch, keys);
+        }
+        let count = keys.len();
         let now = Instant::now();
         let limit = self.limit;
         let has_room = |s: &Slot| limit.is_none_or(|l| s.in_flight < l);
-        let ready = |s: &Slot| s.rejected.is_none() && s.cool_until.is_none_or(|t| t <= now);
+        let ready = |s: &Slot| s.ready(now);
         let start = st.next % count;
         let order: Vec<usize> = (0..count).map(|k| (start + k) % count).collect();
-        let index = order
-            .iter()
-            .copied()
-            .filter(|&i| has_room(&st.slots[i]) && ready(&st.slots[i]))
-            .min_by_key(|&i| st.slots[i].in_flight)
+        let index = if st.slots.iter().any(ready) {
+            // Full ready keys are waited for: a paused or rejected key
+            // would most likely fail.
+            order
+                .iter()
+                .copied()
+                .filter(|&i| has_room(&st.slots[i]) && ready(&st.slots[i]))
+                .min_by_key(|&i| st.slots[i].in_flight)
+        } else {
             // Nothing ready: the key whose pause ends first, then the key
             // rejected longest ago.
-            .or_else(|| {
-                order
-                    .iter()
-                    .copied()
-                    .filter(|&i| has_room(&st.slots[i]) && st.slots[i].rejected.is_none())
-                    .min_by_key(|&i| st.slots[i].cool_until)
-            })
-            .or_else(|| {
-                order
-                    .iter()
-                    .copied()
-                    .filter(|&i| has_room(&st.slots[i]))
-                    .min_by_key(|&i| st.slots[i].rejected.as_ref().map(|r| r.0))
-            })?;
+            order
+                .iter()
+                .copied()
+                .filter(|&i| has_room(&st.slots[i]) && st.slots[i].rejected.is_none())
+                .min_by_key(|&i| st.slots[i].cool_until)
+                .or_else(|| {
+                    order
+                        .iter()
+                        .copied()
+                        .filter(|&i| has_room(&st.slots[i]))
+                        .min_by_key(|&i| st.slots[i].rejected.as_ref().map(|r| r.0))
+                })
+        };
+        let Some(index) = index else {
+            // A paused key with room becomes ready when its pause ends.
+            let until = st
+                .slots
+                .iter()
+                .filter(|s| s.rejected.is_none() && has_room(s))
+                .filter_map(|s| s.cool_until)
+                .filter(|&t| t > now)
+                .min();
+            return Pick::Wait(until);
+        };
         st.slots[index].in_flight += 1;
         st.next = index + 1;
-        Some((index, st.slots[index].route))
+        Pick::Key(index, st.slots[index].route)
     }
 
-    /// Record a failed request. Returns `true` if another key is ready and
-    /// has room now, so the caller should retry with it at once.
-    pub fn report(&self, lease: &Lease<'_>, err: &TranslateError) -> bool {
+    /// Record a failed request, and say whether the caller may retry with
+    /// another key at once.
+    pub fn report(&self, lease: &Lease<'_>, err: &TranslateError) -> Failover {
         let fault = fault(err);
         if fault == Fault::None {
-            return false;
+            return Failover::No;
         }
         let mut st = self.state();
         let now = Instant::now();
-        if let Some(slot) = st.slots.get_mut(lease.index) {
+        if let Some(slot) = st
+            .slot_mut(&lease.key)
+            .filter(|slot| slot.ok_at.is_none_or(|ok| ok <= lease.started))
+        {
             match fault {
-                Fault::Cooldown(d) => {
-                    slot.cool_until = Some(slot.cool_until.map_or(now + d, |t| t.max(now + d)));
+                // A fault is dated by when its request was sent, the latest
+                // such request counting: a request sent later that succeeds
+                // shows the key works again.
+                Fault::Cooldown(d, keys_doing) => {
+                    let running = slot.cool_until.is_some_and(|t| t > now);
+                    let extends = slot.cool_until.is_none_or(|t| t < now + d);
+                    if extends {
+                        slot.cool_until = Some(now + d);
+                    }
+                    if !running {
+                        slot.cooled_at = Some(lease.started);
+                    } else if extends || keys_doing {
+                        // A short server pause inside a rate limit leaves
+                        // its date.
+                        slot.cooled_at = slot.cooled_at.max(Some(lease.started));
+                    }
                 }
-                Fault::Rejected => slot.rejected = Some((now, err.to_string())),
+                Fault::Rejected => {
+                    if slot
+                        .rejected
+                        .as_ref()
+                        .is_none_or(|(at, _)| *at <= lease.started)
+                    {
+                        slot.rejected = Some((lease.started, err.to_string()));
+                    }
+                }
                 Fault::None => {}
             }
             slot.route = random_u64();
         }
+        // Keys added since the pool last looked are not in `st` yet.
+        if self.epoch.load(Ordering::Acquire) != st.epoch {
+            return Failover::KeysChanged;
+        }
         let limit = self.limit;
-        st.slots.iter().enumerate().any(|(i, s)| {
-            i != lease.index
-                && s.rejected.is_none()
-                && s.cool_until.is_none_or(|t| t <= now)
-                && limit.is_none_or(|l| s.in_flight < l)
-        })
+        let other = st.keys.iter().zip(&st.slots).any(|(key, s)| {
+            *key != lease.key && s.ready(now) && limit.is_none_or(|l| s.in_flight < l)
+        });
+        if other { Failover::Now } else { Failover::No }
     }
 
-    /// A request with this key succeeded: it is usable again.
+    /// A request with this key succeeded: a failure of a request sent before
+    /// it no longer holds. A failure of a request sent after it is newer
+    /// news, and stays.
     pub fn succeeded(&self, lease: &Lease<'_>) {
-        if let Some(slot) = self.state().slots.get_mut(lease.index) {
-            slot.rejected = None;
-            slot.cool_until = None;
+        if let Some(slot) = self.state().slot_mut(&lease.key) {
+            slot.ok_at = slot.ok_at.max(Some(lease.started));
+            if slot
+                .rejected
+                .as_ref()
+                .is_some_and(|(at, _)| *at <= lease.started)
+            {
+                slot.rejected = None;
+            }
+            if slot.cooled_at.is_none_or(|at| at <= lease.started) {
+                slot.cool_until = None;
+                slot.cooled_at = None;
+            }
         }
     }
 
@@ -336,6 +518,7 @@ impl KeyPool {
             .try_lock()
             .ok()?
             .as_ref()?
+            .1
             .as_ref()
             .ok()?
             .clone();
@@ -345,7 +528,7 @@ impl KeyPool {
             keys.iter()
                 .enumerate()
                 .map(|(i, key)| {
-                    let slot = st.slots.get(i).cloned().unwrap_or_default();
+                    let slot = st.slot(key).cloned().unwrap_or_default();
                     let (state, detail) = match (&slot.rejected, slot.cool_until) {
                         (Some((_, why)), _) => ("rejected", Some(why.clone())),
                         (None, Some(t)) if t > now => ("cooling", None),
@@ -438,11 +621,15 @@ mod tests {
     async fn rate_limited_and_rejected_keys_are_skipped() {
         let p = pool(&["k-aaaa", "k-bbbb", "k-cccc"], None);
         let a = p.acquire().await.unwrap();
-        assert!(p.report(&a, &rate_limited()), "another key is ready");
+        assert_eq!(
+            p.report(&a, &rate_limited()),
+            Failover::Now,
+            "another key is ready"
+        );
         drop(a);
         let b = p.acquire().await.unwrap();
         assert_eq!(b.key, "k-bbbb");
-        assert!(p.report(&b, &invalid_key()));
+        assert_eq!(p.report(&b, &invalid_key()), Failover::Now);
         drop(b);
         // Only c is ready now.
         assert_eq!(p.acquire().await.unwrap().key, "k-cccc");
@@ -465,7 +652,7 @@ mod tests {
             status: 500,
             retry_after: None,
         };
-        assert!(p.report(&a, &busy));
+        assert_eq!(p.report(&a, &busy), Failover::Now);
         drop(a);
         assert_eq!(p.acquire().await.unwrap().key, "k-bbbb");
         assert_eq!(p.status().unwrap()[0].state, "cooling");
@@ -475,10 +662,14 @@ mod tests {
     async fn without_ready_keys_a_request_still_goes_out() {
         let p = pool(&["k-aaaa", "k-bbbb"], None);
         let a = p.acquire().await.unwrap();
-        assert!(p.report(&a, &invalid_key()));
+        assert_eq!(p.report(&a, &invalid_key()), Failover::Now);
         drop(a);
         let b = p.acquire().await.unwrap();
-        assert!(!p.report(&b, &rate_limited()), "no other key is ready");
+        assert_eq!(
+            p.report(&b, &rate_limited()),
+            Failover::No,
+            "no other key is ready"
+        );
         drop(b);
         // b is cooling but not rejected, so it is preferred over a.
         assert_eq!(p.acquire().await.unwrap().key, "k-bbbb");
@@ -493,11 +684,11 @@ mod tests {
     async fn a_single_key_behaves_like_no_pool() {
         let p = pool(&["only-key"], None);
         let k = p.acquire().await.unwrap();
-        assert!(!p.report(&k, &invalid_key()));
+        assert_eq!(p.report(&k, &invalid_key()), Failover::No);
         drop(k);
         assert_eq!(p.acquire().await.unwrap().key, "only-key");
         let k = p.acquire().await.unwrap();
-        assert!(!p.report(&k, &rate_limited()));
+        assert_eq!(p.report(&k, &rate_limited()), Failover::No);
         drop(k);
         assert_eq!(p.acquire().await.unwrap().key, "only-key");
     }
@@ -520,23 +711,150 @@ mod tests {
         let p = pool(&["k-aaaa"], None);
         let k = p.acquire().await.unwrap();
         p.report(&k, &invalid_key());
-        p.succeeded(&k);
         drop(k);
+        std::thread::sleep(Duration::from_millis(2));
+        let again = p.acquire().await.unwrap();
+        p.succeeded(&again);
+        drop(again);
         assert_eq!(p.status().unwrap()[0].state, "ready");
+    }
+
+    #[tokio::test]
+    async fn a_failure_newer_than_a_success_stays() {
+        let p = pool(&["k-aaaa", "k-bbbb"], None);
+        let slow = p.acquire().await.unwrap();
+        let other = p.acquire().await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        // A later request with the same key is rate limited and rejected
+        // while the first one is still under way...
+        let later = p.acquire().await.unwrap();
+        assert_eq!(later.key, slow.key);
+        p.report(&later, &rate_limited());
+        drop(later);
+        // ...so the first one's success says nothing about now.
+        p.succeeded(&slow);
+        assert_eq!(p.status().unwrap()[0].state, "cooling");
+        let later = p.acquire().await.unwrap();
+        assert_eq!(later.key, "k-bbbb");
+        p.report(&later, &invalid_key());
+        p.succeeded(&other);
+        assert_eq!(p.status().unwrap()[1].state, "rejected");
+    }
+
+    #[tokio::test]
+    async fn full_ready_keys_are_waited_for_rather_than_rejected_ones() {
+        let p = pool(&["k-aaaa", "k-bbbb"], Some(1));
+        let b = {
+            let a = p.acquire().await.unwrap();
+            let b = p.acquire().await.unwrap();
+            assert_eq!(p.report(&b, &invalid_key()), Failover::No, "a is full");
+            drop(b);
+            a
+        };
+        // a is ready but full, b is rejected: wait for a.
+        let waiting = tokio::time::timeout(Duration::from_millis(100), p.acquire()).await;
+        assert!(waiting.is_err(), "the rejected key was handed out");
+        drop(b);
+        let next = tokio::time::timeout(Duration::from_millis(500), p.acquire())
+            .await
+            .expect("the ready key was freed")
+            .unwrap();
+        assert_eq!(next.key, "k-aaaa");
+    }
+
+    #[tokio::test]
+    async fn a_paused_key_is_used_once_its_pause_ends() {
+        let p = pool(&["k-aaaa", "k-bbbb"], Some(1));
+        let a = p.acquire().await.unwrap();
+        let b = p.acquire().await.unwrap();
+        p.report(
+            &b,
+            &TranslateError::RateLimited {
+                retry_after: Some(Duration::from_millis(300)),
+            },
+        );
+        drop(b);
+        let waiting = tokio::time::timeout(Duration::from_millis(100), p.acquire()).await;
+        assert!(waiting.is_err(), "the cooling key was handed out");
+        let next = tokio::time::timeout(Duration::from_millis(1500), p.acquire())
+            .await
+            .expect("b is ready again")
+            .unwrap();
+        assert_eq!(next.key, "k-bbbb");
+        drop(a);
+    }
+
+    #[tokio::test]
+    async fn reloaded_keys_keep_the_state_of_keys_that_stay() {
+        let p = pool(&["k-aaaa", "k-bbbb"], Some(1));
+        let a = p.acquire().await.unwrap();
+        let b = p.acquire().await.unwrap();
+        p.report(&b, &invalid_key());
+        drop(b);
+        p.reload(Arc::new(|| {
+            Ok(vec!["k-cccc".into(), "k-aaaa".into(), "k-bbbb".into()])
+        }));
+        // a is still full and b still rejected: c goes first.
+        let c = p.acquire().await.unwrap();
+        assert_eq!((c.key.as_str(), c.index, c.count), ("k-cccc", 0, 3));
+        let status = p.status().unwrap();
+        assert_eq!(
+            status
+                .iter()
+                .map(|s| (s.tail.as_str(), s.state, s.in_flight))
+                .collect::<Vec<_>>(),
+            [
+                ("cccc", "ready", 1),
+                ("aaaa", "ready", 1),
+                ("bbbb", "rejected", 0)
+            ]
+        );
+        // The lease taken before the reload frees its key.
+        drop(a);
+        assert_eq!(p.status().unwrap()[1].in_flight, 0);
+        assert_eq!(p.acquire().await.unwrap().key, "k-aaaa");
+    }
+
+    #[tokio::test]
+    async fn a_reload_wakes_waiting_requests_and_reads_again() {
+        let p = Arc::new(KeyPool::new(
+            "Relay",
+            Arc::new(|| Err("denied".into())),
+            Some(1),
+        ));
+        assert!(p.acquire().await.is_err());
+        p.reload(Arc::new(|| Ok(vec!["k-aaaa".into()])));
+        let a = p.acquire().await.unwrap();
+        let waiter = {
+            let p = Arc::clone(&p);
+            tokio::spawn(async move { p.acquire().await.map(|l| l.key.clone()) })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        p.reload(Arc::new(|| Ok(vec!["k-aaaa".into(), "k-bbbb".into()])));
+        let got = tokio::time::timeout(Duration::from_millis(500), waiter)
+            .await
+            .expect("the waiting request saw the new key")
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, "k-bbbb");
+        drop(a);
     }
 
     #[test]
     fn faults() {
-        assert_eq!(fault(&rate_limited()), Fault::Cooldown(DEFAULT_COOLDOWN));
+        assert_eq!(
+            fault(&rate_limited()),
+            Fault::Cooldown(DEFAULT_COOLDOWN, true)
+        );
         assert_eq!(
             fault(&TranslateError::RateLimited {
                 retry_after: Some(Duration::from_secs(900))
             }),
-            Fault::Cooldown(MAX_COOLDOWN)
+            Fault::Cooldown(MAX_COOLDOWN, true)
         );
         assert_eq!(
             fault(&TranslateError::Network("reset".into())),
-            Fault::Cooldown(TRANSIENT_PAUSE)
+            Fault::Cooldown(TRANSIENT_PAUSE, false)
         );
         assert_eq!(fault(&invalid_key()), Fault::Rejected);
         assert_eq!(
@@ -576,5 +894,143 @@ mod tests {
             broken.acquire().await,
             Err(TranslateError::Config(m)) if m.contains("denied")
         ));
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_keys_were_added_tries_the_new_ones() {
+        let p = pool(&["k-aaaa"], None);
+        let a = p.acquire().await.unwrap();
+        p.reload(Arc::new(|| Ok(vec!["k-aaaa".into(), "k-bbbb".into()])));
+        assert_eq!(p.report(&a, &invalid_key()), Failover::KeysChanged);
+        drop(a);
+        assert_eq!(p.acquire().await.unwrap().key, "k-bbbb");
+        // A failure that is not the key's still is no reason to switch.
+        let p = pool(&["k-aaaa"], None);
+        let a = p.acquire().await.unwrap();
+        p.reload(Arc::new(|| Ok(vec!["k-bbbb".into()])));
+        let bad_request = TranslateError::Rejected {
+            status: 400,
+            message: "bad model".into(),
+        };
+        assert_eq!(p.report(&a, &bad_request), Failover::No);
+    }
+
+    #[tokio::test]
+    async fn a_short_pause_does_not_keep_a_long_cooldown_alive() {
+        let p = pool(&["k-aaaa"], None);
+        let first = p.acquire().await.unwrap();
+        p.report(
+            &first,
+            &TranslateError::RateLimited {
+                retry_after: Some(Duration::from_secs(60)),
+            },
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        // Sent after the rate limit (no other key)...
+        let second = p.acquire().await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        // ...then a brief server error inside the long cooldown...
+        let busy = TranslateError::Server {
+            status: 502,
+            retry_after: None,
+        };
+        p.report(&first, &busy);
+        drop(first);
+        // ...and the request sent after the rate limit succeeds: the key
+        // works again.
+        p.succeeded(&second);
+        assert_eq!(p.status().unwrap()[0].state, "ready");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_is_tried_again_after_a_while() {
+        let p = pool(&["k-aaaa", "k-bbbb"], None);
+        let a = p.acquire().await.unwrap();
+        p.report(&a, &invalid_key());
+        drop(a);
+        assert_eq!(p.acquire().await.unwrap().key, "k-bbbb");
+        assert_eq!(p.acquire().await.unwrap().key, "k-bbbb");
+        let long_ago = Instant::now()
+            .checked_sub(REJECTED_RETRY + Duration::from_secs(1))
+            .unwrap();
+        p.state().slots[0].rejected = Some((long_ago, "invalid key".into()));
+        let mut keys = Vec::new();
+        for _ in 0..2 {
+            keys.push(p.acquire().await.unwrap().key.clone());
+        }
+        assert!(keys.contains(&"k-aaaa".to_owned()), "{keys:?}");
+    }
+
+    #[tokio::test]
+    async fn a_later_request_that_succeeds_clears_an_earlier_ones_failure() {
+        let p = pool(&["k-aaaa"], None);
+        let early = p.acquire().await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let later = p.acquire().await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        // The early request comes back rate limited after the later one
+        // was sent...
+        p.report(
+            &early,
+            &TranslateError::RateLimited {
+                retry_after: Some(Duration::from_secs(120)),
+            },
+        );
+        drop(early);
+        // ...and the later one succeeds: the key works.
+        p.succeeded(&later);
+        assert_eq!(p.status().unwrap()[0].state, "ready");
+    }
+
+    #[tokio::test]
+    async fn fault_dates_never_move_back() {
+        let p = pool(&["k-aaaa"], None);
+        let x = p.acquire().await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let z = p.acquire().await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let y = p.acquire().await.unwrap();
+        // y (sent last) is rejected first, then x (sent first)...
+        p.report(&y, &invalid_key());
+        p.report(&x, &invalid_key());
+        // ...so z, sent between them, proves nothing about y's rejection.
+        p.succeeded(&z);
+        assert_eq!(p.status().unwrap()[0].state, "rejected");
+        // The same for rate limits: an older request's longer cooldown keeps
+        // the newer request's date.
+        let p = pool(&["k-aaaa"], None);
+        let x = p.acquire().await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let z = p.acquire().await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let y = p.acquire().await.unwrap();
+        p.report(&y, &rate_limited());
+        p.report(
+            &x,
+            &TranslateError::RateLimited {
+                retry_after: Some(Duration::from_secs(60)),
+            },
+        );
+        p.succeeded(&z);
+        assert_eq!(p.status().unwrap()[0].state, "cooling");
+    }
+
+    #[tokio::test]
+    async fn a_failure_reported_after_a_later_requests_success_is_old_news() {
+        let p = pool(&["k-aaaa"], Some(2));
+        let long = p.acquire().await.unwrap();
+        std::thread::sleep(Duration::from_millis(2));
+        let short = p.acquire().await.unwrap();
+        // The short request, sent second, succeeds first...
+        p.succeeded(&short);
+        drop(short);
+        // ...then the long one, sent first, comes back out of quota.
+        let quota = TranslateError::Rejected {
+            status: 403,
+            message: "insufficient credit".into(),
+        };
+        p.report(&long, &quota);
+        drop(long);
+        assert_eq!(p.status().unwrap()[0].state, "ready");
     }
 }

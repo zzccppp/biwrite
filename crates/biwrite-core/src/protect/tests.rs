@@ -182,7 +182,10 @@ fn plain_mode_protects_nothing() {
         r"costs $5 and $6, see \cite{x}"
     );
     assert!(p.is_empty());
-    assert_eq!(p.restore("anything ⟦2⟧").unwrap(), "anything ⟦2⟧");
+    assert_eq!(p.restore("anything $5").unwrap(), "anything $5");
+    // Placeholder-shaped text in the source would have been protected, so
+    // one in the translation was made up.
+    assert_eq!(p.restore("anything ⟦2⟧").unwrap_err().unknown, [2]);
 }
 
 #[test]
@@ -343,4 +346,33 @@ fn sample_notes_round_trip() {
             kinds_count(source, Mode::Markdown)
         );
     }
+}
+
+#[test]
+fn numbering_can_start_later() {
+    let mut p = Protector::numbered_from(Mode::Latex, 3);
+    assert_eq!(p.mask(r"$x$ and \cite{k} and $x$"), "⟦3⟧ and ⟦4⟧ and ⟦3⟧");
+    assert_eq!(p.next_number(), 5);
+    assert_eq!(p.mask_context(r"old $y$ and $x$"), "old ⟦5⟧ and ⟦3⟧");
+    assert_eq!(p.mask_known(r"旧 $x$ 和 $z$"), "旧 ⟦3⟧ 和 $z$");
+    assert_eq!(
+        p.restore("⟦3⟧ 和 ⟦4⟧ 和 ⟦3⟧").unwrap(),
+        r"$x$ 和 \cite{k} 和 $x$"
+    );
+    assert_eq!(p.restore_partial("⟦3⟧ 和 ⟦4"), "$x$ 和 ");
+    // Another paragraph's numbers are unknown here.
+    let err = p.restore("⟦0⟧ 和 ⟦4⟧ 和 ⟦3⟧ ⟦3⟧").unwrap_err();
+    assert_eq!(err.unknown, [0]);
+    assert_eq!(
+        p.restore("⟦4⟧ ⟦3⟧").unwrap_err().to_string(),
+        "the model changed protected text: ⟦3⟧ `$x$` appears 1× instead of 2×"
+    );
+}
+
+#[test]
+fn placeholders_in_a_translation_of_text_without_any_are_unknown() {
+    let p = Protector::numbered_from(Mode::Plain, 2);
+    assert_eq!(p.restore("没有占位符。").unwrap(), "没有占位符。");
+    assert_eq!(p.restore("⟦ 不是占位符").unwrap(), "⟦ 不是占位符");
+    assert_eq!(p.restore("带 ⟦0⟧ 的译文").unwrap_err().unknown, [0]);
 }

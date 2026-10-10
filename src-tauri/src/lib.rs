@@ -25,6 +25,8 @@ mod updater;
 #[cfg(test)]
 mod home_tests;
 #[cfg(test)]
+mod key_tests;
+#[cfg(test)]
 mod leak_tests;
 #[cfg(test)]
 mod pair_tests;

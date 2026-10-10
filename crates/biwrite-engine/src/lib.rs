@@ -6,6 +6,7 @@
 //! cancelled or discarded. It has no Tauri dependency; the app delivers its
 //! events through an [`EventSink`].
 
+mod batch_check;
 mod engine;
 mod queue;
 mod random;

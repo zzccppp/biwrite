@@ -700,6 +700,24 @@ impl Engine {
         self.emit_touched(st);
     }
 
+    /// Try failed segments again (keys were added: their errors may have
+    /// come from missing or rejected keys). Work in flight goes on.
+    pub fn retry_failed(&self) {
+        let mut st = self.inner.lock();
+        let failed: Vec<SegmentId> = st
+            .meta
+            .iter()
+            .filter(|(_, m)| m.error.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in failed {
+            st.update(id, |m| m.error = None);
+        }
+        self.inner.reconcile(&mut st, &HashSet::new());
+        self.inner.pump(&mut st);
+        self.emit_touched(st);
+    }
+
     pub fn settings(&self) -> EngineSettings {
         self.inner.lock().settings.clone()
     }

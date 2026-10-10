@@ -17,6 +17,7 @@ use support::{Canned, MockServer};
 
 const KEY_A: &str = "sk-test-aaaaaaaaaaaaaaaaaaaaAAAA";
 const KEY_B: &str = "sk-test-bbbbbbbbbbbbbbbbbbbbBBBB";
+const KEY_C: &str = "sk-test-ccccccccccccccccccccCCCC";
 
 #[derive(Default)]
 struct Records(Mutex<Vec<RequestRecord>>);
@@ -437,4 +438,99 @@ async fn several_paragraphs_share_one_request() {
     assert!(seen.contains(&(1, "第二".to_owned())), "{seen:?}");
     assert!(seen.contains(&(2, "第三段。".to_owned())));
     assert_eq!(records.finished().len(), 1);
+}
+
+#[tokio::test]
+async fn a_server_error_tries_one_other_key_then_leaves_retrying_to_the_queue() {
+    let server = MockServer::start().await;
+    for _ in 0..3 {
+        server.push(Canned::json(
+            503,
+            r#"{"error":{"message":"upstream overloaded"}}"#,
+        ));
+    }
+    let (p, _) = provider(&server, &[KEY_A, KEY_B, KEY_C]);
+    let err = translate(p.as_ref(), "x").await.unwrap_err();
+    assert!(
+        matches!(err, TranslateError::Server { status: 503, .. }),
+        "{err:?}"
+    );
+    assert_eq!(server.requests().len(), 2, "one other key, not all of them");
+
+    // A rate limit is the key's: every other key is tried.
+    let server = MockServer::start().await;
+    server.push(stream_rate_limited());
+    server.push(stream_rate_limited());
+    server.push(ok(&["好"]));
+    let (p, _) = provider(&server, &[KEY_A, KEY_B, KEY_C]);
+    assert_eq!(translate(p.as_ref(), "Good").await.unwrap(), "好");
+    assert_eq!(server.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn blocks_inside_the_reasoning_are_not_answers() {
+    let server = MockServer::start().await;
+    server.push(ok(&[
+        "<think>Draft: <translation n=\"1\">错的</translation> no, better:</think>\n",
+        "<translation n=\"1\">对的</translation>\n<translation n=\"2\">第二</translation>",
+    ]));
+    let (p, _) = provider(&server, &[KEY_A]);
+    let reqs = vec![request("Right."), request("Second.")];
+    let out = p.translate_batch(&reqs, &|_, _| {}).await.unwrap();
+    assert_eq!(out.texts, vec![Some("对的".into()), Some("第二".into())]);
+}
+
+#[tokio::test]
+async fn another_key_clears_what_the_failed_batch_streamed() {
+    let server = MockServer::start().await;
+    server.push(Canned::sse(&[
+        r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_x","status":"in_progress"}}"#,
+        r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"<translation n=\"1\">半"}"#,
+        r#"event: error
+data: {"type":"error","error":{"type":"too_many_requests","code":"rate_limit_exceeded","message":"slow down"}}"#,
+    ]));
+    server.push(ok(&["<translation n=\"2\">二</translation>"]));
+    let (p, _) = provider(&server, &[KEY_A, KEY_B]);
+    let reqs = vec![request("Half."), request("Two.")];
+    let seen = Mutex::new(Vec::<(usize, String)>::new());
+    p.translate_batch(&reqs, &|i, text| {
+        seen.lock().unwrap().push((i, text.to_owned()))
+    })
+    .await
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    let half = seen.iter().position(|s| *s == (0, "半".to_owned()));
+    let cleared = seen.iter().rposition(|s| *s == (0, String::new()));
+    assert!(
+        matches!((half, cleared), (Some(h), Some(c)) if c > h),
+        "{seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn keys_added_during_a_request_are_tried_when_it_fails() {
+    let server = MockServer::start().await;
+    let mut slow = Canned::json(
+        401,
+        r#"{"error":{"message":"invalid api key","type":"authentication_error"}}"#,
+    );
+    slow.delay = std::time::Duration::from_millis(300);
+    server.push(slow);
+    server.push(ok(&["好"]));
+    let (p, _) = provider(&server, &[KEY_A]);
+    let running = {
+        let p = p.clone();
+        tokio::spawn(async move { translate(p.as_ref(), "Good").await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    p.reload_keys(keys(&[KEY_A, KEY_B]));
+    assert_eq!(running.await.unwrap().unwrap(), "好");
+    let auth: Vec<String> = server
+        .requests()
+        .iter()
+        .map(|r| r.header("authorization").unwrap().to_owned())
+        .collect();
+    assert_eq!(auth, [format!("Bearer {KEY_A}"), format!("Bearer {KEY_B}")]);
 }

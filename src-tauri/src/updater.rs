@@ -19,6 +19,8 @@ use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
 
 const RELEASES: &str = "https://api.github.com/repos/zzccppp/biwrite/releases?per_page=40";
+/// Where BiWrite's release files are downloaded from (on github.com).
+const DOWNLOAD_PATH: &str = "/zzccppp/biwrite/releases/download/";
 pub const EVENT_UPDATE: &str = "update-progress";
 /// Largest installer accepted.
 const MAX_INSTALLER_BYTES: u64 = 600 * 1024 * 1024;
@@ -192,6 +194,42 @@ fn sha256_of(digest: Option<&str>) -> Option<String> {
     digest
         .and_then(|d| d.strip_prefix("sha256:"))
         .map(str::to_ascii_lowercase)
+        .filter(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// The SHA-256 an installer must have, if it may be downloaded at all: it
+/// comes from BiWrite's own releases on GitHub, and GitHub reports its
+/// checksum (an installer that cannot be checked is not installed).
+fn expected_sha256(asset: &GhAsset) -> CommandResult<String> {
+    if !is_release_file(&asset.browser_download_url) {
+        return Err(fail(
+            "the installer is not one of BiWrite's GitHub release files",
+        ));
+    }
+    sha256_of(asset.digest.as_deref()).ok_or_else(|| {
+        fail("GitHub reports no checksum for this installer, so it cannot be checked")
+    })
+}
+
+/// `url` names a file of one of BiWrite's GitHub releases. Judged on the
+/// URL as it will be requested (parsed, so `%2e%2e` and `\` count as the
+/// `..` and `/` they become).
+fn is_release_file(url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let Some(file) = url.path().strip_prefix(DOWNLOAD_PATH) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str() == Some("github.com")
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && !file.is_empty()
+        && file.split('/').all(|part| !part.is_empty() && part != "..")
 }
 
 fn view(r: &GhRelease, asset: Option<&GhAsset>) -> ReleaseView {
@@ -289,6 +327,7 @@ pub async fn install_release(
     if asset.size > MAX_INSTALLER_BYTES {
         return Err(fail("the installer is unexpectedly large"));
     }
+    let sha256 = expected_sha256(&asset)?;
     let dir = app
         .path()
         .app_cache_dir()
@@ -296,7 +335,7 @@ pub async fn install_release(
         .join("updates");
     std::fs::create_dir_all(&dir).map_err(|e| CommandError::io(&dir, e))?;
     let file = dir.join(safe_name(&asset.name));
-    download(&app, &tag, &asset, &file).await?;
+    download(&app, &tag, &asset, &sha256, &file).await?;
     let version = release.tag_name.trim_start_matches('v').to_owned();
     log::info!("downloaded BiWrite {version} ({})", asset.name);
     install(&app, &state, &file, version).await
@@ -342,7 +381,13 @@ fn shell_quote(path: &Path) -> String {
 }
 
 /// Download to `file`, reporting progress, then check size and SHA-256.
-async fn download(app: &AppHandle, tag: &str, asset: &GhAsset, file: &Path) -> CommandResult<()> {
+async fn download(
+    app: &AppHandle,
+    tag: &str,
+    asset: &GhAsset,
+    sha256: &str,
+    file: &Path,
+) -> CommandResult<()> {
     let mut response = client()?
         .get(&asset.browser_download_url)
         .timeout(Duration::from_secs(1800))
@@ -388,9 +433,7 @@ async fn download(app: &AppHandle, tag: &str, asset: &GhAsset, file: &Path) -> C
             )));
         }
         let got = format!("{:x}", hash.finalize_reset());
-        if let Some(want) = sha256_of(asset.digest.as_deref())
-            && want != got
-        {
+        if got != sha256 {
             return Err(fail(
                 "the download does not match the checksum GitHub reports",
             ));
@@ -614,8 +657,51 @@ mod tests {
         } else if cfg!(windows) {
             assert_eq!(picked, Some("BiWrite_0.2.0_x64-setup.exe"));
         }
-        assert_eq!(sha256_of(Some("sha256:ABCDEF")).as_deref(), Some("abcdef"));
+        let hex = "ab".repeat(32);
+        assert_eq!(
+            sha256_of(Some(&format!("sha256:{}", hex.to_uppercase()))),
+            Some(hex)
+        );
+        assert_eq!(sha256_of(Some("sha256:ABCDEF")), None, "too short");
         assert_eq!(sha256_of(Some("md5:00")), None);
+    }
+
+    #[test]
+    fn only_checked_installers_from_biwrite_releases_are_downloaded() {
+        let digest = format!("sha256:{}", "0f".repeat(32));
+        let at = |url: &str, digest: Option<&str>| GhAsset {
+            name: "BiWrite_0.3.0_universal.dmg".into(),
+            size: 1,
+            browser_download_url: url.into(),
+            digest: digest.map(str::to_owned),
+        };
+        let good = "https://github.com/zzccppp/biwrite/releases/download/v0.3.0/BiWrite_0.3.0_universal.dmg";
+        assert_eq!(
+            expected_sha256(&at(good, Some(&digest))).unwrap(),
+            "0f".repeat(32)
+        );
+        let refused = |url: &str, digest: Option<&str>| {
+            expected_sha256(&at(url, digest)).unwrap_err().to_string()
+        };
+        assert!(refused(good, None).contains("no checksum"));
+        for url in [
+            "https://example.com/zzccppp/biwrite/releases/download/v0.3.0/x.dmg",
+            "https://github.com/someone/biwrite/releases/download/v0.3.0/x.dmg",
+            "http://github.com/zzccppp/biwrite/releases/download/v0.3.0/x.dmg",
+            "https://github.com/zzccppp/biwrite/releases/download/",
+            "https://github.com/zzccppp/biwrite/releases/download/../../other/x.dmg",
+            "https://github.com/zzccppp/biwrite/releases/download/v1/x.dmg?u=https://evil",
+            "https://github.com/zzccppp/biwrite/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/evil/biwrite/releases/download/v1/x.dmg",
+            "https://github.com/zzccppp/biwrite/releases/download/v1\\..\\..\\..\\..\\evil/x.dmg",
+            "https://github.com:8443/zzccppp/biwrite/releases/download/v1/x.dmg",
+            "https://user@github.com/zzccppp/biwrite/releases/download/v1/x.dmg",
+            "https://github.com.evil.com/zzccppp/biwrite/releases/download/v1/x.dmg",
+        ] {
+            assert!(
+                refused(url, Some(&digest)).contains("not one of BiWrite's"),
+                "{url}"
+            );
+        }
     }
 
     #[test]
