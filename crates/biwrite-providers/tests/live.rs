@@ -11,9 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use biwrite_engine::{TranslationRequest, Translator};
-use biwrite_providers::config::ANYROUTER;
+use biwrite_providers::config::{ANYROUTER, presets};
 use biwrite_providers::{
-    DefaultPrompts, ProviderConfig, RecordState, RequestObserver, RequestRecord, build_http,
+    ChatModel, ChatRequest, DefaultPrompts, ProviderConfig, RecordState, RequestObserver,
+    RequestRecord, build_http,
 };
 
 #[derive(Default)]
@@ -455,4 +456,70 @@ async fn anyrouter_revises_english_from_edited_chinese() {
     assert!(lower.contains("six"), "{revision}");
     assert!(lower.contains("ten"), "{revision}");
     assert!(!lower.contains("four"), "{revision}");
+}
+
+/// DeepSeek with its preset, through the app's provider code: a
+/// translation into Chinese that keeps the citation, and an answer to a
+/// free-form request as the writing assistant sends it.
+#[tokio::test]
+#[ignore = "needs BIWRITE_LIVE_DEEPSEEK_KEY and network access"]
+async fn deepseek_translates_and_answers() {
+    let Ok(key) = std::env::var("BIWRITE_LIVE_DEEPSEEK_KEY") else {
+        eprintln!("BIWRITE_LIVE_DEEPSEEK_KEY is not set; skipping");
+        return;
+    };
+    let preset = presets()
+        .into_iter()
+        .find(|p| p.name == "DeepSeek")
+        .expect("the DeepSeek preset");
+    let config = ProviderConfig {
+        id: "live-deepseek".into(),
+        name: preset.name.into(),
+        kind: preset.kind,
+        base_url: preset.base_url.into(),
+        model: preset.model.into(),
+        temperature: 0.0,
+        effort: preset.effort,
+        wire_api: preset.wire_api,
+        service_tier: preset.service_tier,
+        key_concurrency: preset.key_concurrency,
+        max_retries: preset.max_retries,
+    }
+    .validated()
+    .unwrap();
+    let records = Arc::new(Records::default());
+    let provider = build_http(
+        &config,
+        Arc::new(move || Ok(vec![key.clone()])),
+        Arc::new(DefaultPrompts),
+        records.clone(),
+    )
+    .unwrap();
+    let request = TranslationRequest {
+        source: "Our method improves accuracy on twelve tables over prior work \\cite{smith2020}."
+            .into(),
+        ..Default::default()
+    };
+    let out = provider.translate(&request, &|_| {}).await.unwrap();
+    println!("translation: {}", out.text);
+    assert!(out.text.chars().any(biwrite_core::lang::is_cjk));
+    assert!(out.text.contains("smith2020"), "the citation is kept");
+    let chat = ChatRequest {
+        purpose: "ask".into(),
+        system: "Answer with one number and nothing else.".into(),
+        user: "What is 2 + 3?".into(),
+        images: Vec::new(),
+    };
+    let answer = provider.complete(&chat, &|_| {}).await.unwrap();
+    println!("answer: {}", answer.text);
+    assert!(answer.text.contains('5'));
+    for r in records.0.lock().unwrap().iter() {
+        println!(
+            "record {}: {:?} http={:?} {}ms",
+            r.id,
+            r.state,
+            r.http_status,
+            r.duration_ms.unwrap_or(0)
+        );
+    }
 }

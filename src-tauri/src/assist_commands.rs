@@ -20,8 +20,8 @@ use biwrite_core::assist::{self, Action, Answer, DiffPart, Scope};
 use biwrite_core::glossary;
 use biwrite_core::utf16::{byte_to_utf16, utf16_to_byte};
 use biwrite_core::{Mode, Protector};
-use biwrite_engine::TokenUsage;
-use biwrite_providers::{ChatModel, ChatRequest, ImageInput};
+use biwrite_engine::{PartialFn, TokenUsage, TranslateError};
+use biwrite_providers::{ChatModel, ChatOutput, ChatRequest, ImageInput};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -44,6 +44,14 @@ const MAX_REFERENCE_CHARS: usize = 120_000;
 const MAX_REFERENCE_BYTES: u64 = 8_000_000;
 /// Minimum interval between streamed updates of one job.
 const PARTIAL_EVERY: Duration = Duration::from_millis(80);
+/// Retries of a request after a transient failure (a relay at capacity, a
+/// dropped connection) when the provider sets no number.
+const DEFAULT_RETRIES: u32 = 5;
+/// The longest wait between two tries. The author is waiting for the
+/// answer, and a relay at capacity frees up at any moment.
+const RETRY_WAIT_MAX: Duration = Duration::from_secs(5);
+/// The longest wait a rate limit may ask for before the next try.
+const RETRY_HINT_MAX: Duration = Duration::from_secs(30);
 
 /// Running jobs and attached reference images.
 #[derive(Default)]
@@ -136,9 +144,26 @@ pub struct AssistResult {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AssistEvent {
-    Partial { id: u64, text: String },
-    Done { id: u64, result: Box<AssistResult> },
-    Failed { id: u64, message: String },
+    Partial {
+        id: u64,
+        text: String,
+    },
+    /// The request failed for a passing reason and is sent again: try
+    /// `attempt` of `of` retries.
+    Retrying {
+        id: u64,
+        attempt: u32,
+        of: u32,
+        message: String,
+    },
+    Done {
+        id: u64,
+        result: Box<AssistResult>,
+    },
+    Failed {
+        id: u64,
+        message: String,
+    },
 }
 
 fn emit(app: &AppHandle, event: &AssistEvent) {
@@ -375,7 +400,29 @@ async fn run(job: Job) {
             );
         }
     };
-    let outcome = job.model.complete(&job.chat, &on_partial).await;
+    let on_retry = |attempt: u32, of: u32, err: &TranslateError| {
+        log::info!(
+            "assistant {}: {err}; retry {attempt} of {of}",
+            job.action.purpose()
+        );
+        emit(
+            &job.app,
+            &AssistEvent::Retrying {
+                id: job.id,
+                attempt,
+                of,
+                message: err.to_string(),
+            },
+        );
+    };
+    let outcome = complete_with_retries(
+        job.model.as_ref(),
+        &job.chat,
+        &on_partial,
+        &on_retry,
+        retry_wait,
+    )
+    .await;
     let event = match outcome {
         Err(e) => AssistEvent::Failed {
             id: job.id,
@@ -426,6 +473,44 @@ async fn run(job: Job) {
         state.assist.jobs().remove(&job.id);
     }
     emit(&job.app, &event);
+}
+
+/// The wait before retry number `attempt` (from 1) after `err`: a rate
+/// limit's hint, else one second doubling up to [`RETRY_WAIT_MAX`].
+fn retry_wait(attempt: u32, err: &TranslateError) -> Duration {
+    if let Some(hint) = err.retry_after() {
+        return hint.min(RETRY_HINT_MAX);
+    }
+    Duration::from_secs(1)
+        .saturating_mul(2u32.saturating_pow(attempt.saturating_sub(1)))
+        .min(RETRY_WAIT_MAX)
+}
+
+/// The model's answer to `chat`. A transient failure (a server error, a
+/// rate limit, the network) sends the request again, up to the provider's
+/// retry count (or [`DEFAULT_RETRIES`]), `wait` apart. Each retry is told to
+/// `on_retry` (the retry, the count, the failure) and clears the streamed
+/// output.
+async fn complete_with_retries(
+    model: &dyn ChatModel,
+    chat: &ChatRequest,
+    on_partial: PartialFn<'_>,
+    on_retry: &(dyn Fn(u32, u32, &TranslateError) + Send + Sync),
+    wait: impl Fn(u32, &TranslateError) -> Duration,
+) -> Result<ChatOutput, TranslateError> {
+    let retries = model.max_retries().unwrap_or(DEFAULT_RETRIES);
+    let mut attempt = 0;
+    loop {
+        match model.complete(chat, on_partial).await {
+            Err(err) if err.is_retryable() && attempt < retries => {
+                attempt += 1;
+                on_retry(attempt, retries, &err);
+                on_partial("");
+                tokio::time::sleep(wait(attempt, &err)).await;
+            }
+            outcome => return outcome,
+        }
+    }
 }
 
 /// Stop a running job.
@@ -719,6 +804,145 @@ mod tests {
     use super::*;
 
     const DOC: &str = "First paragraph.\n\nSecond one here.\n\nThird.";
+
+    /// Fails with `error` for the first `fails` requests, then answers.
+    struct Flaky {
+        fails: u32,
+        error: TranslateError,
+        retries: Option<u32>,
+        calls: std::sync::atomic::AtomicU32,
+    }
+
+    impl Flaky {
+        fn new(fails: u32, error: TranslateError, retries: Option<u32>) -> Self {
+            Self {
+                fails,
+                error,
+                retries,
+                calls: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+
+        fn calls(&self) -> u32 {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ChatModel for Flaky {
+        fn label(&self) -> String {
+            "flaky".into()
+        }
+
+        fn complete<'a>(
+            &'a self,
+            _request: &'a ChatRequest,
+            on_partial: PartialFn<'a>,
+        ) -> biwrite_engine::BoxFuture<'a, Result<ChatOutput, TranslateError>> {
+            Box::pin(async move {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                on_partial("half an answer");
+                if call < self.fails {
+                    return Err(self.error.clone());
+                }
+                Ok(ChatOutput {
+                    text: "answer".into(),
+                    usage: TokenUsage::default(),
+                })
+            })
+        }
+
+        fn max_retries(&self) -> Option<u32> {
+            self.retries
+        }
+    }
+
+    fn chat() -> ChatRequest {
+        ChatRequest {
+            purpose: "ask".into(),
+            system: String::new(),
+            user: "question".into(),
+            images: Vec::new(),
+        }
+    }
+
+    const BUSY: TranslateError = TranslateError::Server {
+        status: 500,
+        retry_after: None,
+    };
+
+    /// A relay at capacity answers once a try gets through: each failed try
+    /// is reported, its half answer cleared, and the answer comes back.
+    #[tokio::test]
+    async fn a_busy_relay_is_asked_again_until_it_answers() {
+        let model = Flaky::new(7, BUSY, Some(20));
+        let retries = Mutex::new(Vec::new());
+        let cleared = std::sync::atomic::AtomicU32::new(0);
+        let on_partial = |text: &str| {
+            if text.is_empty() {
+                cleared.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+        let on_retry = |attempt: u32, of: u32, _: &TranslateError| {
+            retries.lock().unwrap().push((attempt, of));
+        };
+        let out = complete_with_retries(&model, &chat(), &on_partial, &on_retry, |_, _| {
+            Duration::ZERO
+        })
+        .await
+        .unwrap();
+        assert_eq!(out.text, "answer");
+        assert_eq!(model.calls(), 8);
+        let retries = retries.into_inner().unwrap();
+        assert_eq!(retries.len(), 7);
+        assert_eq!(retries[0], (1, 20));
+        assert_eq!(retries[6], (7, 20));
+        assert_eq!(cleared.load(Ordering::SeqCst), 7);
+    }
+
+    /// The provider's retry count bounds the tries, the default without
+    /// one, and a rejected request is not sent again.
+    #[tokio::test]
+    async fn retries_stop_at_the_count_and_skip_rejections() {
+        let quiet = |_: &str| {};
+        let none = |_: u32, _: u32, _: &TranslateError| {};
+        let zero = |_: u32, _: &TranslateError| Duration::ZERO;
+        let model = Flaky::new(100, BUSY, Some(3));
+        let err = complete_with_retries(&model, &chat(), &quiet, &none, zero)
+            .await
+            .unwrap_err();
+        assert_eq!(err, BUSY);
+        assert_eq!(model.calls(), 4, "one try and three retries");
+        let model = Flaky::new(100, BUSY, None);
+        assert!(
+            complete_with_retries(&model, &chat(), &quiet, &none, zero)
+                .await
+                .is_err()
+        );
+        assert_eq!(model.calls(), DEFAULT_RETRIES + 1);
+        let rejected = TranslateError::Rejected {
+            status: 401,
+            message: "bad key".into(),
+        };
+        let model = Flaky::new(100, rejected, Some(20));
+        assert!(
+            complete_with_retries(&model, &chat(), &quiet, &none, zero)
+                .await
+                .is_err()
+        );
+        assert_eq!(model.calls(), 1);
+    }
+
+    #[test]
+    fn retry_waits_stay_short() {
+        assert_eq!(retry_wait(1, &BUSY), Duration::from_secs(1));
+        assert_eq!(retry_wait(2, &BUSY), Duration::from_secs(2));
+        assert_eq!(retry_wait(3, &BUSY), Duration::from_secs(4));
+        assert_eq!(retry_wait(40, &BUSY), RETRY_WAIT_MAX);
+        let limited = TranslateError::RateLimited {
+            retry_after: Some(Duration::from_secs(600)),
+        };
+        assert_eq!(retry_wait(1, &limited), RETRY_HINT_MAX);
+    }
 
     #[test]
     fn a_cursor_targets_its_paragraph() {

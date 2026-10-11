@@ -187,7 +187,7 @@
         }}
       >
         <option value={0}>{t("keys.retriesDefault")}</option>
-        {#each [3, 5, 8, 10, 15, 20] as n (n)}<option value={n}>{n}</option>{/each}
+        {#each [3, 5, 8, 10, 15, 20, 50, 100] as n (n)}<option value={n}>{n}</option>{/each}
       </select>
     </label>
   </div>

@@ -405,4 +405,8 @@ impl ChatModel for HttpProvider {
     ) -> BoxFuture<'a, Result<ChatOutput, TranslateError>> {
         Box::pin(self.complete_one(request, on_partial))
     }
+
+    fn max_retries(&self) -> Option<u32> {
+        self.core.config.max_retries
+    }
 }

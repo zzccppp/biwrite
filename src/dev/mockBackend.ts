@@ -45,6 +45,8 @@ const LATEX = PARAMS.has("latex");
 const PENDING = Number(PARAMS.get("pending") ?? 0);
 /** With `failed=N` the last N paragraphs failed to translate (the provider answered with errors). */
 const FAILED = Number(PARAMS.get("failed") ?? 0);
+/** `assistbusy=N`: the assistant's first N tries meet a busy server and are retried. */
+const ASSIST_BUSY = Number(PARAMS.get("assistbusy") ?? 0);
 /** `zhfile`: the sample paper's Chinese version is the open file. */
 const ZH_FILE = PARAMS.has("zhfile") && LATEX;
 /** `wrong`: that Chinese file was taken for English. */
@@ -710,8 +712,13 @@ const handlers: Record<string, (args: Args) => unknown> = {
             ? null
             : p.revision;
     const chunks = ["<revision>\nThis note asks", "<revision>\nThis note asks whether the same idea transfers", "<revision>\nThis note asks whether the same idea transfers to graph neural networks."];
-    chunks.forEach((c, i) => emitLater(300 + i * 350, { kind: "partial", id, text: c.replace("<revision>\n", "") }));
-    emitLater(1600, {
+    // A busy server first: each retry a second apart, the answer after them.
+    const busy = ASSIST_BUSY * 1000;
+    for (let n = 1; n <= ASSIST_BUSY; n++) {
+      emitLater(n * 1000 - 700, { kind: "retrying", id, attempt: n, of: 20, message: "provider server error (HTTP 500)" });
+    }
+    chunks.forEach((c, i) => emitLater(busy + 300 + i * 350, { kind: "partial", id, text: c.replace("<revision>\n", "") }));
+    emitLater(busy + 1600, {
       kind: "done",
       id,
       result: {

@@ -386,6 +386,8 @@ export interface AssistResult {
 
 export type AssistEvent =
   | { kind: "partial"; id: number; text: string }
+  /** The request failed for a passing reason and is sent again. */
+  | { kind: "retrying"; id: number; attempt: number; of: number; message: string }
   | { kind: "done"; id: number; result: AssistResult }
   | { kind: "failed"; id: number; message: string };
 

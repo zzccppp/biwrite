@@ -57,7 +57,9 @@
   {#if job.state === "running"}
     <div class="streaming">
       <span class="spinner" aria-hidden="true"></span>
-      <span class="label">{t("assist.running")}</span>
+      <span class="label"
+        >{job.retry ? t("assist.retrying", { n: job.retry.attempt, of: job.retry.of }) : t("assist.running")}</span
+      >
       <button class="btn small" onclick={() => onstop(job)}>{t("assist.stop")}</button>
     </div>
     {#if job.partial}<pre class="partial">{job.partial}</pre>{/if}

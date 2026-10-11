@@ -46,6 +46,24 @@ pub(crate) struct RetryPolicy {
     pub max: Duration,
 }
 
+/// Longest wait before retrying after a server error. A relay at capacity
+/// (HTTP 500 "no channel available") frees up at any moment, so the next
+/// try comes soon instead of after minutes.
+pub(crate) const SERVER_RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// Delay before retrying after `err`: [`backoff_delay`], with server errors
+/// retried within [`SERVER_RETRY_MAX`].
+pub(crate) fn retry_delay(attempt: u32, err: &TranslateError, p: RetryPolicy) -> Duration {
+    let p = match err {
+        TranslateError::Server { .. } => RetryPolicy {
+            max: p.max.min(SERVER_RETRY_MAX),
+            ..p
+        },
+        _ => p,
+    };
+    backoff_delay(attempt, err.retry_after(), p)
+}
+
 /// Delay before retry number `attempt` (0-based): server hint if given,
 /// otherwise `base * 2^attempt` plus up to 25% jitter, capped at `max`.
 pub(crate) fn backoff_delay(
@@ -522,7 +540,7 @@ async fn run_job(inner: Arc<Inner>, job: Job) {
                 }
             }
             Err(e) if e.is_retryable() && retries < job.retry.max_retries => {
-                let delay = backoff_delay(retries, e.retry_after(), job.retry);
+                let delay = retry_delay(retries, &e, job.retry);
                 inner
                     .sink
                     .notice(&format!("{e}; retrying in {:.1}s", delay.as_secs_f32()));
@@ -588,7 +606,7 @@ async fn run_batch(inner: Arc<Inner>, jobs: Vec<Job>) {
         match attempt {
             Ok(out) => break Ok(out.texts),
             Err(e) if e.is_retryable() && retries < retry.max_retries => {
-                let delay = backoff_delay(retries, e.retry_after(), retry);
+                let delay = retry_delay(retries, &e, retry);
                 inner
                     .sink
                     .notice(&format!("{e}; retrying in {:.1}s", delay.as_secs_f32()));
@@ -669,5 +687,25 @@ mod tests {
             backoff_delay(0, Some(Duration::from_secs(3)), p),
             Duration::from_secs(3)
         );
+    }
+
+    /// A server error is tried again within a few seconds however many
+    /// tries came before. A rate limit keeps the longer schedule.
+    #[test]
+    fn server_errors_are_retried_soon() {
+        let p = RetryPolicy {
+            max_retries: 100,
+            base: Duration::from_secs(1),
+            max: Duration::from_secs(60),
+        };
+        let server = TranslateError::Server {
+            status: 500,
+            retry_after: None,
+        };
+        for attempt in [0, 5, 50, 99] {
+            assert!(retry_delay(attempt, &server, p) <= SERVER_RETRY_MAX);
+        }
+        let limited = TranslateError::RateLimited { retry_after: None };
+        assert_eq!(retry_delay(30, &limited, p), Duration::from_secs(60));
     }
 }

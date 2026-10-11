@@ -89,6 +89,8 @@ export class AssistJob {
   touched = $state(false);
   state = $state<JobState>("running");
   partial = $state("");
+  /** The latest retry after a passing failure (a busy server), until output arrives. */
+  retry = $state<{ attempt: number; of: number } | null>(null);
   result = $state<AssistResult | null>(null);
   error = $state<string | null>(null);
   /** Applying found the target changed; offer to re-apply with the model. */
@@ -202,6 +204,10 @@ export class AssistStore {
     if (job.state !== "running") return;
     if (e.kind === "partial") {
       job.partial = e.text;
+      if (e.text) job.retry = null;
+    } else if (e.kind === "retrying") {
+      job.retry = { attempt: e.attempt, of: e.of };
+      job.partial = "";
     } else if (e.kind === "done") {
       job.result = e.result;
       job.state = "done";

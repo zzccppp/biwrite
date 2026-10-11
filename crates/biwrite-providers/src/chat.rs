@@ -50,4 +50,10 @@ pub trait ChatModel: Send + Sync {
         request: &'a ChatRequest,
         on_partial: PartialFn<'a>,
     ) -> BoxFuture<'a, Result<ChatOutput, TranslateError>>;
+
+    /// Retries for transient errors the provider was set up with, if any
+    /// (`None` leaves it to the caller's default).
+    fn max_retries(&self) -> Option<u32> {
+        None
+    }
 }

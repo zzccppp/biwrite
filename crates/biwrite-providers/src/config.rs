@@ -7,7 +7,7 @@ pub const MAX_TEMPERATURE: f32 = 0.3;
 /// Highest per-key request limit offered in settings.
 pub const MAX_KEY_CONCURRENCY: u32 = 16;
 /// Most retries a provider may ask for.
-pub const MAX_RETRIES: u32 = 20;
+pub const MAX_RETRIES: u32 = 100;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

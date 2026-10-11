@@ -201,6 +201,7 @@ export const messages = {
   },
   "assist.run": { en: "Run", zh: "开始" },
   "assist.running": { en: "Working…", zh: "处理中…" },
+  "assist.retrying": { en: "The server is busy. Retry {n} of {of}…", zh: "服务器繁忙，正在第 {n}/{of} 次重试…" },
   "assist.stop": { en: "Stop", zh: "停止" },
   "assist.accept": { en: "Accept", zh: "采纳" },
   "assist.insert": { en: "Insert", zh: "插入" },
