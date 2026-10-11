@@ -341,3 +341,35 @@ async fn a_request_the_relay_cannot_serve_is_not_tried_forever() {
         "nothing sent after it ended"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ping_keeps_a_key_that_got_through_answered_and_notes_keys_turned_away() {
+    let relay = Relay::start().await;
+    relay.rules.lock().unwrap().through.insert(C.into());
+    let board = SqueezeBoard::new();
+    let config = config(&relay.base);
+    let ping = |key: &str| {
+        biwrite_providers::ping(
+            &config,
+            key.to_owned(),
+            Arc::clone(&board),
+            Arc::new(DefaultPrompts),
+        )
+    };
+    ping(C).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let idle = board.idle(&key_fingerprint(C)).unwrap();
+    assert!(idle >= Duration::from_millis(300));
+    ping(C).await.unwrap();
+    assert!(
+        board.idle(&key_fingerprint(C)).unwrap() < idle,
+        "answered again"
+    );
+    // Keys turned away show the relay is crowded.
+    assert!(!board.was_crowded());
+    assert!(ping(A).await.is_err());
+    assert!(ping(B).await.is_err());
+    assert!(board.was_crowded());
+    assert!(!board.is_through(&key_fingerprint(A)));
+    assert_eq!(relay.requests_with(C), 2);
+}

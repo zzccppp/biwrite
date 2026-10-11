@@ -137,6 +137,9 @@ pub struct AppSettings {
     /// Closing the window hides BiWrite in the menu bar or notification
     /// area instead of quitting.
     pub close_to_tray: bool,
+    /// Keys that got through to a relay that turns keys away are sent a
+    /// short translation when idle, so they keep their place.
+    pub keep_alive: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +178,7 @@ impl Default for AppSettings {
             latex: LatexSettings::default(),
             check_updates: true,
             close_to_tray: true,
+            keep_alive: true,
             keep_file: false,
         }
     }
@@ -448,6 +452,7 @@ pub struct SettingsView {
     pub latex: LatexSettings,
     pub check_updates: bool,
     pub close_to_tray: bool,
+    pub keep_alive: bool,
     /// This build's version.
     pub version: String,
 }
@@ -486,6 +491,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         latex: settings.latex.clone(),
         check_updates: settings.check_updates,
         close_to_tray: settings.close_to_tray,
+        keep_alive: settings.keep_alive,
         version: env!("CARGO_PKG_VERSION").to_owned(),
     }
 }

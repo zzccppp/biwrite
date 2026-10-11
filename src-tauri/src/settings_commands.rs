@@ -511,6 +511,17 @@ pub async fn set_check_updates(
     Ok(state.settings_view())
 }
 
+/// Keep the keys that got through to a crowded relay alive, or not.
+#[tauri::command]
+pub async fn set_keep_alive(state: State<'_, AppState>, on: bool) -> CommandResult<SettingsView> {
+    {
+        let mut s = state.settings();
+        s.keep_alive = on;
+        state.persist(&s)?;
+    }
+    Ok(state.settings_view())
+}
+
 /// Close to the tray (hide the window) or quit when the window is closed.
 #[tauri::command]
 pub async fn set_close_to_tray(

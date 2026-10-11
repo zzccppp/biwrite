@@ -162,6 +162,7 @@ pub fn run() {
                 }
             }
             app.manage(state);
+            squeeze_commands::spawn_keeper(app.handle().clone());
             Ok(())
         })
         .on_window_event(on_window_event)
@@ -261,6 +262,7 @@ pub fn run() {
             updater::install_release,
             updater::relaunch,
             settings_commands::set_check_updates,
+            settings_commands::set_keep_alive,
             settings_commands::set_close_to_tray,
             settings_commands::set_tray_language,
             log_commands::get_request_log,

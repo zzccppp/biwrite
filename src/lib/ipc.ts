@@ -118,6 +118,7 @@ export const settingsIpc = {
   squeezeStatus: (id: string) => invoke<SqueezeView>("squeeze_status", { id }),
   squeezeStart: (id: string) => invoke<SqueezeView>("squeeze_start", { id }),
   squeezeStop: (id: string) => invoke<SqueezeView>("squeeze_stop", { id }),
+  setKeepAlive: (on: boolean) => invoke<SettingsView>("set_keep_alive", { on }),
   setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),
   setTranslateDelay: (seconds: number) => invoke<SettingsView>("set_translate_delay", { seconds }),
   setMatchPool: (on: boolean) => invoke<SettingsView>("set_match_pool", { on }),

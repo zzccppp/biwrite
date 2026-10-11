@@ -412,6 +412,8 @@ A provider can hold several keys, a pool. \ui{Manage keys…} in the provider's 
 
 Once the relay turned away keys that had not got through twice within five minutes, translations and the writing assistant send their requests to the keys that got through first, and wait for one of them when they are all busy. Such a key that answers HTTP 500 now and then is not paused and is asked again soon. After six failures in a row, after a failure that follows five minutes without an answer, or when the key is refused, it no longer goes first. Otherwise the keys take turns. For providers other than AnyRouter this applies only after \ui{Squeeze in} was used.
 
+\paragraph{Keeping keys alive.} A key that got through loses its place after about ten idle minutes. \ui{Keep alive} in the row \n{2} of the key pool is ticked at first. While it is ticked, BiWrite looks every 30 seconds at each provider whose relay turned keys away (AnyRouter, or a pool of two keys or more), and sends a key that got through and was not answered for four minutes a very short translation, which keeps its place. This happens whether or not \ui{Squeeze in} was used and whichever provider is in use. Keys busy translating get no extra request. Each time costs one short translation. Unticked, nothing is sent, and the setting applies to every provider.
+
 \subsection{Separate models for translation and writing}
 The \ui{Writing assistant} section of Settings (\fig{c-assistant} \n{1}) picks the model for polishing, edits and questions. A cheap, fast model can translate while a stronger one writes. \ui{Same as translation} uses one provider for both.
 

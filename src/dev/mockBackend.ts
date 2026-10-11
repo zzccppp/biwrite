@@ -210,6 +210,7 @@ const state = {
     latex: { compileOnSave: true },
     checkUpdates: true,
     closeToTray: true,
+    keepAlive: true,
     version: "0.1.1",
   } as SettingsView,
   records: [] as RequestRecord[],
@@ -781,6 +782,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
   set_close_to_tray: (a) => {
     state.settings.closeToTray = Boolean(a.on);
     return state.settings;
+  },
+  set_keep_alive: (a) => {
+    state.settings.keepAlive = Boolean(a.on);
+    return clone(state.settings);
   },
   set_tray_language: () => null,
   latex_pdf: async (a) => {

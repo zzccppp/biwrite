@@ -522,6 +522,7 @@ export const messages = {
   "squeeze.use": { en: "Switch to it", zh: "切换过去" },
   "squeeze.dismiss": { en: "Got it", zh: "知道了" },
   "squeeze.status": { en: "Squeezing {through}/{total}", zh: "挤一挤 {through}/{total}" },
+  "squeeze.keepAlive": { en: "Keep alive", zh: "持续保活" },
   "keys.import": { en: "Import from file…", zh: "从文件导入…" },
   "keys.exported": {
     en: "Saved to {path}. The file holds the secret keys: share it only with people you trust.",

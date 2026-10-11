@@ -46,8 +46,8 @@ pub use observe::{
 pub use prompt::{DefaultPrompts, PromptFiles, PromptSource};
 pub use provider::{HttpProvider, TRANSLATE};
 pub use squeeze::{
-    ChangeFn, DROP_AFTER, KeyProgress, PROBE_TEXT, STALE_AFTER, Squeeze, SqueezeBoard,
-    SqueezeChange, ThroughView,
+    ChangeFn, DROP_AFTER, KEEP_ALIVE_AFTER, KeyProgress, PROBE_TEXT, STALE_AFTER, Squeeze,
+    SqueezeBoard, SqueezeChange, ThroughView, ping,
 };
 
 /// Build the translator for a (validated) provider configuration, without a

@@ -208,6 +208,8 @@ export interface SettingsView {
   checkUpdates: boolean;
   /** Closing the window hides BiWrite in the tray. */
   closeToTray: boolean;
+  /** Keys that got through to a relay that turns keys away are kept alive. */
+  keepAlive: boolean;
   /** This build's version. */
   version: string;
 }

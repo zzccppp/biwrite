@@ -11,6 +11,8 @@
 //! A [`Squeeze`] tries every key that has not got through, a few seconds
 //! apart, with a short translation, until all have (or it is stopped). A
 //! request turned away costs nothing, and one that gets through is answered.
+//! A key that got through loses its place when left idle for some minutes:
+//! [`ping`] sends it a short translation, which keeps its place.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,6 +41,10 @@ pub const STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 /// Keys turned away within [`STALE_AFTER`] before the relay counts as
 /// crowded. One stray server error does not change how a pool takes turns.
 pub const CROWDED_AFTER: usize = 2;
+/// A key kept alive is sent a short translation after this long without an
+/// answer. Measured at AnyRouter, a key idle for four minutes kept its
+/// place and one idle for ten minutes had lost it.
+pub const KEEP_ALIVE_AFTER: Duration = Duration::from_secs(4 * 60);
 /// Pause between two tries of one key.
 const PROBE_GAP: Duration = Duration::from_secs(3);
 /// Longest wait for one try, and for a rate limit between tries.
@@ -66,6 +72,9 @@ pub struct SqueezeBoard {
     /// pool that is not a crowded relay until a squeeze is started for it,
     /// so an ordinary pool takes turns as without a board.
     crowding: AtomicBool,
+    /// The relay turned keys away as often as [`Self::crowded`] asks, at
+    /// some time since the board was made.
+    crowded_seen: AtomicBool,
 }
 
 /// A key that got through, for the settings view.
@@ -135,12 +144,29 @@ impl SqueezeBoard {
     }
 
     /// The server turned a key that was not through away (a server error).
-    pub(crate) fn note_turned_away(&self) {
+    pub fn note_turned_away(&self) {
         let mut turned = self.turned();
         turned.push_back(Instant::now());
         while turned.len() > CROWDED_AFTER {
             turned.pop_front();
         }
+        if turned.len() >= CROWDED_AFTER
+            && turned.front().is_some_and(|t| t.elapsed() < STALE_AFTER)
+        {
+            self.crowded_seen.store(true, Ordering::Release);
+        }
+    }
+
+    /// The relay turned keys away as often as [`Self::crowded`] asks at some
+    /// time, whether or not crowding applies to this board: its keys that
+    /// got through are worth keeping alive.
+    pub fn was_crowded(&self) -> bool {
+        self.crowded_seen.load(Ordering::Acquire)
+    }
+
+    /// How long a key that got through has not been answered.
+    pub fn idle(&self, fingerprint: &str) -> Option<Duration> {
+        self.lock().get(fingerprint).map(|t| t.last_ok.elapsed())
     }
 
     /// The relay turned [`CROWDED_AFTER`] keys away within [`STALE_AFTER`],
@@ -250,6 +276,40 @@ pub enum SqueezeChange {
 }
 
 pub type ChangeFn = Arc<dyn Fn(SqueezeChange) + Send + Sync>;
+
+/// Send `key` of the provider `config` a short translation, which keeps its
+/// place at a crowded relay. The answer, or the failure, is recorded on
+/// `board` as for any request.
+pub async fn ping(
+    config: &ProviderConfig,
+    key: String,
+    board: Arc<SqueezeBoard>,
+    prompts: Arc<dyn PromptSource>,
+) -> Result<(), TranslateError> {
+    let provider = HttpProvider::new(
+        config.clone(),
+        Arc::new(move || Ok(vec![key.clone()])),
+        prompts,
+        Arc::new(NoObserver),
+    )?;
+    provider.join_board(board);
+    let request = TranslationRequest {
+        source: PROBE_TEXT.to_owned(),
+        ..Default::default()
+    };
+    match tokio::time::timeout(
+        PROBE_TIMEOUT,
+        Translator::translate(&provider, &request, &|_| {}),
+    )
+    .await
+    {
+        Ok(result) => result.map(|_| ()),
+        Err(_) => Err(TranslateError::Network(format!(
+            "no answer within {} seconds",
+            PROBE_TIMEOUT.as_secs()
+        ))),
+    }
+}
 
 /// The relay turned the try away for now: trying again may get through.
 fn worth_another_try(err: &TranslateError) -> bool {
@@ -584,5 +644,25 @@ mod tests {
         assert!(!relay.crowded(), "one stray server error");
         relay.note_turned_away();
         assert!(relay.crowded());
+    }
+
+    #[test]
+    fn crowding_is_remembered_for_keeping_keys_alive_on_any_board() {
+        let ordinary = SqueezeBoard::new();
+        ordinary.note_turned_away();
+        assert!(!ordinary.was_crowded());
+        ordinary.note_turned_away();
+        assert!(
+            ordinary.was_crowded(),
+            "seen, though keys taking turns stay so"
+        );
+        assert!(!ordinary.crowded());
+        assert_eq!(ordinary.idle("a"), None);
+        ordinary.answered("a");
+        assert!(
+            ordinary
+                .idle("a")
+                .is_some_and(|d| d < Duration::from_secs(1))
+        );
     }
 }

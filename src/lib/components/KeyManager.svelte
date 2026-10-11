@@ -19,6 +19,16 @@
   let message = $state<{ ok: boolean; text: string } | null>(null);
   let loaded = $state(false);
   let squeeze = $state<SqueezeView | null>(null);
+  /** Keep the keys that got through alive (a setting for every provider). */
+  let keepAlive = $state<boolean | null>(null);
+
+  async function setKeepAlive(on: boolean): Promise<void> {
+    const view = await act("keep", () => settingsIpc.setKeepAlive(on));
+    if (view) {
+      keepAlive = view.keepAlive;
+      onchange(view);
+    }
+  }
   /** Ticks every few seconds, so "3 min ago" moves on. */
   let now = $state(Date.now());
 
@@ -178,6 +188,10 @@
   onMount(() => {
     void reload();
     void refreshSqueeze();
+    settingsIpc
+      .get()
+      .then((view) => (keepAlive = view.keepAlive))
+      .catch(() => {});
     const timer = setInterval(() => {
       void refreshState();
       void refreshSqueeze();
@@ -237,6 +251,17 @@
         {#each [3, 5, 8, 10, 15, 20, 50, 100] as n (n)}<option value={n}>{n}</option>{/each}
       </select>
     </label>
+    {#if provider.squeezable && keepAlive !== null}
+      <label class="inline keep">
+        <input
+          type="checkbox"
+          checked={keepAlive}
+          disabled={!!busy}
+          onchange={(e) => void setKeepAlive(e.currentTarget.checked)}
+        />
+        <span class="label smallcaps">{t("squeeze.keepAlive")}</span>
+      </label>
+    {/if}
     {#if squeeze?.running || (provider.squeezable && keys.length > 0)}
       <span class="spacer"></span>
       <button class="btn squeeze" class:primary={!squeeze?.running} onclick={toggleSqueeze} disabled={!!busy}>
