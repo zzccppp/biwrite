@@ -277,9 +277,10 @@ impl HttpProvider {
                 err,
                 TranslateError::Server { .. } | TranslateError::Network(_)
             );
-            let again = match self.core.keys.report(&lease, &err) {
+            let failover = self.core.keys.report(&lease, &err);
+            let again = match failover {
                 Failover::No => false,
-                Failover::Now => {
+                Failover::Now | Failover::Again => {
                     key_retries + 1 < lease.count && !(transient && transient_retries > 0)
                 }
                 // Keys were added meanwhile (once per reload).
@@ -288,11 +289,19 @@ impl HttpProvider {
             if again {
                 key_retries += 1;
                 transient_retries += usize::from(transient);
-                tap.note(format!(
-                    "key {} of {} set aside: retrying with another key",
-                    lease.index + 1,
-                    lease.count
-                ));
+                tap.note(if failover == Failover::Again {
+                    format!(
+                        "key {} of {} got through to the crowded relay: asking it again",
+                        lease.index + 1,
+                        lease.count
+                    )
+                } else {
+                    format!(
+                        "key {} of {} set aside: retrying with another key",
+                        lease.index + 1,
+                        lease.count
+                    )
+                });
                 tap.finish(&Err::<(), _>(err), 0);
                 on_partial("");
                 continue;

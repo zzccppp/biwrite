@@ -95,15 +95,17 @@
     lastOk: number;
   } | null>(null);
   let alertNow = $state(Date.now());
+  // Only a change of provider restarts the timer, not every event.
+  const alertProvider = $derived(squeezeAlert?.providerId ?? null);
   $effect(() => {
-    const id = squeezeAlert?.providerId;
+    const id = alertProvider;
     if (!id) return;
     const timer = setInterval(() => void refreshAlert(id), 15_000);
     return () => clearInterval(timer);
   });
   // A provider removed meanwhile leaves nothing to switch to.
   $effect(() => {
-    const id = squeezeAlert?.providerId;
+    const id = alertProvider;
     if (id && settings && !settings.providers.some((p) => p.id === id)) squeezeAlert = null;
   });
   const alertAgo = $derived.by(() => {
@@ -149,7 +151,7 @@
       session.flash(
         event.through === event.total
           ? t("squeeze.noticeAll", { name: event.providerName })
-          : t("squeeze.noticeUsable", { name: event.providerName, n: event.through }),
+          : count(event.through, "squeeze.noticeUsable.one", "squeeze.noticeUsable.many", { name: event.providerName }),
       );
     }
   }

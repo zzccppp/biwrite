@@ -71,8 +71,12 @@ impl SqueezeState {
     }
 
     /// The keys of provider `id` changed: its squeeze, which tries the keys
-    /// it read, stops.
-    pub fn stop(&self, id: &str) {
+    /// it read, stops, and no key counts as through until it is answered
+    /// again (a removed key would count otherwise).
+    pub fn keys_changed(&self, id: &str) {
+        if let Some((_, board)) = self.boards().get(id) {
+            board.clear();
+        }
         if let Some(run) = self.runs().remove(id) {
             run.stop();
         }
@@ -390,8 +394,13 @@ mod tests {
         let pool = entry("https://api.example.com/v1", 2);
         let run = run_for(&state, &pool);
         assert!(run.running());
-        state.stop("p-relay");
+        state.board_for(&pool).unwrap().answered("fingerprint-a");
+        state.keys_changed("p-relay");
         assert!(ends(&run).await, "keys changed");
+        assert!(
+            state.board_for(&pool).unwrap().through().is_empty(),
+            "the board starts over"
+        );
         assert!(view(&state, "p-relay").keys.is_empty() || !view(&state, "p-relay").running);
 
         let run = run_for(&state, &pool);

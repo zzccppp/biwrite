@@ -282,6 +282,9 @@ pub(crate) enum Failover {
     No,
     /// Another key is ready and has room.
     Now,
+    /// The same key, which got through to a crowded relay, is asked again
+    /// at once.
+    Again,
     /// The keys were read again since the request started: try the new ones.
     KeysChanged,
 }
@@ -509,7 +512,7 @@ impl KeyPool {
                 return if self.epoch.load(Ordering::Acquire) != self.state().epoch {
                     Failover::KeysChanged
                 } else {
-                    Failover::Now
+                    Failover::Again
                 };
             }
             // A key that never got through, turned away by the server.
@@ -1201,7 +1204,7 @@ mod tests {
         for n in 1..crate::squeeze::DROP_AFTER {
             let l = p.acquire().await.unwrap();
             assert_eq!(l.key, "k-aaaa", "try {n}");
-            assert_eq!(p.report(&l, &busy()), Failover::Now);
+            assert_eq!(p.report(&l, &busy()), Failover::Again);
             drop(l);
             assert_eq!(p.status().unwrap()[0].state, "ready", "no pause");
         }

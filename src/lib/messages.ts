@@ -513,7 +513,8 @@ export const messages = {
   "squeeze.agoHour": { en: "{n} h ago", zh: "{n} 小时前" },
   "squeeze.noticeThrough": { en: "{name}: key {n} got through", zh: "{name} 的第 {n} 个密钥挤进去了" },
   "squeeze.noticeAll": { en: "{name}: every key got through", zh: "{name} 的密钥全部挤进去了" },
-  "squeeze.noticeUsable": {
+  "squeeze.noticeUsable.one": { en: "{name}: the usable key got through", zh: "{name} 可用的 1 个密钥挤进去了" },
+  "squeeze.noticeUsable.many": {
     en: "{name}: the {n} usable keys got through",
     zh: "{name} 可用的 {n} 个密钥都挤进去了",
   },

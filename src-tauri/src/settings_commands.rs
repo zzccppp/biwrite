@@ -246,7 +246,7 @@ pub async fn add_api_keys(
         state.persist(&s)?;
     }
     // The squeeze tries the keys it read when it started.
-    state.squeeze.stop(&id);
+    state.squeeze.keys_changed(&id);
     // Added keys: requests in flight go on.
     state.reload_keys(&id)?;
     Ok(state.settings_view())
@@ -595,7 +595,7 @@ fn update_key_count(
     parts: usize,
 ) -> CommandResult<SettingsView> {
     // The squeeze tries the keys it read when it started.
-    state.squeeze.stop(id);
+    state.squeeze.keys_changed(id);
     let is_active = {
         let mut s = state.settings();
         if !s.set_key_count(id, count, parts) {

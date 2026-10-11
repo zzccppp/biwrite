@@ -409,6 +409,8 @@ function squeezeEvent(change: Record<string, unknown>): void {
 }
 
 function startSqueeze(): void {
+  // Like the backend: a new squeeze counts its tries afresh, keys through stay.
+  squeezeRun.tries = POOL.map(() => 0);
   squeezeRun.running = true;
   squeezeRun.started = Date.now();
   squeezeEvent({ kind: "started" });

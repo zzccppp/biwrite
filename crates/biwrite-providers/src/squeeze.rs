@@ -194,6 +194,12 @@ impl SqueezeBoard {
         keep
     }
 
+    /// The keys changed: no key counts as through until it is answered
+    /// again.
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+
     /// The keys that got through, earliest first.
     pub fn through(&self) -> Vec<ThroughView> {
         let mut out: Vec<ThroughView> = self
@@ -262,6 +268,8 @@ pub struct Squeeze {
     progress: Mutex<Vec<KeyProgress>>,
     started: SystemTime,
     running: AtomicBool,
+    /// A task saw every key through: all tasks end.
+    done: AtomicBool,
 }
 
 impl Squeeze {
@@ -303,6 +311,7 @@ impl Squeeze {
             ),
             started: SystemTime::now(),
             running: AtomicBool::new(true),
+            done: AtomicBool::new(false),
         });
         let tasks: Vec<_> = providers
             .into_iter()
@@ -321,7 +330,7 @@ impl Squeeze {
                 let _ = task.await;
             }
             done.running.store(false, Ordering::Release);
-            let all_through = !*done.stop.borrow() && done.all_through(&board);
+            let all_through = !*done.stop.borrow() && done.done.load(Ordering::Acquire);
             on_change(SqueezeChange::Ended { all_through });
         });
         Ok(squeeze)
@@ -331,8 +340,9 @@ impl Squeeze {
         self.stop.send_replace(true);
     }
 
+    /// Running and not asked to stop.
     pub fn running(&self) -> bool {
-        self.running.load(Ordering::Acquire)
+        self.running.load(Ordering::Acquire) && !self.stopped()
     }
 
     /// When it started (Unix milliseconds).
@@ -391,7 +401,11 @@ impl Squeeze {
         };
         let mut stop = self.stop.subscribe();
         loop {
-            if self.stopped() || self.all_through(board) || self.lock()[index].refused {
+            if self.stopped() || self.done.load(Ordering::Acquire) || self.lock()[index].refused {
+                return;
+            }
+            if self.all_through(board) {
+                self.done.store(true, Ordering::Release);
                 return;
             }
             if board.is_fresh(&fingerprint) {
@@ -401,6 +415,7 @@ impl Squeeze {
                 }
                 continue;
             }
+            let was_through = board.is_through(&fingerprint);
             self.lock()[index].trying = true;
             let attempt = tokio::time::timeout(
                 PROBE_TIMEOUT,
@@ -444,7 +459,12 @@ impl Squeeze {
                 }
             };
             if through {
-                on_change(SqueezeChange::Through { number: index + 1 });
+                // A key that kept its place was only checked again.
+                on_change(if was_through {
+                    SqueezeChange::Tried
+                } else {
+                    SqueezeChange::Through { number: index + 1 }
+                });
                 continue;
             }
             on_change(SqueezeChange::Tried);

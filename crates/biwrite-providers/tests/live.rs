@@ -589,24 +589,17 @@ async fn anyrouter_claude_gets_the_1m_context() {
 }
 
 /// A squeeze of a pool at AnyRouter's GPT preset: within the time given it
-/// gets at least one key through, and a translation afterwards goes to a
-/// key that got through. `BIWRITE_LIVE_ANYROUTER_KEYS` names a file with one
-/// key per line (other lines are skipped), `BIWRITE_LIVE_SQUEEZE_MINUTES`
-/// bounds the wait (10 by default).
+/// gets at least one key through, and the translations afterwards go to keys
+/// that got through. Keys from `BIWRITE_LIVE_ANYROUTER_KEYS` (see
+/// [`pool_keys`]), `BIWRITE_LIVE_SQUEEZE_MINUTES` bounds the wait (10 by
+/// default).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs BIWRITE_LIVE_ANYROUTER_KEYS and network access"]
 async fn anyrouter_squeeze_gets_a_key_through() {
-    let Ok(file) = std::env::var("BIWRITE_LIVE_ANYROUTER_KEYS") else {
+    let Some(keys) = pool_keys() else {
         eprintln!("BIWRITE_LIVE_ANYROUTER_KEYS is not set; skipping");
         return;
     };
-    let keys: Vec<String> = std::fs::read_to_string(file)
-        .unwrap()
-        .lines()
-        .map(str::trim)
-        .filter(|l| l.starts_with("sk-"))
-        .map(String::from)
-        .collect();
     let minutes: u64 = std::env::var("BIWRITE_LIVE_SQUEEZE_MINUTES")
         .ok()
         .and_then(|m| m.parse().ok())
@@ -669,24 +662,25 @@ async fn anyrouter_squeeze_gets_a_key_through() {
         source: "Placeholder protection keeps citations intact.".into(),
         ..Default::default()
     };
+    let through_before: Vec<String> = board.through().into_iter().map(|t| t.fingerprint).collect();
     let mut answered = 0;
     for _ in 0..5 {
         if provider.translate(&request, &|_| {}).await.is_ok() {
             answered += 1;
         }
     }
-    let through: Vec<String> = board.through().into_iter().map(|t| t.fingerprint).collect();
-    let used: Vec<String> = records
+    let answered_with: Vec<String> = records
         .0
         .lock()
         .unwrap()
         .iter()
+        .filter(|r| r.state == RecordState::Ok)
         .filter_map(|r| r.key.as_ref().map(|k| k.fingerprint.clone()))
         .collect();
     println!("{answered} of 5 translations answered");
     assert!(answered >= 3, "{answered} of 5 answered");
     assert!(
-        used.iter()
-            .all(|f| through.contains(f) || !board.through().is_empty())
+        answered_with.iter().all(|f| through_before.contains(f)),
+        "answered by keys that had not got through: {answered_with:?} vs {through_before:?}"
     );
 }

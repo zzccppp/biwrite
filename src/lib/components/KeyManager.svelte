@@ -49,7 +49,10 @@
 
   async function refreshSqueeze(): Promise<void> {
     now = Date.now();
-    if (!provider.squeezable && !squeeze?.running) return;
+    if (!provider.squeezable && !squeeze?.running) {
+      squeeze = null;
+      return;
+    }
     try {
       squeeze = await settingsIpc.squeezeStatus(provider.id);
     } catch {
@@ -257,7 +260,13 @@
       <div
         class="entry"
         data-state={k.state}
-        data-squeeze={through ? "through" : sq?.refused ? "refused" : squeeze?.running && sq ? "trying" : null}
+        data-squeeze={through
+          ? "through"
+          : sq?.refused
+            ? "refused"
+            : squeeze?.running && sq && !sq.throughSince
+              ? "trying"
+              : null}
         class:stale={through && !!sq?.lastOk && now - sq.lastOk > STALE_MS}
       >
         <span class="mono faint">{k.number}</span>
@@ -274,7 +283,7 @@
           <span class="state" title={sq.lastOk ? t("squeeze.lastOk", { ago: ago(sq.lastOk) }) : ""}>
             {t("squeeze.through", { ago: ago(sq.throughSince) })}
           </span>
-        {:else if squeeze?.running && sq && !sq.refused}
+        {:else if squeeze?.running && sq && !sq.refused && !sq.throughSince}
           <span class="state" title={sq.lastError ?? ""}>{t("squeeze.trying", { n: sq.tries + (sq.trying ? 1 : 0) })}</span>
         {:else}
           <span class="state" title={sq?.lastError ?? k.detail ?? ""}>
