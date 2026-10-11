@@ -116,50 +116,76 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
     }
     let log_path = out.join(format!("{stem}.log"));
     let deadline = started + job.timeout;
+    // The PDF already there (the author's own, or the last build's) is
+    // kept aside, so a build that cannot finish writing a PDF leaves it as
+    // it was instead of a broken one.
+    let pdf_path = out.join(format!("{stem}.pdf"));
+    let kept = keep_pdf(&pdf_path);
 
-    let mut tool = String::new();
-    let mut output = String::new();
-    let mut timed_out = false;
-    let mut exit_ok = true;
-    let mut project_rc = None;
-    if tc.latexmk {
-        project_rc = ["latexmkrc", ".latexmkrc"]
-            .into_iter()
-            .find(|name| dir.join(name).is_file())
-            .map(str::to_owned);
-        let mut args = vec![
-            job.engine.latexmk_flag().to_owned(),
-            // Go on past errors: XeLaTeX writes no PDF otherwise (latexmk
-            // stops before xdvipdfmx), and a PDF with the errors listed beats
-            // none.
-            "-f".to_owned(),
-            "-synctex=1".to_owned(),
-            "-interaction=nonstopmode".to_owned(),
-            "-file-line-error".to_owned(),
-        ];
-        if let Some(rel) = &job.out_dir {
-            args.push(format!("-outdir={}", rel.display()));
+    // latexmk goes by the sources alone. A PDF built elsewhere without
+    // SyncTeX looks up to date and would stay without it, and so does a PDF
+    // a failed run left unfinished (latexmk only remembers that the run
+    // failed).
+    // A failed run that wrote no PDF is not run again either while the
+    // sources stay as they were.
+    let unfinished = !pdf_path.is_file() || !complete_pdf(&pdf_path);
+    let mut build = Build {
+        dir: &dir,
+        out: &out,
+        file: &file,
+        stem: &stem,
+        log_path: &log_path,
+        deadline,
+        pretex: None,
+        force: synctex_behind(&out, &stem) || unfinished,
+    };
+    // CJK text the preamble has no support for gets it from outside.
+    if crate::cjk::needs_support(&dir, &job.root) {
+        build.pretex = cjk_support(tc, job.engine).await;
+        // latexmk does not see the support added to its command, so a last
+        // run without it (its log does not load the package) counts as out
+        // of date.
+        let package = crate::cjk::package_file(job.engine);
+        if build.pretex.is_some()
+            && !std::fs::read(&log_path)
+                .is_ok_and(|log| String::from_utf8_lossy(&log).contains(package))
+        {
+            build.force = true;
         }
-        // latexmk goes by the sources alone: a PDF built elsewhere without
-        // SyncTeX looks up to date and would stay without it.
-        if synctex_behind(&out, &stem) {
-            args.push("-g".to_owned());
-        }
-        args.push(file.clone());
-        tool = format!("latexmk {}", job.engine.latexmk_flag());
-        let run = run(tc, &tc.tool("latexmk"), &args, &dir, deadline).await?;
-        output = run.output;
-        timed_out = run.timed_out;
-        exit_ok = run.success;
     }
-    // latexmk missing, or unable to start the engine (MiKTeX without Perl).
-    if !timed_out && (!tc.latexmk || !log_path.is_file() && !exit_ok) {
-        tool = job.engine.as_str().to_owned();
-        let direct = direct(tc, job, &dir, &out, &file, &stem, deadline).await?;
-        output = direct.output;
-        timed_out = direct.timed_out;
-        exit_ok = direct.success;
+    let mut pass = build.run(tc, job).await?;
+    // CJK text the scan could not find (in a file included through a
+    // macro) shows in the log, and the build runs again with the support.
+    if build.pretex.is_none()
+        && !pass.timed_out
+        && fresh(&log_path, since)
+        && std::fs::read(&log_path)
+            .is_ok_and(|log| crate::cjk::missing_in_log(&String::from_utf8_lossy(&log)))
+        && let Some(code) = cjk_support(tc, job.engine).await
+    {
+        build.pretex = Some(code);
+        build.force = true;
+        pass = build.run(tc, job).await?;
     }
+    // When the support itself stopped TeX before any page (a font the
+    // system cannot load), the document is built as it stands, as before.
+    if build.pretex.is_some()
+        && !pass.timed_out
+        && fresh(&log_path, since)
+        && std::fs::read(&log_path)
+            .is_ok_and(|log| String::from_utf8_lossy(&log).contains("no output PDF file produced"))
+    {
+        build.pretex = None;
+        build.force = true;
+        pass = build.run(tc, job).await?;
+    }
+    let Pass {
+        tool,
+        output,
+        timed_out,
+        exit_ok,
+        project_rc,
+    } = pass;
 
     let mut issues = match std::fs::read(&log_path) {
         Ok(bytes) if fresh(&log_path, since) || !timed_out => {
@@ -167,9 +193,15 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
         }
         _ => Vec::new(),
     };
-    let pdf = out.join(format!("{stem}.pdf"));
-    let pdf = pdf.is_file().then_some(pdf);
-    let stale = pdf.as_deref().is_some_and(|p| !fresh(p, since));
+    let restored = !complete_pdf(&pdf_path)
+        && kept
+            .as_deref()
+            .is_some_and(|k| std::fs::copy(k, &pdf_path).is_ok());
+    if let Some(k) = &kept {
+        let _ = std::fs::remove_file(k);
+    }
+    let pdf = complete_pdf(&pdf_path).then_some(pdf_path);
+    let stale = restored || pdf.as_deref().is_some_and(|p| !fresh(p, since));
     let errors = issues.iter().any(|i| i.severity == Severity::Error);
     let outcome = if timed_out {
         Outcome::TimedOut
@@ -183,6 +215,19 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
     if outcome == Outcome::Errors && !errors {
         // The tools failed without an error in the log (BibTeX, Biber).
         issues.insert(0, tool_error(&output));
+    }
+    if restored {
+        issues.insert(
+            0,
+            Issue {
+                severity: Severity::Error,
+                file: None,
+                line: None,
+                message: "The build could not finish writing the PDF, so the previous PDF is kept \
+                          unchanged. The output names the cause."
+                    .to_owned(),
+            },
+        );
     }
     if pdf.is_some() && synctex_of(&out, &stem).is_none() {
         issues.insert(
@@ -209,6 +254,120 @@ pub async fn compile(tc: &Toolchain, job: &Job) -> Result<Compiled, CompileError
     })
 }
 
+/// One run of the tools over a [`Job`].
+struct Build<'a> {
+    dir: &'a Path,
+    out: &'a Path,
+    file: &'a str,
+    stem: &'a str,
+    log_path: &'a Path,
+    deadline: Instant,
+    /// TeX code run before the root file is read ([`crate::cjk::pretex`]).
+    pretex: Option<String>,
+    /// Build even if latexmk takes the PDF for up to date.
+    force: bool,
+}
+
+/// What a [`Build`] ran and how it ended.
+struct Pass {
+    tool: String,
+    output: String,
+    timed_out: bool,
+    exit_ok: bool,
+    project_rc: Option<String>,
+}
+
+impl Build<'_> {
+    async fn run(&self, tc: &Toolchain, job: &Job) -> Result<Pass, CompileError> {
+        let mut pass = Pass {
+            tool: String::new(),
+            output: String::new(),
+            timed_out: false,
+            exit_ok: true,
+            project_rc: None,
+        };
+        let with = if self.pretex.is_some() { " + CJK" } else { "" };
+        if tc.latexmk {
+            pass.project_rc = ["latexmkrc", ".latexmkrc"]
+                .into_iter()
+                .find(|name| self.dir.join(name).is_file())
+                .map(str::to_owned);
+            let mut args = vec![
+                job.engine.latexmk_flag().to_owned(),
+                // Go on past errors: XeLaTeX writes no PDF otherwise
+                // (latexmk stops before xdvipdfmx), and a PDF with the
+                // errors listed beats none.
+                "-f".to_owned(),
+                "-synctex=1".to_owned(),
+                "-interaction=nonstopmode".to_owned(),
+                "-file-line-error".to_owned(),
+            ];
+            if let Some(rel) = &job.out_dir {
+                args.push(format!("-outdir={}", rel.display()));
+            }
+            if let Some(code) = &self.pretex {
+                args.push(format!("-usepretex={code}"));
+            }
+            if self.force {
+                args.push("-g".to_owned());
+            }
+            args.push(self.file.to_owned());
+            pass.tool = format!("latexmk {}{with}", job.engine.latexmk_flag());
+            let run = run(tc, &tc.tool("latexmk"), &args, self.dir, self.deadline).await?;
+            pass.output = run.output;
+            pass.timed_out = run.timed_out;
+            pass.exit_ok = run.success;
+        }
+        // latexmk missing, or unable to start the engine (MiKTeX without
+        // Perl).
+        if !pass.timed_out && (!tc.latexmk || !self.log_path.is_file() && !pass.exit_ok) {
+            pass.tool = format!("{}{with}", job.engine.as_str());
+            let direct = direct(tc, job, self).await?;
+            pass.output = direct.output;
+            pass.timed_out = direct.timed_out;
+            pass.exit_ok = direct.success;
+        }
+        Ok(pass)
+    }
+}
+
+/// [`crate::cjk::pretex`] for `engine`, when the TeX distribution has the
+/// package it loads. Without it the build goes on as before.
+async fn cjk_support(tc: &Toolchain, engine: Engine) -> Option<String> {
+    let file = crate::cjk::package_file(engine);
+    has_file(tc, file).await.then(|| crate::cjk::pretex(engine))
+}
+
+/// Whether `kpsewhich` finds `name` in the TeX distribution. Found files
+/// are remembered for the rest of the session.
+async fn has_file(tc: &Toolchain, name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    static FOUND: OnceLock<Mutex<HashSet<(PathBuf, String)>>> = OnceLock::new();
+    let found = FOUND.get_or_init(Default::default);
+    let key = (tc.bin.clone(), name.to_owned());
+    if found
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(&key)
+    {
+        return true;
+    }
+    let dir = std::env::temp_dir();
+    let mut cmd = command(tc, &tc.tool("kpsewhich"), &[name.to_owned()], &dir);
+    cmd.kill_on_drop(true);
+    let answer = tokio::time::timeout(Duration::from_secs(10), cmd.output()).await;
+    let ok = matches!(answer, Ok(Ok(out))
+        if out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty());
+    if ok {
+        found
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key);
+    }
+    ok
+}
+
 /// TeX writes `\include`d files' `.aux` next to the main one, so the
 /// output folder needs the project's subfolders.
 fn prepare_out_dir(dir: &Path, out: &Path) -> std::io::Result<()> {
@@ -222,6 +381,44 @@ fn prepare_out_dir(dir: &Path, out: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// A PDF written to its end. One whose writing stopped (xdvipdfmx giving up
+/// on an image, a build stopped) has no `%%EOF` at its end.
+fn complete_pdf(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if len < 64 {
+        return false;
+    }
+    let tail = len.min(2048);
+    let mut end = Vec::new();
+    file.seek(SeekFrom::End(-(tail as i64))).is_ok()
+        && file.take(tail).read_to_end(&mut end).is_ok()
+        && end.windows(5).any(|w| w == b"%%EOF")
+}
+
+/// Copy the complete PDF at `pdf` aside, out of the project, for the
+/// length of a build. `None` when there is none to keep.
+fn keep_pdf(pdf: &Path) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    if !complete_pdf(pdf) {
+        return None;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    pdf.hash(&mut hasher);
+    let dir = std::env::temp_dir().join("biwrite-kept-pdfs");
+    std::fs::create_dir_all(&dir).ok()?;
+    let copy = dir.join(format!(
+        "{:016x}-{}.pdf",
+        hasher.finish(),
+        std::process::id()
+    ));
+    std::fs::copy(pdf, &copy).ok()?;
+    Some(copy)
 }
 
 /// How much older SyncTeX data may be than its PDF: XeLaTeX writes it
@@ -285,15 +482,9 @@ struct Run {
 
 /// The engine directly: once, the bibliography tool when the document has
 /// one, then again until the log stops asking for a rerun.
-async fn direct(
-    tc: &Toolchain,
-    job: &Job,
-    dir: &Path,
-    out: &Path,
-    file: &str,
-    stem: &str,
-    deadline: Instant,
-) -> Result<Run, CompileError> {
+async fn direct(tc: &Toolchain, job: &Job, build: &Build<'_>) -> Result<Run, CompileError> {
+    let (dir, out, file, stem, deadline) =
+        (build.dir, build.out, build.file, build.stem, build.deadline);
     let mut engine_args = vec![
         "-synctex=1".to_owned(),
         "-interaction=nonstopmode".to_owned(),
@@ -302,7 +493,14 @@ async fn direct(
     if let Some(rel) = &job.out_dir {
         engine_args.push(format!("-output-directory={}", rel.display()));
     }
-    engine_args.push(file.to_owned());
+    match &build.pretex {
+        // The job keeps the root's name, though the code comes first.
+        Some(code) => {
+            engine_args.push(format!("-jobname={stem}"));
+            engine_args.push(format!("{code}\\input{{{file}}}"));
+        }
+        None => engine_args.push(file.to_owned()),
+    }
     let engine = tc.tool(job.engine.as_str());
     let mut last = run(tc, &engine, &engine_args, dir, deadline).await?;
     let mut output = last.output.clone();

@@ -229,12 +229,12 @@ pub async fn latex_reset_bin(state: State<'_, AppState>) -> CommandResult<TexSta
 // ── The project ──────────────────────────────────────────────────────
 
 /// The open document's project: root file, folder and engine.
-struct Project {
+pub(crate) struct Project {
     /// The open `.tex` file.
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     /// Its text on disk.
     saved: String,
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     root_text: String,
     /// Folder of the root (canonical).
     dir: PathBuf,
@@ -258,11 +258,11 @@ fn relative(path: &Path, dir: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-fn canonical(path: &Path) -> PathBuf {
+pub(crate) fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| latex::clean(path))
 }
 
-fn project(state: &AppState) -> CommandResult<Project> {
+pub(crate) fn project(state: &AppState) -> CommandResult<Project> {
     let (path, saved) = {
         let fs = state.file();
         (fs.path.clone(), fs.file.text().to_owned())
@@ -652,15 +652,32 @@ fn source_now(state: &AppState, lang: Lang) -> Source {
 /// The PDF of `lang` still belongs to the document as it is edited now.
 /// It does not when a pairing or unpairing since the build changed what
 /// the PDF is made from (the translation, or the paired file), nor after a
-/// swap without a pair, which put the other language in the editor. Such a
-/// PDF is built again before clicks or the cursor map through it.
+/// swap without a pair, which put the other language in the editor, nor
+/// once the document is saved outside the project it was built for (Save
+/// As into another folder), when its lines would lead to the old files.
+/// Such a PDF is built again before clicks or the cursor map through it.
 fn build_is_current(state: &AppState, lang: Lang) -> bool {
     let builds = state.latex.builds();
     let Some(build) = builds.get(&lang) else {
         return true;
     };
+    let (here, pair) = {
+        let fs = state.file();
+        (
+            fs.path.as_deref().map(canonical).unwrap_or_default(),
+            fs.pair.as_ref().map(|p| canonical(&p.path)),
+        )
+    };
+    // The document built, another file of its project, or either file of a
+    // pair (a pair's swap keeps both PDFs).
+    let of_build = |path: &Path| {
+        *path == build.doc_path
+            || (!build.dir.as_os_str().is_empty() && path.starts_with(&build.dir))
+    };
+    let same_project = of_build(&here) || pair.as_deref().is_some_and(of_build);
     let paired = state.file().pair.is_some();
-    build.source == source_now(state, lang)
+    same_project
+        && build.source == source_now(state, lang)
         && (paired || build.direction == state.engine.direction())
 }
 
@@ -759,7 +776,7 @@ pub async fn latex_cancel(state: State<'_, AppState>, lang: Lang) -> CommandResu
     Ok(())
 }
 
-fn pdf_of(state: &AppState, lang: Lang) -> CommandResult<PathBuf> {
+pub(crate) fn pdf_of(state: &AppState, lang: Lang) -> CommandResult<PathBuf> {
     state
         .latex
         .builds()
@@ -832,6 +849,28 @@ pub async fn latex_export_tex(
     text: String,
     document: u64,
 ) -> CommandResult<Option<String>> {
+    let (name, body) = translation_tex(&state, text, document)?;
+    let dir = state
+        .file()
+        .path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    let Some(dest) =
+        files::pick_save_kind(&app, &window, "LaTeX", &["tex"], dir.as_deref(), &name).await
+    else {
+        return Ok(None);
+    };
+    files::write_file_atomic(dest.clone(), body.into_bytes()).await?;
+    Ok(Some(dest.display().to_string()))
+}
+
+/// The file name and text of the translation [`latex_export_tex`] writes.
+pub(crate) fn translation_tex(
+    state: &AppState,
+    text: String,
+    document: u64,
+) -> CommandResult<(String, String)> {
     if let Some(pair) = state.file().pair.as_ref() {
         return Err(fail(format!(
             "The translation is the paired file {}.",
@@ -848,8 +887,9 @@ pub async fn latex_export_tex(
     } else {
         state.engine.compose_mirror().text
     };
-    let path = state.file().path.clone();
-    let stem = path
+    let stem = state
+        .file()
+        .path
         .as_deref()
         .and_then(Path::file_stem)
         .map(|s| s.to_string_lossy().into_owned())
@@ -859,21 +899,11 @@ pub async fn latex_export_tex(
     } else {
         translated
     };
-    let dir = path
-        .as_deref()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf);
     let name = match target {
         Lang::Zh => format!("{stem}_zh.tex"),
         Lang::En => format!("{}_en.tex", without_chinese_tag(&stem)),
     };
-    let Some(dest) =
-        files::pick_save_kind(&app, &window, "LaTeX", &["tex"], dir.as_deref(), &name).await
-    else {
-        return Ok(None);
-    };
-    files::write_file_atomic(dest.clone(), body.into_bytes()).await?;
-    Ok(Some(dest.display().to_string()))
+    Ok((name, body))
 }
 
 // ── SyncTeX ──────────────────────────────────────────────────────────
@@ -1199,7 +1229,7 @@ pub async fn latex_goto(
 
 // ── Templates ────────────────────────────────────────────────────────
 
-fn template_err(e: latex::TemplateError) -> CommandError {
+pub(crate) fn template_err(e: latex::TemplateError) -> CommandError {
     fail(e.to_string())
 }
 
@@ -1397,6 +1427,70 @@ mod tests {
         // No PDF at all is not a stale one.
         state.latex.builds().clear();
         assert!(current(Lang::En) && current(Lang::Zh));
+    }
+
+    /// Saved under another path (Save As), the document's PDF is no longer
+    /// its own, and clicks would lead to the old file. Another file of the
+    /// project built, and either file of a pair, still count.
+    #[tokio::test]
+    async fn a_pdf_built_for_another_path_is_stale() {
+        let dir = std::env::temp_dir().join(format!("biwrite-stale-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = crate::pair_tests::app_state(&dir);
+        let (old, new) = (dir.join("paper.tex"), dir.join("copy/paper.tex"));
+        std::fs::write(&old, "x").unwrap();
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        std::fs::write(&new, "x").unwrap();
+        state.file().path = Some(old.clone());
+        let mut build = build_of(Source::Files, Direction::EnZh);
+        build.doc_path = canonical(&old);
+        state.latex.builds().insert(Lang::En, build);
+        assert!(build_is_current(&state, Lang::En));
+        state.file().path = Some(new.clone());
+        assert!(
+            !build_is_current(&state, Lang::En),
+            "built for the old path"
+        );
+        // A file of the project the PDF was built for still maps.
+        let section = dir.join("sections/intro.tex");
+        std::fs::create_dir_all(section.parent().unwrap()).unwrap();
+        std::fs::write(&section, "x").unwrap();
+        let mut project = build_of(Source::Files, Direction::EnZh);
+        project.doc_path = canonical(&old);
+        project.dir = canonical(&dir);
+        state.latex.builds().insert(Lang::En, project);
+        state.file().path = Some(section);
+        assert!(
+            build_is_current(&state, Lang::En),
+            "a section of the project"
+        );
+        let elsewhere =
+            std::env::temp_dir().join(format!("biwrite-stale-else-{}", std::process::id()));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("paper.tex"), "x").unwrap();
+        state.file().path = Some(elsewhere.join("paper.tex"));
+        assert!(
+            !build_is_current(&state, Lang::En),
+            "saved into another folder"
+        );
+        std::fs::remove_dir_all(&elsewhere).unwrap();
+        state.file().path = Some(new.clone());
+        let mut build = build_of(Source::Files, Direction::EnZh);
+        build.doc_path = canonical(&old);
+        state.latex.builds().insert(Lang::En, build);
+        // The other file of a pair, as after a pair's swap.
+        state.file().pair = Some(crate::pairing::PairState {
+            path: old.clone(),
+            file: biwrite_core::TextFile::decode(b"x".to_vec()).unwrap(),
+            text: "x".to_owned(),
+            links: HashMap::new(),
+            unpaired: Default::default(),
+            behind: false,
+            exists: true,
+        });
+        assert!(build_is_current(&state, Lang::En));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

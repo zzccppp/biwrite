@@ -41,6 +41,7 @@
     MirrorSaved,
     PdfMenu,
     PdfPick,
+    ProjectCopy,
     SavedView,
     SessionView,
     SettingsView,
@@ -73,6 +74,8 @@
   let updateAvailable = $state<string | null>(null);
   /** Swap as soon as every paragraph is translated (the swap button was pressed early). */
   let swapWhenReady = $state(false);
+  /** The swap button was pressed early, so the next press swaps at once. */
+  let swapNowNext = false;
   /** The paired file waits for translations before it is written. */
   let mirrorWaiting = $state(false);
   let showGlossary = $state(false);
@@ -307,6 +310,7 @@
     if (!editor) return;
     epoch++;
     swapWhenReady = false;
+    swapNowNext = false;
     mirrorWaiting = false;
     clearTimeout(timer);
     timer = undefined;
@@ -358,7 +362,8 @@
     }
   }
 
-  async function save(as: boolean): Promise<void> {
+  /** Save, or Save As (`true`), or Save As into a new folder with the paper's files (`"project"`). */
+  async function save(as: boolean | "project"): Promise<void> {
     if (!editor || saving) return;
     // The editor's text is for the document being swapped out.
     if (swapping) {
@@ -370,12 +375,18 @@
     await settleEdits();
     const doc = editor.doc;
     const wasUntitled = session.path === null;
+    const oldPath = session.path;
     const sentEpoch = epoch;
     try {
       const text = doc.toString();
-      const saved: SavedView | null = as
-        ? await ipc.saveFileAs(text, session.document)
-        : await ipc.saveFile(text, session.document);
+      let copy: ProjectCopy | null = null;
+      let saved: SavedView | null;
+      if (as === "project") {
+        copy = await ipc.saveProjectAs(text, session.document, t("dialog.saveProject"));
+        saved = copy?.saved ?? null;
+      } else {
+        saved = as ? await ipc.saveFileAs(text, session.document) : await ipc.saveFile(text, session.document);
+      }
       if (!saved || sentEpoch !== epoch) return;
       savedDoc = doc;
       session.path = saved.path;
@@ -384,10 +395,17 @@
       session.dirty = !editor.doc.eq(doc);
       if (session.dirty) setDirty(true);
       reportMirror(saved.name, saved.mirror);
+      if (copy) {
+        session.flash(t("doc.projectSaved", { folder: copy.folder, n: copy.copied }));
+        if (copy.leftOut.length > 0) session.error = t("doc.projectLeftOut", { files: copy.leftOut.join(", ") });
+      }
       if (wasUntitled && saved.suggestedMode !== session.mode) changeMode(saved.suggestedMode);
       if (saved.path.toLowerCase().endsWith(".tex")) {
-        if (wasUntitled) await latex.loadProject();
-        if (settings?.latex.compileOnSave && latex.ready && !compiling) void compile(latex.lang, false);
+        // Saved elsewhere, the PDFs on show belong to the old file.
+        const moved = !wasUntitled && saved.path !== oldPath;
+        if (wasUntitled || moved) await latex.loadProject(moved);
+        if (settings?.latex.compileOnSave && latex.ready && !compiling) void compile(latex.lang);
+        else if (moved && showPdf) ensurePdf(latex.lang);
       }
     } catch (err) {
       fail(err);
@@ -493,7 +511,7 @@
       await settleEdits();
       // Text plainly in the other language than taken (a Chinese document
       // read as English): read it as such instead of swapping, no waiting.
-      if (!session.pair && !session.swapped && !swapWhenReady) {
+      if (!session.pair && !session.swapped && !swapNowNext) {
         const at = cursorParagraph();
         const view = await ipc.retargetLanguage(editor.text(), session.document, true);
         if (view) {
@@ -508,22 +526,25 @@
       const waiting = c.pending + c.translating + c.error;
       let keep = false;
       if (waiting > 0) {
-        // First press: swap by itself once the rest is translated. Second
-        // press: swap now, untranslated paragraphs as they are. Never back
-        // to the file's own language: they would be saved into the file.
-        if (session.swapped && !session.pair) {
+        // The first press swaps by itself once the rest is translated. The
+        // second press swaps now. Untranslated paragraphs go over as they
+        // are and are put in the newly edited language as their
+        // translations arrive. A save before then writes them as they are.
+        if (!swapNowNext) {
+          swapNowNext = true;
           swapWhenReady = true;
-          session.flash(t("doc.swapBackWhenReady", { n: waiting, lang: langName(session.home) }));
-          return;
-        }
-        if (!swapWhenReady || session.pair) {
-          swapWhenReady = true;
-          session.flash(t(session.pair ? "doc.swapWhenReadyPair" : "doc.swapWhenReady", { n: waiting }));
+          const back = session.swapped && !session.pair;
+          session.flash(
+            back
+              ? t("doc.swapBackWhenReady", { n: waiting, lang: langName(session.home) })
+              : t("doc.swapWhenReady", { n: waiting }),
+          );
           return;
         }
         keep = true;
       }
       swapWhenReady = false;
+      swapNowNext = false;
       // Keep the cursor on the same paragraph across the swap.
       const at = cursorParagraph();
       // Skipped blocks are identical on both sides: keep expanded equations open.
@@ -537,8 +558,15 @@
       loadView(view);
       session.restoreExpanded(expanded);
       restoreCursor(at);
-      const names = { edit: langName(view.snapshot.direction), own: langName(view.home), n: waiting };
-      if (keep && session.swapped) {
+      const edited = view.snapshot.direction;
+      const names = {
+        edit: langName(edited),
+        own: langName(view.home),
+        // The paragraphs that went over as they are, in the language edited before.
+        kept: langName(edited === "zh-en" ? "en-zh" : "zh-en"),
+        n: waiting,
+      };
+      if (keep) {
         session.flash(
           session.autoTranslate
             ? count(waiting, "doc.swappedFilling.one", "doc.swappedFilling.many", names)
@@ -643,9 +671,9 @@
     if (busy > 0 || saving) return;
     if (swapWhenReady) {
       if (c.error > 0) {
+        // Failed paragraphs never finish by themselves, and the next press swaps now.
         swapWhenReady = false;
-        const back = session.swapped && !session.pair;
-        session.flash(t(back ? "doc.swapBackBlocked" : "doc.swapBlocked", { n: c.error }));
+        session.flash(t("doc.swapBlocked", { n: c.error }));
       } else {
         void swapLanguages();
       }
@@ -785,14 +813,18 @@
 
   // ── LaTeX: building, the PDF and SyncTeX ─────────────────────────
 
-  /** Build a PDF. Unsaved edits are saved first: the PDF shows the files. */
-  async function compile(lang: PdfLang = latex.lang, saveFirst = true): Promise<void> {
+  /**
+   * Build a PDF. Nothing is saved, since only Save writes the files. A PDF built
+   * from the files (the file's own language, either one of a pair) shows
+   * them as saved, so unsaved edits are not in it, and the flash says so.
+   */
+  async function compile(lang: PdfLang = latex.lang): Promise<void> {
     if (!editor || compiling || !compilable || swapping) return;
     compiling = true;
     try {
-      if (saveFirst && session.dirty) {
-        await save(false);
-        if (session.dirty) return;
+      const fileLang: PdfLang = session.home === "zh-en" ? "zh" : "en";
+      if (session.dirty && (session.pair !== null || lang === fileLang)) {
+        session.flash(t("pdf.unsavedNotBuilt"));
       }
       await settleEdits();
       await latex.compile(lang, editor.text(), session.document);
@@ -801,15 +833,10 @@
     }
   }
 
-  /**
-   * Build the PDF of `lang` when there is none yet (saving first, as any
-   * build), or again when it is stale: then without saving, since nobody
-   * asked for a save.
-   */
+  /** Build the PDF of `lang` when there is none yet, or again when it is stale. */
   function ensurePdf(lang: PdfLang): void {
     if (!compilable || !latex.ready || latex.building[lang]) return;
-    if (!latex.builds[lang]) void compile(lang);
-    else if (latex.stale[lang]) void compile(lang, false);
+    if (!latex.builds[lang] || latex.stale[lang]) void compile(lang);
   }
 
   /** A click or the cursor met a PDF built before a pairing or a swap. */
@@ -932,7 +959,8 @@
     ensurePdf(lang);
   }
 
-  async function exportTranslatedTex(): Promise<void> {
+  /** Export the translation as a .tex file, or (`project`) into a new folder with the paper's files. */
+  async function exportTranslatedTex(project = false): Promise<void> {
     if (!editor) return;
     if (swapping) {
       session.flash(t("doc.busySwapping"));
@@ -940,6 +968,13 @@
     }
     await settleEdits();
     try {
+      if (project) {
+        const copy = await latexIpc.exportProject(editor.text(), session.document, t("dialog.exportProject"));
+        if (!copy) return;
+        session.flash(t("pdf.projectExported", { folder: copy.folder, n: copy.copied }));
+        if (copy.leftOut.length > 0) session.error = t("doc.projectLeftOut", { files: copy.leftOut.join(", ") });
+        return;
+      }
       const path = await latexIpc.exportTex(editor.text(), session.document);
       if (path) session.flash(t("pdf.texExported", { path }));
     } catch (err) {
@@ -1342,6 +1377,8 @@
     onopen={open}
     onsave={() => save(false)}
     onsaveas={() => save(true)}
+    onsaveproject={() => save("project")}
+    saveAsChoice={compilable}
     onhelp={() => ipc.openManual(language.current).catch(fail)}
     onexport={exportBilingual}
     onmode={changeMode}
@@ -1435,7 +1472,8 @@
             onopenfile={(file, line) => openFromMenu(file, line)}
             onlang={switchPdfLang}
             fileLang={session.home === "zh-en" ? "zh" : "en"}
-            onexporttex={exportTranslatedTex}
+            onexporttex={() => exportTranslatedTex(false)}
+            onexportproject={() => exportTranslatedTex(true)}
             onclosemenu={() => (pdfMenu = null)}
           />
         </div>

@@ -904,3 +904,196 @@ async fn workflow_figures_the_assistant_writes_compile_in_every_template() {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// The app state with the offline provider's translator.
+fn offline_state(dir: &Path, delay: Duration) -> AppState {
+    let translator = Arc::new(
+        biwrite_engine::MockTranslator::with_delay(delay, delay + Duration::from_millis(2))
+            .keeping_markup(),
+    );
+    let engine = Engine::new(
+        translator,
+        Arc::new(MemoryCache::default()),
+        Arc::new(biwrite_engine::NullSink),
+        EngineSettings::default(),
+        tokio::runtime::Handle::current(),
+    );
+    let secrets: Arc<dyn SecretStore> = Arc::new(MemoryStore::default());
+    AppState::new(
+        engine,
+        Arc::new(MemoryCache::default()),
+        AppSettings::default(),
+        Paths::in_dir(&dir.join("config")),
+        secrets,
+        Arc::new(RequestLog::new(
+            LogSettings::default(),
+            None,
+            Arc::new(NoSink),
+        )),
+        crate::skills::SkillStore::new(None, None),
+        LatexState::new(templates_dir(), dir.join("user-templates")),
+    )
+}
+
+/// LaTeX errors of the Chinese PDF of a new paper from template `id`, its
+/// paragraphs translated by the offline provider, or none translated yet.
+async fn offline_chinese_errors(id: &str, translated: bool) -> Vec<String> {
+    let dir = temp(&format!("offline-{id}-{translated}"));
+    let delay = if translated {
+        Duration::from_millis(1)
+    } else {
+        Duration::from_secs(600)
+    };
+    let app = tauri::test::mock_app();
+    app.manage(offline_state(&dir, delay));
+    let state = app.state::<AppState>();
+    let (template, _) = templates::find(&templates_dir(), &dir.join("user-templates"), id).unwrap();
+    let main = templates::instantiate(&template, &dir.join("paper")).unwrap();
+    open_path(&state, main).await.unwrap();
+    if translated {
+        settle(&state).await;
+        assert!(
+            state.engine.translations().iter().all(|(_, t)| t.is_some()),
+            "{id}: every paragraph translated"
+        );
+    }
+    let view = latex_compile(
+        state.clone(),
+        Lang::Zh,
+        state.engine.text(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    assert!(view.has_pdf, "{id}: {}", view.output);
+    std::fs::remove_dir_all(&dir).unwrap();
+    view.issues
+        .into_iter()
+        .filter(|i| i.severity == biwrite_latex::Severity::Error)
+        .map(|i| i.message)
+        .collect()
+}
+
+/// The offline provider reverses only the letters of words, so a paper it
+/// translates keeps its LaTeX. In every template, the Chinese PDF has no
+/// error the untranslated document does not have. (The whole-text reversal
+/// of earlier versions turned `\textit{Deep Learning}` into
+/// `}gninraeL peeD{titxet\`.)
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn workflow_offline_translations_of_every_template_compile() {
+    for id in ["iclr2027", "pvldb", "ieee-tii"] {
+        let before = offline_chinese_errors(id, false).await;
+        let after = offline_chinese_errors(id, true).await;
+        eprintln!(
+            "{id}: {} errors untranslated, {} translated offline",
+            before.len(),
+            after.len()
+        );
+        assert!(
+            after.iter().all(|e| before.contains(e)),
+            "{id}: errors the translation brought: {after:?} (untranslated: {before:?})"
+        );
+    }
+}
+
+const SHORT: &str = "\\documentclass{article}\n\\begin{document}\n\\section{Method}\nwe assign one action per row.\n\nwe test it on twelve datasets.\n\\end{document}\n";
+
+/// A pair swapped at once, while an edited English paragraph is still on
+/// its way. The paragraph goes over in English and is put in Chinese once
+/// translated. Saving writes the Chinese file as edited and the English
+/// file with the paragraph exactly as typed.
+#[tokio::test]
+async fn a_pair_swaps_now_and_fills_in_the_paragraph_on_its_way() {
+    let dir = temp("pair-now");
+    let (state, _translator, fills) = workflow_state(&dir);
+    let main = dir.join("paper.tex");
+    let zh_path = dir.join("paper_zh.tex");
+    std::fs::write(&main, SHORT).unwrap();
+    open_path(&state, main.clone()).await.unwrap();
+    settle(&state).await;
+    let zh = state.engine.compose_mirror().text;
+    std::fs::write(&zh_path, &zh).unwrap();
+    let view = open_path(&state, main.clone()).await.unwrap();
+    assert!(view.pair.is_some(), "paired");
+    settle(&state).await;
+
+    state.engine.set_auto_translate(false);
+    let edited = SHORT.replace("twelve datasets.", "twelve datasets and three more.");
+    state.engine.update(edited.clone());
+    assert!(
+        swap(&state, edited.clone(), false).is_err(),
+        "without keep the swap waits"
+    );
+    let early = swap(&state, edited.clone(), true).unwrap();
+    assert_eq!(state.file().path.as_deref(), Some(zh_path.as_path()));
+    assert!(early.text.contains("twelve datasets and three more."));
+    assert!(early.text.contains(&to_zh("we assign one action per row.")));
+    assert_eq!(read(&main), SHORT, "nothing written yet");
+    assert_eq!(read(&zh_path), zh);
+
+    assert_eq!(state.engine.continue_translation(true), 1);
+    settle(&state).await;
+    let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
+    assert_eq!(filled.len(), 1, "{filled:?}");
+    assert!(filled[0].old.contains("three more."));
+    assert!(filled[0].new.contains(&to_zh("three more.")));
+    let now = early.text.replacen(&filled[0].old, &filled[0].new, 1);
+    state.engine.update(now.clone());
+    settle(&state).await;
+    state.engine.set_auto_translate(true);
+
+    write_document(&state, zh_path.clone(), now.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(read(&zh_path), now);
+    assert_eq!(read(&main), edited, "the English as typed");
+    let back = swap(&state, now, false).unwrap();
+    assert_eq!(back.text, edited);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Back to the file's own language at once, while an edited Chinese
+/// paragraph is on its way. It comes back in Chinese and is put in English
+/// once translated, and the Chinese typed stays its exact translation.
+#[tokio::test]
+async fn swapping_back_home_now_fills_in_the_paragraph_on_its_way() {
+    let dir = temp("home-now");
+    let (state, _translator, fills) = workflow_state(&dir);
+    let main = dir.join("paper.tex");
+    std::fs::write(&main, SHORT).unwrap();
+    open_path(&state, main.clone()).await.unwrap();
+    settle(&state).await;
+    let swapped = swap(&state, SHORT.to_owned(), false).unwrap();
+
+    state.engine.set_auto_translate(false);
+    let target = to_zh("we test it on twelve datasets.");
+    assert!(swapped.text.contains(&target));
+    let zh_edited = swapped
+        .text
+        .replacen(&target, &format!("{target}{}", to_zh(" and more")), 1);
+    state.engine.update(zh_edited.clone());
+    let back = swap(&state, zh_edited.clone(), true).unwrap();
+    assert_eq!(state.engine.direction(), Direction::EnZh);
+    assert!(back.text.contains(&to_zh(" and more")), "kept in Chinese");
+    assert_eq!(read(&main), SHORT, "nothing written yet");
+
+    assert_eq!(state.engine.continue_translation(true), 1);
+    settle(&state).await;
+    let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
+    assert_eq!(filled.len(), 1, "{filled:?}");
+    let english = to_en(&format!("{target}{}", to_zh(" and more")));
+    assert!(filled[0].new.contains(&english), "{filled:?}");
+    let now = back.text.replacen(&filled[0].old, &filled[0].new, 1);
+    state.engine.update(now.clone());
+    settle(&state).await;
+    state.engine.set_auto_translate(true);
+
+    write_document(&state, main.clone(), now.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(read(&main), now);
+    let again = swap(&state, now, false).unwrap();
+    assert_eq!(again.text, zh_edited, "the Chinese as typed");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

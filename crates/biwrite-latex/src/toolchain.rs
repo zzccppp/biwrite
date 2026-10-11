@@ -33,15 +33,34 @@ impl Toolchain {
     }
 
     /// `PATH` for child processes: `bin` first, so latexmk finds the
-    /// engines, BibTeX and Biber next to it.
+    /// engines, BibTeX and Biber next to it, then the app's own `PATH`, then
+    /// the folders of helper programs (see [`HELPER_DIRS`]).
     pub fn path_env(&self) -> OsString {
+        self.path_from(std::env::var_os("PATH"))
+    }
+
+    fn path_from(&self, inherited: Option<OsString>) -> OsString {
         let mut paths = vec![self.bin.clone()];
-        if let Some(path) = std::env::var_os("PATH") {
+        if let Some(path) = inherited {
             paths.extend(std::env::split_paths(&path).filter(|p| p != &self.bin));
+        }
+        for dir in HELPER_DIRS.iter().map(PathBuf::from) {
+            if !paths.contains(&dir) && dir.is_dir() {
+                paths.push(dir);
+            }
         }
         std::env::join_paths(paths).unwrap_or_default()
     }
 }
+
+/// Folders of the helper programs TeX tools run, such as Ghostscript, which
+/// xdvipdfmx needs for EPS images. An app started from the Finder or the
+/// Dock has a `PATH` without them, so XeLaTeX documents with EPS figures
+/// failed there (and not in a terminal).
+#[cfg(unix)]
+const HELPER_DIRS: &[&str] = &["/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin"];
+#[cfg(not(unix))]
+const HELPER_DIRS: &[&str] = &[];
 
 fn exe(name: &str) -> String {
     if cfg!(windows) {
@@ -167,6 +186,34 @@ fn distribution_of(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With the `PATH` of an app started from the Finder, the helper
+    /// folders (Ghostscript's) are still on the tools' `PATH`, after the
+    /// distribution's folder and once each.
+    #[test]
+    fn helper_folders_join_a_minimal_path() {
+        let tc = Toolchain {
+            bin: PathBuf::from("/Library/TeX/texbin"),
+            distribution: String::new(),
+            latexmk: true,
+            synctex: true,
+            engines: Vec::new(),
+        };
+        let path = tc.path_from(Some(OsString::from("/usr/bin:/bin:/usr/sbin:/sbin")));
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(dirs[0], tc.bin);
+        assert!(dirs.contains(&PathBuf::from("/usr/bin")));
+        for dir in HELPER_DIRS.iter().map(PathBuf::from) {
+            let count = dirs.iter().filter(|d| **d == dir).count();
+            assert_eq!(count, usize::from(dir.is_dir()), "{}", dir.display());
+        }
+        // A folder already on the inherited PATH is not added again.
+        let path = tc.path_from(Some(OsString::from("/usr/local/bin:/usr/bin")));
+        let local = std::env::split_paths(&path)
+            .filter(|d| d == Path::new("/usr/local/bin"))
+            .count();
+        assert!(local <= 1);
+    }
 
     #[test]
     fn distribution_names() {

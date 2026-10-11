@@ -314,6 +314,22 @@ impl Engine {
         direction: Direction,
         known: Vec<(usize, String)>,
     ) -> Snapshot {
+        self.load_known_filling(text, mode, direction, known, &[])
+    }
+
+    /// [`Self::load_known`], with the segments at the indices in `fill`
+    /// still written in the language of the translations (a paired swap
+    /// made before their translations arrived). They are translated the
+    /// other way round and replaced in the editor ([`crate::Fill`]), and
+    /// their translation stays the exact one given in `known`.
+    pub fn load_known_filling(
+        &self,
+        text: String,
+        mode: Mode,
+        direction: Direction,
+        known: Vec<(usize, String)>,
+        fill: &[usize],
+    ) -> Snapshot {
         let mut st = self.inner.lock();
         st.cancel_all();
         st.meta.clear();
@@ -331,6 +347,12 @@ impl Engine {
             let mut meta = SegMeta::new();
             meta.seed = Some((hash, translation));
             st.meta.insert(id, meta);
+        }
+        for &index in fill {
+            let Some(&(id, hash)) = segments.get(index) else {
+                continue;
+            };
+            st.meta.entry(id).or_insert_with(SegMeta::new).fill = Some(hash);
         }
         self.inner.reconcile(&mut st, &HashSet::new());
         self.inner.pump(&mut st);

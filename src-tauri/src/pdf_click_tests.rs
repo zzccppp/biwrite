@@ -11,7 +11,9 @@ use biwrite_latex::PdfBox;
 use tauri::Manager;
 
 use crate::error::CommandError;
-use crate::latex_commands::{Lang, SyncHit, latex_compile, latex_forward, latex_inverse};
+use crate::latex_commands::{
+    BuildView, Lang, SyncHit, latex_compile, latex_forward, latex_inverse,
+};
 use crate::pair_tests::{app_state, settle};
 use crate::pairing;
 use crate::state::AppState;
@@ -118,7 +120,9 @@ async fn round_trip(state: &AppStateRef<'_>, lang: Lang, needle: &str, span: &st
     selected(state, click_box(state, lang, &b, span).await.unwrap())
 }
 
-async fn build(state: &AppStateRef<'_>, lang: Lang) {
+/// Build the PDF of `lang`, which must be a complete PDF (written to its
+/// `%%EOF`).
+async fn build(state: &AppStateRef<'_>, lang: Lang) -> BuildView {
     let view = latex_compile(
         state.clone(),
         lang,
@@ -128,6 +132,15 @@ async fn build(state: &AppStateRef<'_>, lang: Lang) {
     .await
     .unwrap();
     assert!(view.has_pdf, "{lang:?}: {}", view.output);
+    let pdf = std::fs::read(crate::latex_commands::pdf_of(state, lang).unwrap()).unwrap();
+    let end = &pdf[pdf.len().saturating_sub(2048)..];
+    assert!(
+        pdf.len() > 1024 && end.windows(5).any(|w| w == b"%%EOF"),
+        "{lang:?}: an incomplete PDF of {} bytes. {}",
+        pdf.len(),
+        view.output
+    );
+    view
 }
 
 fn is_stale<T: std::fmt::Debug>(result: Result<T, CommandError>) -> bool {
@@ -388,6 +401,31 @@ async fn boxes_at(state: &AppStateRef<'_>, lang: Lang, offset: usize) -> Vec<Pdf
     .unwrap_or_default()
 }
 
+/// A build without errors (and a complete PDF, see [`build`]).
+fn assert_clean(lang: Lang, view: &BuildView, case: &str) {
+    assert_eq!(
+        view.outcome,
+        biwrite_latex::Outcome::Ok,
+        "{case}, {lang:?}: {:?} {}",
+        view.issues.iter().map(|i| &i.message).collect::<Vec<_>>(),
+        view.output
+    );
+}
+
+/// A PDF built from a translation is written to its end, images included
+/// (a reversing test translator leaves the LaTeX itself in disorder).
+fn assert_written(lang: Lang, view: &BuildView, case: &str) {
+    assert!(
+        !view.output.contains("Image inclusion failed")
+            && !view
+                .issues
+                .iter()
+                .any(|i| i.message.contains("previous PDF is kept")),
+        "{case}, {lang:?}: {}",
+        view.output
+    );
+}
+
 /// `text` holds only lines that open what follows (`\\begin{…}`, `\\label{…}`).
 fn opens(text: &str) -> bool {
     text.lines().all(|line| {
@@ -489,6 +527,13 @@ async fn a_real_paper_paired_by_hand_maps_clicks_both_ways() {
     let file = TextFile::decode(en_before.clone()).unwrap();
     pairing::open(&state, en_path.clone(), file, None);
     settle(&state).await;
+    // Before any pairing, both PDFs are built, the Chinese one from the
+    // translation (the test's translator reverses text, so only the writing
+    // of its PDF is checked).
+    let view = build(&state, Lang::En).await;
+    assert_clean(Lang::En, &view, "unpaired");
+    let view = build(&state, Lang::Zh).await;
+    assert_written(Lang::Zh, &view, "unpaired, from the translation");
     let view = pairing::pair_with(
         &state,
         state.engine.text(),
@@ -501,8 +546,10 @@ async fn a_real_paper_paired_by_hand_maps_clicks_both_ways() {
     let pair = view.pair.expect("paired");
     eprintln!("paired {} of {} paragraphs", pair.paired, pair.units);
     settle(&state).await;
-    build(&state, Lang::Zh).await;
-    build(&state, Lang::En).await;
+    for lang in [Lang::Zh, Lang::En] {
+        let view = build(&state, lang).await;
+        assert_clean(lang, &view, "paired");
+    }
     let synctex = zh_path.with_extension("synctex.gz");
     assert!(synctex.is_file(), "{}", synctex.display());
 
@@ -514,6 +561,20 @@ async fn a_real_paper_paired_by_hand_maps_clicks_both_ways() {
     check_round_trips(&state, "Chinese editor").await;
     crate::commands::swap(&state, state.engine.text(), false).unwrap();
     assert_eq!(state.file().path.as_deref(), Some(en_path.as_path()));
+    // The Chinese paper opened by itself builds its own PDF, and the
+    // English one composed from its translation.
+    let other = app_state(&temp("real-pair-zh"));
+    let app_zh = tauri::test::mock_app();
+    app_zh.manage(other);
+    let zh_state = app_zh.state::<AppState>();
+    let file = TextFile::decode(zh_before.clone()).unwrap();
+    pairing::open(&zh_state, zh_path.clone(), file, None);
+    settle(&zh_state).await;
+    let view = build(&zh_state, Lang::Zh).await;
+    assert_clean(Lang::Zh, &view, "Chinese paper alone");
+    let view = build(&zh_state, Lang::En).await;
+    assert_written(Lang::En, &view, "Chinese paper alone, from the translation");
+
     // Building and clicking wrote neither paper.
     assert_eq!(std::fs::read(&en_path).unwrap(), en_before);
     assert_eq!(std::fs::read(&zh_path).unwrap(), zh_before);

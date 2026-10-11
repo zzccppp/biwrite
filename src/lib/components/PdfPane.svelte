@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import type { PDFDocumentProxy, RenderTask, TextLayer } from "pdfjs-dist/legacy/build/pdf.mjs";
   import { count, t } from "../i18n.svelte";
   import { errorMessage, latexIpc } from "../ipc";
@@ -28,6 +28,8 @@
     fileLang: PdfLang;
     /** Save the translation (the other language) as a .tex file. */
     onexporttex: () => void;
+    /** The same, into a new folder with the files the paper builds with. */
+    onexportproject: () => void;
   }
 
   let {
@@ -45,7 +47,33 @@
     onlang,
     fileLang,
     onexporttex,
+    onexportproject,
   }: Props = $props();
+
+  let exportOpen = $state(false);
+  let exportMenu = $state<HTMLElement>();
+
+  function chooseExport(action: () => void): void {
+    exportOpen = false;
+    action();
+  }
+
+  // The export menu closes on a click elsewhere or Escape.
+  $effect(() => {
+    if (!exportOpen) return;
+    const click = (e: MouseEvent) => {
+      if (exportMenu && !exportMenu.contains(e.target as Node)) exportOpen = false;
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") exportOpen = false;
+    };
+    window.addEventListener("mousedown", click, true);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      window.removeEventListener("mousedown", click, true);
+      window.removeEventListener("keydown", key, true);
+    };
+  });
 
   const exportLabel = $derived(fileLang === "en" ? t("pdf.exportTex") : t("pdf.exportTexEn"));
 
@@ -53,10 +81,27 @@
   const mod = navigator.platform.toLowerCase().includes("mac") ? "⌘" : "Ctrl+";
   const alt = navigator.platform.toLowerCase().includes("mac") ? "⌥" : "Alt+";
 
+  type Size = { width: number; height: number };
+  /** A rendered page, its canvas and text layer at a zoom. */
+  type Drawn = { zoom: number; canvas: HTMLCanvasElement; text: HTMLElement };
+  /**
+   * The PDF of one language, kept open while the other is on show, with
+   * the pages last in view and the scroll position. Switching back shows
+   * them at once.
+   */
+  interface Opened {
+    id: number;
+    doc: PDFDocumentProxy;
+    sizes: Size[];
+    pages: Map<number, Drawn>;
+    scrollTop: number;
+  }
+  const opened: Partial<Record<PdfLang, Opened>> = {};
+
   let scroller = $state<HTMLElement>();
   let doc = $state<PDFDocumentProxy | null>(null);
   /** Page sizes at scale 1 (PDF points). */
-  let sizes = $state<{ width: number; height: number }[]>([]);
+  let sizes = $state<Size[]>([]);
   let loading = $state(false);
   let loadError = $state<string | null>(null);
   /** "fit" follows the pane's width. */
@@ -109,43 +154,69 @@
   }
 
   // Load the PDF of the latest build (or switch languages). A build
-  // without a PDF keeps the last one on show.
+  // without a PDF keeps the last one on show. A language switched back to
+  // shows its PDF as it was left, unless a newer build replaced it.
   $effect(() => {
     const b = build;
     const l = lang;
     untrack(() => {
+      const switching = shownLang !== l;
+      if (switching) leave();
       if (!b?.hasPdf) {
-        if (shownLang !== l || !b) {
-          void replaceDoc(null);
+        if (switching || !b) {
+          void replaceDoc(null, [], null, true);
           shownLang = l;
           shownBuild = 0;
         }
         return;
       }
-      if (b.id === shownBuild && l === shownLang) return;
+      if (b.id === shownBuild && !switching) return;
       shownBuild = b.id;
       shownLang = l;
-      void load(l, b.id);
+      const kept = opened[l];
+      if (kept && kept.id === b.id) {
+        void replaceDoc(kept.doc, kept.sizes, kept.scrollTop, switching);
+        return;
+      }
+      void load(l, b.id, switching);
     });
   });
 
-  async function load(l: PdfLang, id: number): Promise<void> {
+  /** Keep the pages in view and the scroll position of the PDF on show. */
+  function leave(): void {
+    const o = shownLang ? opened[shownLang] : undefined;
+    if (!o || o.doc !== doc) return;
+    o.scrollTop = scroller?.scrollTop ?? 0;
+    for (const n of [...o.pages.keys()]) if (!visible.has(n)) o.pages.delete(n);
+  }
+
+  async function load(l: PdfLang, id: number, switching: boolean): Promise<void> {
     loading = true;
     loadError = null;
     try {
       const bytes = await latexIpc.pdf(l);
       const next = await openPdf(bytes);
-      if (id !== shownBuild || l !== shownLang) {
+      const sizesOf = await Promise.all(
+        Array.from({ length: next.numPages }, (_, i) =>
+          next.getPage(i + 1).then((page) => {
+            const v = page.getViewport({ scale: 1 });
+            return { width: v.width, height: v.height };
+          }),
+        ),
+      );
+      // Kept for a switch back while it is the latest build of its language.
+      if (store.builds[l]?.id !== id) {
         void next.loadingTask.destroy();
         return;
       }
-      const pages: { width: number; height: number }[] = [];
-      for (let n = 1; n <= next.numPages; n++) {
-        const page = await next.getPage(n);
-        const v = page.getViewport({ scale: 1 });
-        pages.push({ width: v.width, height: v.height });
+      const old = opened[l];
+      opened[l] = { id, doc: next, sizes: sizesOf, pages: new Map(), scrollTop: old?.scrollTop ?? 0 };
+      if (id === shownBuild && l === shownLang) {
+        // A new build of the PDF on show keeps its place. A switch goes to
+        // where that language was left.
+        await replaceDoc(next, sizesOf, switching ? (old?.scrollTop ?? 0) : null, switching);
       }
-      await replaceDoc(next, pages);
+      if (old && old.doc !== next) void old.doc.loadingTask.destroy();
     } catch (err) {
       loadError = errorMessage(err);
     } finally {
@@ -153,17 +224,33 @@
     }
   }
 
-  async function replaceDoc(next: PDFDocumentProxy | null, pages: { width: number; height: number }[] = []): Promise<void> {
-    const old = doc;
+  /**
+   * Show `next`. Switching languages takes the other language's pages off
+   * at once (`clear`). A new build of the same PDF leaves them until its
+   * own are drawn. `scrollTop` restores a position.
+   */
+  async function replaceDoc(
+    next: PDFDocumentProxy | null,
+    pages: Size[] = [],
+    scrollTop: number | null = null,
+    clear = false,
+  ): Promise<void> {
     for (const r of rendered.values()) {
       r.task?.cancel();
       r.text?.cancel();
     }
     rendered.clear();
+    if (clear) {
+      for (const el of pageEls.values()) {
+        el.querySelector("canvas")?.remove();
+        el.querySelector(".textLayer")?.remove();
+      }
+    }
     docSerial++;
     doc = next;
     sizes = pages;
-    if (old) void old.loadingTask.destroy();
+    await tick();
+    if (scrollTop !== null && scroller) scroller.scrollTop = scrollTop;
     // Pages already in view render now; the rest as they scroll in.
     requestAnimationFrame(() => visible.forEach((n) => void renderPage(n)));
   }
@@ -180,6 +267,16 @@
     prev?.text?.cancel();
     const entry = { serial, zoom: z, task: null as RenderTask | null, text: null as TextLayer | null };
     rendered.set(n, entry);
+    const own = Object.values(opened).find((o) => o.doc === d);
+    const drawn = own?.pages.get(n);
+    if (drawn && drawn.zoom === z) {
+      // Drawn before the other language was shown, so put back as it was.
+      el.querySelector("canvas")?.remove();
+      el.querySelector(".textLayer")?.remove();
+      el.prepend(drawn.canvas);
+      drawn.canvas.after(drawn.text);
+      return;
+    }
     const lib = await pdfjs();
     try {
       const page = await d.getPage(n);
@@ -207,6 +304,7 @@
       el.querySelector(".textLayer")?.remove();
       el.prepend(canvas);
       canvas.after(text);
+      own?.pages.set(n, { zoom: z, canvas, text });
     } catch (err) {
       if (!(err instanceof lib.RenderingCancelledException) && rendered.get(n) === entry) {
         rendered.delete(n);
@@ -309,7 +407,9 @@
         r.task?.cancel();
         r.text?.cancel();
       }
-      void doc?.loadingTask.destroy();
+      const open = Object.values(opened).map((o) => o.doc);
+      for (const d of open) void d.loadingTask.destroy();
+      if (doc && !open.includes(doc)) void doc.loadingTask.destroy();
     };
   });
 </script>
@@ -365,9 +465,32 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5V10M5.5 7.5 8 10l2.5-2.5M3 11v2.5h10V11" /></svg>
     </button>
     {#if lang !== fileLang}
-      <button class="icon" onclick={onexporttex} disabled={!compilable} title={exportLabel} aria-label={exportLabel}>
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5.5L12 5v8.5H4zM9.5 2.5V5H12M6 9.5h4M8 7.5v4" /></svg>
-      </button>
+      <div class="menu-host" bind:this={exportMenu}>
+        <button
+          class="icon export"
+          class:on={exportOpen}
+          onclick={() => (exportOpen = !exportOpen)}
+          disabled={!compilable}
+          title={exportLabel}
+          aria-label={exportLabel}
+          aria-haspopup="menu"
+          aria-expanded={exportOpen}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5.5L12 5v8.5H4zM9.5 2.5V5H12M6 9.5h4M8 7.5v4" /></svg>
+        </button>
+        {#if exportOpen}
+          <div class="menu" role="menu">
+            <button role="menuitem" onclick={() => chooseExport(onexporttex)}>
+              <span class="item">{exportLabel}</span>
+              <span class="hint">{t("pdf.exportTexOnly")}</span>
+            </button>
+            <button role="menuitem" class="exportproject" onclick={() => chooseExport(onexportproject)}>
+              <span class="item">{t("pdf.exportProject")}</span>
+              <span class="hint">{t("pdf.exportProjectHint")}</span>
+            </button>
+          </div>
+        {/if}
+      </div>
     {/if}
     <button class="icon" onclick={() => latexIpc.revealPdf(lang).catch(() => {})} disabled={!doc} title={t("pdf.reveal")} aria-label={t("pdf.reveal")}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z" /></svg>
@@ -843,5 +966,47 @@
       opacity: 0;
       transform: translateY(3px);
     }
+  }
+  .menu-host {
+    position: relative;
+    display: flex;
+  }
+  .menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    width: 280px;
+    padding: 4px;
+    background: var(--paper);
+    border: 1px solid var(--rule-strong);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+  }
+  .menu button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ink);
+    text-align: left;
+    cursor: pointer;
+  }
+  .menu button:hover {
+    background: var(--accent-wash);
+  }
+  .menu .item {
+    font-size: 13.5px;
+  }
+  .menu .hint {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--muted);
   }
 </style>

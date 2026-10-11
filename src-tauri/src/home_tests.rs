@@ -307,16 +307,19 @@ async fn text_sent_before_a_swap_is_refused() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Swapping back to the file's own language never keeps paragraphs in the
-/// other language: the file would be saved with them.
+/// Swapping back to the file's own language at once, before a paragraph of
+/// the other language is translated. The paragraph comes back as it is,
+/// nothing is written to the file, and without `keep` the swap still
+/// waits.
 #[tokio::test]
-async fn swapping_back_home_waits_for_every_translation() {
+async fn swapping_back_home_now_keeps_the_paragraph_on_its_way() {
     let dir = temp("back");
     let state = app_state(&dir);
     open(&state, &dir.join("paper.tex"), EN_PAPER);
     settle(&state).await;
     let swapped = crate::commands::swap(&state, EN_PAPER.into(), false).unwrap();
-    // A paragraph of the other language edited; its translation is on its way.
+    // A paragraph of the other language edited, its translation waiting.
+    state.engine.set_auto_translate(false);
     let edited = format!(
         "{}\n",
         swapped
@@ -325,16 +328,20 @@ async fn swapping_back_home_waits_for_every_translation() {
             .replacen("\\end{document}", "Extra words.\n\\end{document}", 1)
     );
     state.engine.update(edited.clone());
-    assert!(state.engine.pending() > 0);
-    let Err(err) = crate::commands::swap(&state, edited.clone(), true) else {
-        panic!("swapped back with a paragraph still in Chinese");
+    let Err(err) = crate::commands::swap(&state, edited.clone(), false) else {
+        panic!("swapped back without keep while a paragraph waits");
     };
     assert!(err.to_string().contains("not translated yet"), "{err}");
     assert_eq!(state.engine.direction(), Direction::ZhEn, "still swapped");
-    // Once translated, it swaps back, and the file reads in its language.
-    settle(&state).await;
     let back = crate::commands::swap(&state, edited, true).unwrap();
     assert_eq!(state.engine.direction(), Direction::EnZh);
     assert!(back.text.contains("\\section{Introduction}"));
+    assert!(back.text.contains("Extra words."), "kept as it is");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("paper.tex")).unwrap(),
+        EN_PAPER,
+        "nothing saved"
+    );
+    state.engine.set_auto_translate(true);
     std::fs::remove_dir_all(&dir).unwrap();
 }

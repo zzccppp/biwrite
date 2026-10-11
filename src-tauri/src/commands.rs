@@ -17,7 +17,7 @@ use crate::state::{AppState, SavedView, SessionView, display_name};
 
 /// Cosmetic, so a failure is logged rather than failing the command (which
 /// could leave frontend and backend on different documents).
-fn refresh_title(window: &WebviewWindow, state: &AppState) {
+pub(crate) fn refresh_title(window: &WebviewWindow, state: &AppState) {
     let title = state.file().window_title();
     if let Err(e) = window.set_title(&title) {
         log::warn!("failed to set window title: {e}");
@@ -218,12 +218,12 @@ pub async fn swap_languages(
 /// [`swap_languages`] without the window title.
 pub(crate) fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<SessionView> {
     if state.file().pair.is_some() {
-        return pairing::swap(state, text);
+        return pairing::swap(state, text, keep);
     }
-    // `keep`: swap now; untranslated paragraphs keep their text. Not back
-    // to the file's own language: those paragraphs would put the other
-    // language into the file, so that swap waits for every translation.
-    let keep = keep && state.engine.direction().flipped() != state.file().home;
+    // With `keep` the swap happens now. Untranslated paragraphs keep their
+    // text and are put in the newly edited language once translated. Saved
+    // before then, they go into the file as they are, a document of both
+    // languages, which builds like any other.
     let swapped = if keep {
         state.engine.swap_keeping_untranslated(text.clone())?
     } else {

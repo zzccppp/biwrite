@@ -3,30 +3,13 @@
 //! its own. Every change keeps line numbers, so SyncTeX lines of the
 //! mirror PDF are lines of the composed text.
 
-use crate::project::{preamble, uncommented};
+use crate::project::uncommented;
 
 /// Where the mirror build lives, relative to the project folder.
 pub const MIRROR_DIR: &str = ".biwrite/zh";
 
 /// Where the English mirror of a Chinese document is built.
 pub const EN_MIRROR_DIR: &str = ".biwrite/en";
-
-/// Loads that already typeset Chinese.
-const CJK_SUPPORT: &[&str] = &[
-    "{ctex}",
-    "{xeCJK}",
-    "{CJK}",
-    "{CJKutf8}",
-    "{luatexja}",
-    "{ctexart}",
-    "{ctexrep}",
-    "{ctexbook}",
-    "{ctexbeamer}",
-    ",ctex}",
-    "{ctex,",
-    ",xeCJK}",
-    "{xeCJK,",
-];
 
 /// pdfTeX registers that XeTeX lacks, defined as plain counters when
 /// missing so `\pdfoutput=1` and the like do not stop the build.
@@ -37,10 +20,9 @@ const PDFTEX_GUARD: &str = "\\ifdefined\\pdfoutput\\else\\newcount\\pdfoutput\\f
 /// and dates stay as the class sets them) loaded right before
 /// `\begin{document}`, on the same line.
 pub fn with_chinese(text: &str) -> String {
-    let pre = uncommented(preamble(text));
     let mut out = String::with_capacity(text.len() + 160);
     out.push_str(PDFTEX_GUARD);
-    if CJK_SUPPORT.iter().any(|p| pre.contains(p)) {
+    if crate::cjk::supported(text) {
         out.push_str(text);
         return out;
     }

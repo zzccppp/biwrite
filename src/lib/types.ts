@@ -95,6 +95,17 @@ export interface SavedView {
   mirror: MirrorSaved | null;
 }
 
+/** A paper saved, or its translation exported, into a new folder with its files. */
+export interface ProjectCopy {
+  folder: string;
+  /** Files copied besides the ones written from the editor. */
+  copied: number;
+  /** Files too far above the paper's folder to take along. */
+  leftOut: string[];
+  saved: SavedView | null;
+  exported: string | null;
+}
+
 /** Result of a bilingual export. */
 export interface ExportView {
   name: string;

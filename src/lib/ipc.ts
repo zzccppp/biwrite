@@ -25,6 +25,7 @@ import type {
   Mode,
   PdfBox,
   PdfLang,
+  ProjectCopy,
   ProjectView,
   PromptView,
   ProviderConfig,
@@ -51,6 +52,9 @@ export const ipc = {
   // `document` (Snapshot.document) says which document `text` is for.
   saveFile: (text: string, document: number) => invoke<SavedView | null>("save_file", { text, document }),
   saveFileAs: (text: string, document: number) => invoke<SavedView | null>("save_file_as", { text, document }),
+  /** Save As into a new folder with the files the paper builds with. `title` heads the folder dialog. */
+  saveProjectAs: (text: string, document: number, title: string) =>
+    invoke<ProjectCopy | null>("save_project_as", { text, document, title }),
   /** `null`: the text was for a document replaced meanwhile, and was dropped. */
   updateDocument: (text: string, document: number) =>
     invoke<Snapshot | null>("update_document", { text, document }),
@@ -164,6 +168,9 @@ export const latexIpc = {
   savePdf: (lang: PdfLang) => invoke<string | null>("latex_save_pdf", { lang }),
   /** Save the Chinese version as a .tex that compiles on its own. */
   exportTex: (text: string, document: number) => invoke<string | null>("latex_export_tex", { text, document }),
+  /** The same, into a new folder with the files the paper builds with. */
+  exportProject: (text: string, document: number, title: string) =>
+    invoke<ProjectCopy | null>("latex_export_project", { text, document, title }),
   inverse: (
     lang: PdfLang,
     page: number,

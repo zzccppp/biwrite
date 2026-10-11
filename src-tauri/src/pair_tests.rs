@@ -145,7 +145,7 @@ async fn round_trip(dir: &Path, en_path: &Path, zh_path: &Path) {
     assert_eq!(changed_units(&zh, &zh_after), vec![unit]);
 
     // Swap: edit the Chinese, and only the linked English paragraph changes.
-    let view = pairing::swap(&state, edited.clone()).unwrap();
+    let view = pairing::swap(&state, edited.clone(), false).unwrap();
     assert_eq!(view.text, zh_after);
     assert_eq!(state.engine.direction(), Direction::ZhEn);
     settle(&state).await;
@@ -244,7 +244,7 @@ async fn swapping_a_pair_keeps_its_unsaved_edits_unsaved() {
     state.engine.update(edited.clone());
     state.file().dirty = true; // as the editor reports it
     settle(&state).await;
-    let view = pairing::swap(&state, edited.clone()).unwrap();
+    let view = pairing::swap(&state, edited.clone(), false).unwrap();
     assert!(view.dirty, "the English edit is not on disk");
     // The editor now holds the untouched Chinese file and reports it clean.
     state.file().dirty = false;
@@ -503,7 +503,7 @@ async fn swapping_refuses_a_paired_file_changed_on_disk() {
     open_pair(&state, &en_path, &zh_path);
     settle(&state).await;
     std::fs::write(&zh_path, ZH.replace("准备表格", "整理表格")).unwrap();
-    let Err(err) = pairing::swap(&state, EN.into()) else {
+    let Err(err) = pairing::swap(&state, EN.into(), false) else {
         panic!("swapped onto a file changed elsewhere");
     };
     assert!(err.to_string().contains("changed on disk"), "{err}");

@@ -379,3 +379,339 @@ async fn a_pdf_built_elsewhere_without_synctex_gets_it() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// xdvipdfmx gives up on an EPS image it cannot convert (as when the app
+/// could not find Ghostscript) after writing only the first bytes of the
+/// PDF. The PDF that was there before stays, byte for byte, and the build
+/// says so.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_build_that_breaks_its_pdf_keeps_the_previous_one() {
+    let tc = toolchain().await;
+    if !tc.has(Engine::Xelatex) {
+        return;
+    }
+    let dir = scratch("keep-pdf");
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = |figure: &str| {
+        format!(
+            "\\documentclass{{article}}\n\\usepackage{{graphicx}}\n\\begin{{document}}\n\
+             A paragraph to keep.\n{figure}\n\\end{{document}}\n"
+        )
+    };
+    std::fs::write(dir.join("main.tex"), doc("")).unwrap();
+    let first = compile(&tc, &job(&dir, "main.tex", Engine::Xelatex))
+        .await
+        .unwrap();
+    assert_eq!(first.outcome, Outcome::Ok, "{}", first.output);
+    let good = std::fs::read(dir.join("main.pdf")).unwrap();
+
+    // An EPS file that is not PostScript. XeLaTeX takes its bounding box,
+    // and xdvipdfmx cannot convert it.
+    std::fs::write(
+        dir.join("broken.eps"),
+        "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 20 20\nthis is not postscript (\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.tex"), doc("\\includegraphics{broken.eps}")).unwrap();
+    let broken = compile(&tc, &job(&dir, "main.tex", Engine::Xelatex))
+        .await
+        .unwrap();
+    assert_ne!(broken.outcome, Outcome::Ok, "{}", broken.output);
+    assert_eq!(
+        std::fs::read(dir.join("main.pdf")).unwrap(),
+        good,
+        "the PDF was replaced"
+    );
+    assert!(broken.stale, "the PDF on show is the previous one");
+    assert!(
+        broken
+            .issues
+            .iter()
+            .any(|i| i.message.contains("previous PDF is kept")),
+        "{:?}",
+        broken.issues
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A run that failed while writing the PDF left only its first bytes, and
+/// latexmk, the sources unchanged, would call that up to date. The next
+/// build writes the whole PDF again.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn an_unfinished_pdf_is_built_again() {
+    let tc = toolchain().await;
+    if !tc.latexmk {
+        return;
+    }
+    let dir = scratch("unfinished");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nA paragraph.\n\\end{document}\n",
+    )
+    .unwrap();
+    let first = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    assert_eq!(first.outcome, Outcome::Ok, "{}", first.output);
+    // What xdvipdfmx leaves when it stops early, the header alone.
+    std::fs::write(dir.join("main.pdf"), b"%PDF-1.5\n%\xe4\xf0\xed\xf8\n").unwrap();
+    let again = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    assert_eq!(again.outcome, Outcome::Ok, "{}", again.output);
+    assert!(!again.stale, "built again");
+    let pdf = std::fs::read(dir.join("main.pdf")).unwrap();
+    assert!(
+        pdf.len() > 1024 && pdf.ends_with(b"%%EOF\n"),
+        "{} bytes",
+        pdf.len()
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Every file under `dir` with its bytes, to see that a build changed none.
+fn sources(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out: Vec<(PathBuf, Vec<u8>)> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "tex"))
+        .map(|p| {
+            let bytes = std::fs::read(&p).unwrap();
+            (p, bytes)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// A paper in English with Chinese in its title, a heading, a paragraph,
+/// bold and italics, and no package for Chinese. It builds with each
+/// engine, Latin text keeps the document's fonts, no file changes, and a
+/// click on the Chinese paragraph finds its line.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn mixed_chinese_and_english_papers_build() {
+    let tc = toolchain().await;
+    let cases = [
+        (
+            "pdf",
+            Engine::Pdflatex,
+            "\\usepackage[T1]{fontenc}\n\\usepackage{times}\n\\usepackage{hyperref}\n",
+        ),
+        (
+            "xe",
+            Engine::Xelatex,
+            "\\usepackage{fontspec}\n\\usepackage{hyperref}\n",
+        ),
+        ("lua", Engine::Lualatex, "\\usepackage{fontspec}\n"),
+    ];
+    for (name, engine, preamble) in cases {
+        if !tc.has(engine) {
+            continue;
+        }
+        let dir = scratch(&format!("mixed-{name}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = format!(
+            "\\documentclass{{article}}\n{preamble}\\title{{Mixed 中文标题}}\n\\author{{Author 作者}}\n\\begin{{document}}\n\\maketitle\n\\section{{Method 方法}}\nEnglish text, then 中文段落，带标点。\\textbf{{粗体中文}} and \\textit{{斜体中文}}.\n\nAn English paragraph.\n\\end{{document}}\n"
+        );
+        std::fs::write(dir.join("main.tex"), &text).unwrap();
+        let before = sources(&dir);
+        let built = compile(&tc, &job(&dir, "main.tex", engine)).await.unwrap();
+        eprintln!(
+            "{name}: {:?} in {} ms with {}, issues {:?}",
+            built.outcome, built.duration_ms, built.tool, built.issues
+        );
+        assert_eq!(built.outcome, Outcome::Ok, "{name}: {}", built.output);
+        assert!(built.tool.ends_with("+ CJK"), "{name}: {}", built.tool);
+        assert!(
+            built.issues.iter().all(|i| i.severity != Severity::Error),
+            "{name}: {:?}",
+            built.issues
+        );
+        let log = std::fs::read_to_string(dir.join("main.log")).unwrap();
+        assert!(
+            !log.contains("Missing character") && !log.contains("Unicode character"),
+            "{name}: characters left out"
+        );
+        if engine == Engine::Pdflatex {
+            // The Chinese font's other shapes come without a warning, and
+            // the title keeps to one line.
+            assert!(
+                built.issues.iter().all(|i| i.severity == Severity::Box),
+                "{name}: {:?}",
+                built.issues
+            );
+            // The font files pdfTeX embedded, as its log lists them.
+            assert!(log.contains("gbsnu"), "{name}: no Chinese font");
+            assert!(log.contains("utmr8a"), "{name}: Times replaced");
+        }
+        assert_eq!(sources(&dir), before, "{name}: a file changed");
+
+        let pdf = built.pdf.unwrap();
+        let line = text
+            .lines()
+            .position(|l| l.starts_with("English text"))
+            .unwrap() as u32
+            + 1;
+        let boxes = synctex::forward(&tc, &pdf, &dir.join("main.tex"), line, 0)
+            .await
+            .unwrap();
+        assert!(!boxes.is_empty(), "{name}: no box for the mixed line");
+        let b = &boxes[0];
+        let point = synctex::inverse(&tc, &pdf, b.page, b.left + 10.0, b.top + b.height / 2.0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(point.file.file_name().unwrap(), "main.tex", "{name}");
+        assert_eq!(point.line, line, "{name}");
+
+        // Built again unchanged, still with the support.
+        let again = compile(&tc, &job(&dir, "main.tex", engine)).await.unwrap();
+        assert_eq!(again.outcome, Outcome::Ok, "{name}: {}", again.output);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// A mixed paper whose last build, made without the support, failed and
+/// wrote no PDF. latexmk takes it for done, and the build with the support
+/// runs anyway.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_mixed_paper_that_failed_before_builds() {
+    let tc = toolchain().await;
+    if !tc.latexmk {
+        return;
+    }
+    let dir = scratch("mixed-failed");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nEnglish, then 中文。\n\\end{document}\n",
+    )
+    .unwrap();
+    // The author's own build without the support stops at the Chinese.
+    let path = format!(
+        "{}:{}",
+        tc.bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let _ = std::process::Command::new(tc.tool("latexmk"))
+        .args(["-pdf", "-interaction=nonstopmode", "main.tex"])
+        .current_dir(&dir)
+        .env("PATH", path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(dir.join("main.log"))
+            .unwrap()
+            .contains("Unicode character"),
+        "the outside build should fail"
+    );
+    let built = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    assert_eq!(built.outcome, Outcome::Ok, "{}", built.output);
+    assert!(built.tool.ends_with("+ CJK"), "{}", built.tool);
+    // Nothing changed since, so nothing is left to do.
+    let again = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    assert_eq!(again.outcome, Outcome::Ok, "{}", again.output);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Chinese the scan cannot see (in a file named through a macro) shows in
+/// the log, and the build is made again with the support.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn chinese_in_a_file_named_by_a_macro_is_found_in_the_log() {
+    let tc = toolchain().await;
+    let dir = scratch("mixed-macro");
+    std::fs::create_dir_all(dir.join("sections")).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "\\documentclass{article}\n\\newcommand{\\secdir}{sections}\n\\begin{document}\nEnglish.\n\n\\input{\\secdir/intro}\n\\end{document}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("sections/intro.tex"), "中文段落。\n").unwrap();
+    let built = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    eprintln!(
+        "{:?} with {}: {:?}",
+        built.outcome, built.tool, built.issues
+    );
+    assert_eq!(built.outcome, Outcome::Ok, "{}", built.output);
+    assert!(built.tool.ends_with("+ CJK"), "{}", built.tool);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A Chinese paper without a Chinese package builds with pdfLaTeX, and a
+/// paper with one is built as it is.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn chinese_papers_build_with_or_without_their_own_support() {
+    let tc = toolchain().await;
+    let dir = scratch("zh-plain");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\n\\section{引言}\n本文研究表格数据清洗中的行级修复问题，引用 English terms 也可以。\n\\end{document}\n",
+    )
+    .unwrap();
+    let built = compile(&tc, &job(&dir, "main.tex", Engine::Pdflatex))
+        .await
+        .unwrap();
+    assert_eq!(built.outcome, Outcome::Ok, "{}", built.output);
+    assert!(built.tool.ends_with("+ CJK"), "{}", built.tool);
+
+    std::fs::write(
+        dir.join("own.tex"),
+        "\\documentclass{article}\n\\usepackage[UTF8]{ctex}\n\\begin{document}\n本文 with English.\n\\end{document}\n",
+    )
+    .unwrap();
+    let own = compile(&tc, &job(&dir, "own.tex", Engine::Xelatex))
+        .await
+        .unwrap();
+    assert_eq!(own.outcome, Outcome::Ok, "{}", own.output);
+    assert!(!own.tool.contains("CJK"), "{}", own.tool);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A real paper with Chinese in its English text, in the state its folder
+/// is in (earlier failed builds included), builds without errors.
+/// `BIWRITE_MIXED_PAPER` names its main file in a copy.
+#[tokio::test]
+#[ignore = "needs BIWRITE_MIXED_PAPER and a TeX distribution"]
+async fn a_real_mixed_paper_builds() {
+    let tc = toolchain().await;
+    let main = PathBuf::from(std::env::var("BIWRITE_MIXED_PAPER").unwrap());
+    let dir = main.parent().unwrap().to_path_buf();
+    let rel = main.file_name().unwrap().to_string_lossy().into_owned();
+    let text = std::fs::read_to_string(&main).unwrap();
+    let built = compile(&tc, &job(&dir, &rel, engine_for(&text)))
+        .await
+        .unwrap();
+    let errors: Vec<_> = built
+        .issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .collect();
+    eprintln!(
+        "{:?} in {} ms with {}: {errors:?}",
+        built.outcome, built.duration_ms, built.tool
+    );
+    assert_eq!(built.outcome, Outcome::Ok, "{}", built.output);
+    assert!(built.tool.ends_with("+ CJK"), "{}", built.tool);
+    assert_eq!(
+        std::fs::read_to_string(&main).unwrap(),
+        text,
+        "the file changed"
+    );
+}

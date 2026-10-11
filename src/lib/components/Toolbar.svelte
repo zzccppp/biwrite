@@ -21,6 +21,10 @@
     onopen: () => void;
     onsave: () => void;
     onsaveas: () => void;
+    /** Save As into a new folder with the files the paper builds with. */
+    onsaveproject: () => void;
+    /** Save As offers both (a saved .tex file). */
+    saveAsChoice: boolean;
     onexport: () => void;
     onmode: (mode: Mode) => void;
     onretranslate: () => void;
@@ -57,6 +61,8 @@
     onopen,
     onsave,
     onsaveas,
+    onsaveproject,
+    saveAsChoice,
     onexport,
     onmode,
     onretranslate,
@@ -83,6 +89,30 @@
 
   let allOpen = $state(false);
   let allMenu = $state<HTMLElement>();
+  let saveOpen = $state(false);
+  let saveMenu = $state<HTMLElement>();
+
+  function chooseSave(action: () => void): void {
+    saveOpen = false;
+    action();
+  }
+
+  // The Save As menu closes on a click elsewhere or Escape.
+  $effect(() => {
+    if (!saveOpen) return;
+    const click = (e: MouseEvent) => {
+      if (saveMenu && !saveMenu.contains(e.target as Node)) saveOpen = false;
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") saveOpen = false;
+    };
+    window.addEventListener("mousedown", click, true);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      window.removeEventListener("mousedown", click, true);
+      window.removeEventListener("keydown", key, true);
+    };
+  });
 
   function choose(action: () => void): void {
     allOpen = false;
@@ -131,10 +161,39 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5v3h5v-3M5 13.5v-4h6v4" /></svg>
       <span class="smallcaps">{t("common.save")}</span>
     </button>
-    <button class="tool secondary" onclick={onsaveas} title={t("toolbar.saveAsTitle", { mod })}>
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5v3h5v-3M8 8.5v4M6 10.5h4" /></svg>
-      <span class="smallcaps">{t("toolbar.saveAs")}</span>
-    </button>
+    {#if saveAsChoice}
+      <div class="menu-host" bind:this={saveMenu}>
+        <button
+          class="tool secondary saveas"
+          class:on={saveOpen}
+          onclick={() => (saveOpen = !saveOpen)}
+          aria-haspopup="menu"
+          aria-expanded={saveOpen}
+          title={t("toolbar.saveAsTitle", { mod })}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5v3h5v-3M8 8.5v4M6 10.5h4" /></svg>
+          <span class="smallcaps">{t("toolbar.saveAs")}</span>
+          <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5 8 10l3.5-3.5" /></svg>
+        </button>
+        {#if saveOpen}
+          <div class="menu from-left" role="menu">
+            <button role="menuitem" onclick={() => chooseSave(onsaveas)}>
+              <span class="item">{t("toolbar.saveAsTex")}</span>
+              <span class="hint">{t("toolbar.saveAsTexHint")}</span>
+            </button>
+            <button role="menuitem" class="saveproject" onclick={() => chooseSave(onsaveproject)}>
+              <span class="item">{t("toolbar.saveAsProject")}</span>
+              <span class="hint">{t("toolbar.saveAsProjectHint")}</span>
+            </button>
+          </div>
+        {/if}
+      </div>
+    {:else}
+      <button class="tool secondary saveas" onclick={onsaveas} title={t("toolbar.saveAsTitle", { mod })}>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5v3h5v-3M8 8.5v4M6 10.5h4" /></svg>
+        <span class="smallcaps">{t("toolbar.saveAs")}</span>
+      </button>
+    {/if}
     <button class="tool secondary" onclick={onexport} title={t("toolbar.exportTitle")}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2.5M5.5 5 8 2.5 10.5 5M3 9v4.5h10V9" /></svg>
       <span class="smallcaps">{t("toolbar.export")}</span>
@@ -557,6 +616,10 @@
   }
   .menu-host {
     position: relative;
+  }
+  .menu.from-left {
+    right: auto;
+    left: 0;
   }
   .menu {
     position: absolute;

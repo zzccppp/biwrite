@@ -42,7 +42,7 @@ pub fn translator_for(
 ) -> Result<Built, CommandError> {
     if entry.config.kind == ProviderKind::Mock {
         return Ok(Built {
-            translator: Arc::new(MockTranslator::default()),
+            translator: Arc::new(MockTranslator::for_documents()),
             http: None,
         });
     }

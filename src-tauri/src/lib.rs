@@ -10,6 +10,7 @@ mod latex_sync;
 mod log_commands;
 mod logging;
 mod pairing;
+mod project_copy;
 mod provider_state;
 mod request_log;
 mod secrets;
@@ -32,6 +33,8 @@ mod leak_tests;
 mod pair_tests;
 #[cfg(test)]
 mod pdf_click_tests;
+#[cfg(test)]
+mod project_copy_tests;
 #[cfg(test)]
 mod upgrade_tests;
 #[cfg(test)]
@@ -162,6 +165,7 @@ pub fn run() {
             commands::open_file,
             commands::save_file,
             commands::save_file_as,
+            project_copy::save_project_as,
             commands::update_document,
             commands::set_mode,
             commands::retranslate_segment,
@@ -229,6 +233,7 @@ pub fn run() {
             latex_commands::latex_reveal_pdf,
             latex_commands::latex_save_pdf,
             latex_commands::latex_export_tex,
+            project_copy::latex_export_project,
             latex_commands::latex_inverse,
             latex_commands::latex_forward,
             latex_commands::latex_locate,
@@ -279,7 +284,7 @@ fn initial_translator(
         |e| {
             log::warn!("provider unavailable ({e}); using the mock translator");
             Built {
-                translator: Arc::new(MockTranslator::default()),
+                translator: Arc::new(MockTranslator::for_documents()),
                 http: None,
             }
         },

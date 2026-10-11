@@ -4,6 +4,8 @@
 //! a compilable document. No Tauri dependency, so all of it is testable
 //! with `cargo test`.
 
+pub mod bundle;
+pub mod cjk;
 pub mod compile;
 pub mod locate;
 pub mod log;
@@ -14,6 +16,7 @@ pub mod synctex;
 pub mod templates;
 pub mod toolchain;
 
+pub use bundle::{Bundle, bundle, copy_bundle};
 pub use compile::{CompileError, Compiled, Job, Outcome, compile};
 pub use locate::{find_words, locate};
 pub use log::{Issue, Severity};

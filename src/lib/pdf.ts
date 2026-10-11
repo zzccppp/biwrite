@@ -22,11 +22,16 @@ function asset(dir: string): string {
   return new URL(`/pdfjs/${dir}/`, window.location.href).href;
 }
 
+/** One worker for every document, so opening a PDF starts none. */
+let worker: InstanceType<PdfJs["PDFWorker"]> | null = null;
+
 /** Open a PDF from its bytes. */
 export async function openPdf(bytes: ArrayBuffer): Promise<PDFDocumentProxy> {
-  const { getDocument } = await pdfjs();
+  const { getDocument, PDFWorker } = await pdfjs();
+  worker ??= new PDFWorker();
   return getDocument({
     data: new Uint8Array(bytes),
+    worker,
     cMapUrl: asset("cmaps"),
     cMapPacked: true,
     standardFontDataUrl: asset("standard_fonts"),

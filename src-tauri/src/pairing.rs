@@ -362,6 +362,13 @@ struct Plan {
     /// The open document's segments now.
     present: HashSet<SegmentId>,
     left_out: usize,
+    /// Paragraphs put into the mirror as they are, their translation not
+    /// there yet (`keep`).
+    kept: HashSet<SegmentId>,
+    /// Mirror units whose paragraph left the document and came back under a
+    /// new id with the unit's own text as its translation (a paragraph
+    /// filled in after an early swap): unit → the new segment.
+    relinked: HashMap<usize, SegmentId>,
 }
 
 /// Where a new paragraph goes in the mirror: next to one of its units.
@@ -385,8 +392,10 @@ enum Wait {
 /// aside): right after or before that one's counterpart, so it lands in
 /// the same place, inside a list or around the whole body alike. New
 /// headings, captions, list items and paragraphs with no such neighbour
-/// are left out (`left_out`), to be added by hand.
-fn plan(state: &AppState, pair: &PairState, saved: Option<&str>) -> Result<Plan, Wait> {
+/// are left out (`left_out`), to be added by hand. With `keep`, a
+/// paragraph whose translation is not there yet goes into the mirror as it
+/// is (`kept`) instead of making the plan wait.
+fn plan(state: &AppState, pair: &PairState, saved: Option<&str>, keep: bool) -> Result<Plan, Wait> {
     let mode = state.engine.mode();
     let (text, current) = state.engine.text_and_translations();
     if saved.is_some_and(|saved| saved != text) {
@@ -396,7 +405,7 @@ fn plan(state: &AppState, pair: &PairState, saved: Option<&str>) -> Result<Plan,
         .iter()
         .filter(|(id, t)| t.is_none() && !pair.unpaired.contains(id))
         .count();
-    if pending > 0 {
+    if pending > 0 && !keep {
         return Err(Wait::Pending(pending));
     }
     let ua = units(&text, mode);
@@ -446,12 +455,35 @@ fn plan(state: &AppState, pair: &PairState, saved: Option<&str>) -> Result<Plan,
         None
     };
     let present: HashSet<SegmentId> = current.iter().map(|(id, _)| *id).collect();
+    // Units whose paragraph left the document, by their text. A paragraph
+    // filled in after an early swap gets a new id, and its translation is
+    // exactly such a unit's text, so it takes that unit's place.
+    let mut vacated: HashMap<&str, usize> = HashMap::new();
+    for (id, &unit) in &pair.links {
+        if !present.contains(id)
+            && let Some(u) = ub.get(unit)
+        {
+            vacated.entry(&pair.text[u.content.clone()]).or_insert(unit);
+        }
+    }
+    let mut relinked: HashMap<usize, SegmentId> = HashMap::new();
     let mut edits = Vec::new();
     let mut tags = HashMap::new();
     let mut left_out = 0;
+    let mut kept = HashSet::new();
     for (k, (id, translation)) in current.iter().enumerate() {
-        let Some(translation) = translation.clone() else {
-            continue;
+        let translation = match translation {
+            Some(translation) => translation.clone(),
+            // Swapping now, the paragraph goes over as it is and is put in
+            // the other language once its translation arrives.
+            None if keep && !pair.unpaired.contains(id) => {
+                let Some(unit) = ua.get(k) else {
+                    continue;
+                };
+                kept.insert(*id);
+                text[unit.content.clone()].to_owned()
+            }
+            None => continue,
         };
         if let Some(&unit) = pair.links.get(id) {
             let now = ub.get(unit).map(|u| &pair.text[u.content.clone()]);
@@ -464,6 +496,10 @@ fn plan(state: &AppState, pair: &PairState, saved: Option<&str>) -> Result<Plan,
             continue;
         }
         if pair.unpaired.contains(id) {
+            continue;
+        }
+        if let Some(unit) = vacated.remove(translation.as_str()) {
+            relinked.insert(unit, *id);
             continue;
         }
         let tag = id.0;
@@ -486,7 +522,7 @@ fn plan(state: &AppState, pair: &PairState, saved: Option<&str>) -> Result<Plan,
         tags.insert(tag, *id);
     }
     for (id, unit) in &pair.links {
-        if !present.contains(id) {
+        if !present.contains(id) && !relinked.contains_key(unit) {
             edits.push(Edit::Delete { unit: *unit });
         }
     }
@@ -495,6 +531,8 @@ fn plan(state: &AppState, pair: &PairState, saved: Option<&str>) -> Result<Plan,
         tags,
         present,
         left_out,
+        kept,
+        relinked,
     })
 }
 
@@ -506,6 +544,8 @@ pub enum Patched {
         links: HashMap<SegmentId, usize>,
         changed: usize,
         left_out: usize,
+        /// Paragraphs of the open document put in as they are (`keep`).
+        kept: HashSet<SegmentId>,
     },
     /// Paragraphs whose translation is on its way.
     Pending(usize),
@@ -516,9 +556,10 @@ pub enum Patched {
 }
 
 /// The mirror patched with the document's translations; with `saved`, only
-/// while the document's text is that.
-pub fn patched(state: &AppState, pair: &PairState, saved: Option<&str>) -> Patched {
-    let plan = match plan(state, pair, saved) {
+/// while the document's text is that. With `keep`, paragraphs whose
+/// translation is on its way go in as they are (see [`plan`]).
+pub fn patched(state: &AppState, pair: &PairState, saved: Option<&str>, keep: bool) -> Patched {
+    let plan = match plan(state, pair, saved, keep) {
         Ok(plan) => plan,
         Err(Wait::Pending(pending)) => return Patched::Pending(pending),
         Err(Wait::Moved) => return Patched::Moved,
@@ -526,18 +567,26 @@ pub fn patched(state: &AppState, pair: &PairState, saved: Option<&str>) -> Patch
     let changed = plan.edits.len();
     let left_out = plan.left_out;
     if plan.edits.is_empty() {
+        let mut links = pair.links.clone();
+        for (&unit, &id) in &plan.relinked {
+            links.retain(|_, u| *u != unit);
+            links.insert(id, unit);
+        }
         return Patched::Ready {
             text: pair.text.clone(),
-            links: pair.links.clone(),
+            links,
             changed,
             left_out,
+            kept: plan.kept,
         };
     }
     let Some((text, origin)) = patch_checked(&pair.text, state.engine.mode(), &plan.edits) else {
         log::warn!("the paired file would change structure; not patched");
         return Patched::Unsafe;
     };
-    let by_unit: HashMap<usize, SegmentId> = pair.links.iter().map(|(id, u)| (*u, *id)).collect();
+    let mut by_unit: HashMap<usize, SegmentId> =
+        pair.links.iter().map(|(id, u)| (*u, *id)).collect();
+    by_unit.extend(plan.relinked.iter().map(|(u, id)| (*u, *id)));
     let mut links = HashMap::new();
     for (k, o) in origin.iter().enumerate() {
         let id = match o {
@@ -553,6 +602,7 @@ pub fn patched(state: &AppState, pair: &PairState, saved: Option<&str>) -> Patch
         links,
         changed,
         left_out,
+        kept: plan.kept,
     }
 }
 
@@ -573,12 +623,13 @@ pub async fn save_mirror(state: &AppState) -> CommandResult<Option<MirrorSaved>>
             return Ok(None);
         };
         let mut saved = MirrorSaved::new(display_name(Some(&pair.path)));
-        match patched(state, pair, Some(fs.file.text())) {
+        match patched(state, pair, Some(fs.file.text()), false) {
             Patched::Ready {
                 text,
                 links,
                 changed,
                 left_out,
+                ..
             } => {
                 saved.left_out = left_out;
                 if text == pair.file.text() && pair.exists {
@@ -712,12 +763,13 @@ pub async fn save_mirror_as(state: &AppState, dest: PathBuf) -> CommandResult<Op
         };
         let mut saved = MirrorSaved::new(display_name(Some(&dest)));
         // Paragraphs still on their way (or that don't fit) follow later.
-        let (text, links, behind) = match patched(state, pair, Some(fs.file.text())) {
+        let (text, links, behind) = match patched(state, pair, Some(fs.file.text()), false) {
             Patched::Ready {
                 text,
                 links,
                 changed,
                 left_out,
+                ..
             } => {
                 saved.changed = changed;
                 saved.left_out = left_out;
@@ -861,10 +913,13 @@ pub async fn write_mirror(state: tauri::State<'_, AppState>) -> CommandResult<Op
 }
 
 /// Swap in a pair: the mirror (with the current translations) becomes the
-/// edited document and the edited text becomes the mirror.
+/// edited document and the edited text becomes the mirror. With `keep`, a
+/// paragraph whose translation is not there yet goes over as it is and is
+/// put in the newly edited language once its translation arrives, as in an
+/// early swap without a pair. Until then saving writes it as it is.
 ///
 /// The engine holds `text` already ([`AppState::sync_text`]).
-pub fn swap(state: &AppState, text: String) -> CommandResult<SessionView> {
+pub fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<SessionView> {
     let mode = state.engine.mode();
     // The mirror becomes the edited document and is saved as such: not
     // over changes made to it elsewhere.
@@ -883,11 +938,13 @@ pub fn swap(state: &AppState, text: String) -> CommandResult<SessionView> {
             display_name(Some(&mirror_path))
         )));
     }
-    let (new_text, links) = {
+    let (new_text, links, kept) = {
         let fs = state.file();
         let pair = fs.pair.as_ref().ok_or_else(|| fail("no pair"))?;
-        match patched(state, pair, None) {
-            Patched::Ready { text, links, .. } => (text, links),
+        match patched(state, pair, None, keep) {
+            Patched::Ready {
+                text, links, kept, ..
+            } => (text, links, kept),
             Patched::Moved => return Err(biwrite_engine::EngineError::Stale.into()),
             Patched::Pending(pending) => {
                 return Err(fail(format!(
@@ -924,10 +981,19 @@ pub fn swap(state: &AppState, text: String) -> CommandResult<SessionView> {
             }
         }
     }
+    // The paragraphs that went over as they are, as segments of the new
+    // document, to be filled in once translated.
+    let fill: Vec<usize> = kept
+        .iter()
+        .filter_map(|id| links.get(id))
+        .filter_map(|&j| ub.get(j))
+        .map(|u| u.segment)
+        .collect();
     let direction = state.engine.direction().flipped();
-    let new_snapshot = state
-        .engine
-        .load_known(new_text.clone(), mode, direction, known);
+    let new_snapshot =
+        state
+            .engine
+            .load_known_filling(new_text.clone(), mode, direction, known, &fill);
     let new_ids: Vec<SegmentId> = new_snapshot.layout.iter().map(|s| s.id).collect();
     let new_unit_ids: Vec<SegmentId> = ub
         .iter()

@@ -43,6 +43,8 @@ const PARAMS = new URLSearchParams(window.location.search);
 const LATEX = PARAMS.has("latex");
 /** `pending=N`: the last N paragraphs are still being translated. */
 const PENDING = Number(PARAMS.get("pending") ?? 0);
+/** With `failed=N` the last N paragraphs failed to translate (the provider answered with errors). */
+const FAILED = Number(PARAMS.get("failed") ?? 0);
 /** `zhfile`: the sample paper's Chinese version is the open file. */
 const ZH_FILE = PARAMS.has("zhfile") && LATEX;
 /** `wrong`: that Chinese file was taken for English. */
@@ -96,11 +98,22 @@ const state = {
   home: (ZH_FILE && !WRONG ? "zh-en" : "en-zh") as "en-zh" | "zh-en",
   /** Blocks still being translated (indices into the layout). */
   pending: new Set<number>(LATEX ? paragraphIndices().slice(-PENDING || paragraphIndices().length) : []),
+  /** Blocks whose translation failed, which never finish by themselves. */
+  failed: new Set<number>(LATEX && FAILED > 0 ? paragraphIndices().slice(-FAILED) : []),
   /** Blocks left in English by an early swap, filled in later. */
   kept: new Set<number>(),
+  /** `keep` of each swap asked for, in order. */
+  swaps: [] as boolean[],
+  /** PDFs read, per language, and clicks in a PDF looked up. */
+  pdfReads: { en: 0, zh: 0 },
+  inverse: 0,
   text: ZH_FILE ? "" : LATEX ? PAPER : SAMPLE,
   /** Paired with paper_zh.tex through the import button. */
   paired: false,
+  /** Saves asked for (Save, Save As), the only writes of the document. */
+  saves: 0,
+  /** Copies into a new folder asked for, with the dialog's title. */
+  projectCopies: [] as { kind: "save" | "export"; title: string }[],
   revision: 1,
   version: 1,
   nextRecord: 1,
@@ -238,14 +251,15 @@ function snapshot(full = true): Snapshot {
       offered ??
       (chineseSource ? (EN_BLOCKS[index] ?? source) : ((LATEX ? sampleChinese(source) : null) ?? fakeChinese(source)));
     const waiting = !chineseSource && state.pending.has(index);
+    const failed = !skipped && !chineseSource && state.failed.has(index);
     const filling = chineseSource && state.kept.has(index);
     return {
       id: s.id,
       version: state.version++,
-      status: skipped ? "skipped" : waiting || filling ? "translating" : "translated",
-      text: skipped || waiting ? null : shown,
+      status: skipped ? "skipped" : failed ? "error" : waiting || filling ? "translating" : "translated",
+      text: skipped || waiting || failed ? null : shown,
       partial: false,
-      error: null,
+      error: failed ? "provider server error (HTTP 500)" : null,
     };
   });
   return {
@@ -562,6 +576,16 @@ const handlers: Record<string, (args: Args) => unknown> = {
   },
   latex_cancel: () => null,
   latex_export_tex: () => "/Users/me/papers/gnn-icl/paper_zh.tex",
+  latex_export_project: (a) => {
+    state.projectCopies.push({ kind: "export", title: String(a.title) });
+    return {
+      folder: "/Users/me/papers/gnn-icl-copy",
+      copied: 7,
+      leftOut: [],
+      saved: null,
+      exported: "/Users/me/papers/gnn-icl-copy/paper_zh.tex",
+    };
+  },
   import_mirror: () => {
     state.paired = true;
     return session();
@@ -570,17 +594,44 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.paired = false;
     return null;
   },
+  save_file: (a) => {
+    state.saves++;
+    state.text = String(a.text);
+    const view = session();
+    return { path: view.path, name: view.name, suggestedMode: view.snapshot.mode, mirror: null };
+  },
+  save_file_as: (a) => {
+    state.saves++;
+    state.text = String(a.text);
+    const view = session();
+    return { path: view.path, name: view.name, suggestedMode: view.snapshot.mode, mirror: null };
+  },
+  save_project_as: (a) => {
+    state.saves++;
+    state.projectCopies.push({ kind: "save", title: String(a.title) });
+    state.text = String(a.text);
+    const view = session();
+    return {
+      folder: "/Users/me/papers/gnn-icl-copy",
+      copied: 7,
+      leftOut: [],
+      saved: { path: "/Users/me/papers/gnn-icl-copy/paper.tex", name: "paper.tex", suggestedMode: view.snapshot.mode, mirror: null },
+      exported: null,
+    };
+  },
   write_mirror: () => ({ name: "paper_zh.tex", written: true, pending: 0, changed: 1 }),
   export_api_keys: () => "/Users/me/Desktop/AnyRouter-keys.txt",
   import_api_keys: () => state.settings,
   swap_languages: (a) => {
+    state.swaps.push(Boolean(a.keep));
     state.direction = state.direction === "en-zh" ? "zh-en" : "en-zh";
     // A pair swaps files: the other one is edited, in its own language.
     if (state.paired) state.home = state.direction;
     if (state.direction === "zh-en" && LATEX) {
       // Swapping early keeps the untranslated paragraphs in English for now.
-      state.kept = a.keep ? new Set(state.pending) : new Set();
+      state.kept = a.keep ? new Set([...state.pending, ...state.failed]) : new Set();
       state.pending.clear();
+      state.failed.clear();
       state.text = chineseKeeping(state.kept);
       if (state.kept.size > 0) fillKept();
     } else {
@@ -611,10 +662,14 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return state.settings;
   },
   set_tray_language: () => null,
-  latex_pdf: async (a) => (await fetch(a.lang === "zh" ? "/dev/sample-zh.pdf" : "/dev/sample.pdf")).arrayBuffer(),
+  latex_pdf: async (a) => {
+    state.pdfReads[a.lang === "zh" ? "zh" : "en"]++;
+    return (await fetch(a.lang === "zh" ? "/dev/sample-zh.pdf" : "/dev/sample.pdf")).arrayBuffer();
+  },
   latex_reveal_pdf: () => null,
   latex_save_pdf: () => "/Users/me/papers/gnn-icl/paper.pdf",
   latex_inverse: (a) => {
+    state.inverse++;
     if (stalePdf(a.lang)) throw new Error("stale pdf");
     const range = sentenceOf(String(a.span ?? ""));
     return { file: "paper.tex", line: 26, here: true, range, paragraph: false };

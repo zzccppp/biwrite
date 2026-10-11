@@ -265,6 +265,10 @@ export const messages = {
   "pdf.failed": { en: "No PDF was produced.", zh: "没有生成 PDF。" },
   "pdf.timedOut": { en: "Stopped after 5 minutes.", zh: "编译超过 5 分钟，已停止。" },
   "pdf.stale": { en: "This is the last PDF that compiled.", zh: "当前显示的是上一次编译成功的 PDF。" },
+  "pdf.unsavedNotBuilt": {
+    en: "The PDF is built from the files as saved. Your unsaved changes appear in it once you save.",
+    zh: "PDF 按已保存的文件编译，未保存的修改要保存后才会出现在 PDF 里。",
+  },
   "pdf.staleNote": {
     en: "Built before the pairing or the language swap: it is built again before a click finds its place.",
     zh: "这份 PDF 编译于配对或切换语言之前，点击定位前会先重新编译。",
@@ -417,21 +421,13 @@ export const messages = {
     en: "Swapping when {n} more paragraphs are translated. Click the swap button again to swap now.",
     zh: "还有 {n} 段在翻译，译完后自动切换。再点一次切换按钮可立即切换。",
   },
-  "doc.swapWhenReadyPair": {
-    en: "Swapping when {n} more paragraphs are translated.",
-    zh: "还有 {n} 段在翻译，译完后自动切换。",
-  },
   "doc.swapBlocked": {
-    en: "{n} paragraphs could not be translated. Retry them, or click the swap button twice to swap with them as they are.",
-    zh: "有 {n} 段翻译失败。可以重试这些段落，或连点两次切换按钮，保留原文直接切换。",
+    en: "{n} paragraphs could not be translated. Retry them, or click the swap button again to swap with them as they are.",
+    zh: "有 {n} 段翻译失败。可以重试这些段落，或再点一次切换按钮，保留原文直接切换。",
   },
   "doc.swapBackWhenReady": {
-    en: "Swapping back when {n} more paragraphs are translated (click Continue if translation is paused): the file is saved in {lang}, so none can stay as they are.",
-    zh: "还有 {n} 段待翻译，译完后自动切回（若已暂停翻译，请点“继续”）。文件以{lang}保存，这些段落不能保留原样。",
-  },
-  "doc.swapBackBlocked": {
-    en: "{n} paragraphs could not be translated. Retry them or click Continue, then swap back.",
-    zh: "有 {n} 段翻译失败。请重试这些段落或点“继续”，然后再切回。",
+    en: "Swapping back when {n} more paragraphs are translated (click Continue if translation is paused). Click the swap button again to swap back now. They stay as they are and are put in {lang} once translated.",
+    zh: "还有 {n} 段待翻译，译完后自动切回（翻译已暂停时请点“继续”）。再点一次切换按钮可立即切回，这些段落先保留原样，译好后替换成{lang}。",
   },
   "doc.busySwapping": {
     en: "Swapping languages; try again in a moment.",
@@ -473,6 +469,32 @@ export const messages = {
   },
   "pdf.exportTex": { en: "Export Chinese .tex…", zh: "导出中文 .tex…" },
   "pdf.exportTexEn": { en: "Export English .tex…", zh: "导出英文 .tex…" },
+  "pdf.exportTexOnly": { en: "The .tex file only", zh: "只导出 .tex 文件" },
+  "pdf.exportProject": { en: "With the template, into a new folder", zh: "连同模板文件导出到新文件夹" },
+  "pdf.exportProjectHint": {
+    en: "The class, styles, figures and bibliography come along, so it builds there.",
+    zh: "模板、样式、图片和参考文献一起复制，在新文件夹里可以直接编译。",
+  },
+  "pdf.projectExported": {
+    en: "Exported the translation into {folder} with {n} files the paper builds with.",
+    zh: "已把译文导出到 {folder}，连同论文编译用到的 {n} 个文件。",
+  },
+  "dialog.saveProject": {
+    en: "New folder for the paper and the files it builds with",
+    zh: "新文件夹，论文和编译用到的文件会复制到这里",
+  },
+  "dialog.exportProject": {
+    en: "New folder for the translation and the files the paper builds with",
+    zh: "新文件夹，译文和论文编译用到的文件会复制到这里",
+  },
+  "doc.projectSaved": {
+    en: "Saved into {folder} with {n} files the paper builds with. Editing goes on there.",
+    zh: "已另存到 {folder}，连同论文编译用到的 {n} 个文件，之后的编辑都在新文件夹里。",
+  },
+  "doc.projectLeftOut": {
+    en: "Not copied, being more than three folders above the paper: {files}",
+    zh: "以下文件在论文文件夹上方超过三层，没有复制：{files}",
+  },
   "pdf.texExported": { en: "Saved {path}.", zh: "已导出 {path}。" },
   "keys.export": { en: "Export to file…", zh: "导出到文件…" },
   "keys.import": { en: "Import from file…", zh: "从文件导入…" },
@@ -488,6 +510,16 @@ export const messages = {
     zh: "从模板新建论文、打开 LaTeX 文件夹、管理模板",
   },
   "toolbar.saveAs": { en: "Save As", zh: "另存为" },
+  "toolbar.saveAsTex": { en: "Save as a .tex file…", zh: "另存为 .tex 文件…" },
+  "toolbar.saveAsTexHint": {
+    en: "This file only. The template, figures and bibliography stay where they are.",
+    zh: "只保存当前文件，模板、图片和参考文献留在原处。",
+  },
+  "toolbar.saveAsProject": { en: "Save with the template into a new folder…", zh: "连同模板文件另存到新文件夹…" },
+  "toolbar.saveAsProjectHint": {
+    en: "Copies the class, styles, figures and bibliography the paper builds with, so it builds in the new folder.",
+    zh: "复制论文用到的模板、样式、图片和参考文献，新文件夹里可以直接编译。",
+  },
   "toolbar.help": { en: "Guide", zh: "说明书" },
   "toolbar.helpTitle": {
     en: "The user guide (PDF), in the interface language",
@@ -606,12 +638,12 @@ export const messages = {
     zh: "正在编辑{edit}。尚未译完的 {n} 段会在后台译好后替换到左侧。",
   },
   "doc.swappedPaused.one": {
-    en: "Editing {edit}. Translation is paused, so {n} paragraph stays in {own} until you choose All, then Continue with the rest.",
-    zh: "正在编辑{edit}。自动翻译已暂停，仍有 {n} 段是{own}，可在“全部”菜单里点“继续翻译剩余段落”。",
+    en: "Editing {edit}. Translation is paused, so {n} paragraph stays in {kept} until you choose All, then Continue with the rest.",
+    zh: "正在编辑{edit}。自动翻译已暂停，仍有 {n} 段是{kept}，可在“全部”菜单里点“继续翻译剩余段落”。",
   },
   "doc.swappedPaused.many": {
-    en: "Editing {edit}. Translation is paused, so {n} paragraphs stay in {own} until you choose All, then Continue with the rest.",
-    zh: "正在编辑{edit}。自动翻译已暂停，仍有 {n} 段是{own}，可在“全部”菜单里点“继续翻译剩余段落”。",
+    en: "Editing {edit}. Translation is paused, so {n} paragraphs stay in {kept} until you choose All, then Continue with the rest.",
+    zh: "正在编辑{edit}。自动翻译已暂停，仍有 {n} 段是{kept}，可在“全部”菜单里点“继续翻译剩余段落”。",
   },
   "doc.retargetedAuto": {
     en: "This text is {lang}, so it is now translated into {other}. Saving writes it as it is.",

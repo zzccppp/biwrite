@@ -55,7 +55,8 @@ export class LatexStore {
   }
 
   /** The open document changed: its project, and builds of another project dropped. */
-  async loadProject(): Promise<void> {
+  /** Read the project of the open document. With `moved` it was saved elsewhere, so the builds are the old file's. */
+  async loadProject(moved = false): Promise<void> {
     let next: ProjectView | null = null;
     try {
       next = await latexIpc.project();
@@ -64,7 +65,7 @@ export class LatexStore {
     }
     const before = this.project;
     this.project = next;
-    if (!next || !before || before.folder !== next.folder || before.root !== next.root) {
+    if (moved || !next || !before || before.folder !== next.folder || before.root !== next.root) {
       this.builds = { en: null, zh: null };
       this.failure = { en: null, zh: null };
       this.stale = { en: false, zh: false };

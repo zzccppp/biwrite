@@ -203,7 +203,7 @@ fn rc_engine(rc: &str) -> Option<Engine> {
 }
 
 /// Arguments of `\input{..}` and `\include{..}` in `text`.
-fn inputs(text: &str) -> Vec<String> {
+pub(crate) fn inputs(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for cmd in ["\\input{", "\\include{", "\\subfile{"] {
         for (i, _) in text.match_indices(cmd) {
