@@ -415,6 +415,8 @@
     padding: 10px 16px;
     border-bottom: 1px solid var(--rule);
     gap: 18px;
+    flex-wrap: wrap;
+    row-gap: 8px;
   }
   .inline {
     display: inline-flex;
@@ -517,6 +519,10 @@
     border-top: 1px solid var(--rule);
     display: grid;
     gap: 8px;
+  }
+  footer .row {
+    flex-wrap: wrap;
+    row-gap: 6px;
   }
   .spacer {
     flex: 1;

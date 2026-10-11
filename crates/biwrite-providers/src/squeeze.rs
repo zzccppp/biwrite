@@ -226,6 +226,11 @@ impl SqueezeBoard {
         self.lock().clear();
     }
 
+    /// This key is no longer in the pool.
+    pub fn forget(&self, fingerprint: &str) {
+        self.lock().remove(fingerprint);
+    }
+
     /// The keys that got through, earliest first.
     pub fn through(&self) -> Vec<ThroughView> {
         let mut out: Vec<ThroughView> = self

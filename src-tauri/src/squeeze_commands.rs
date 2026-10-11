@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use biwrite_providers::{
     ChangeFn, HttpProvider, KEEP_ALIVE_AFTER, KeyProgress, Squeeze, SqueezeBoard, SqueezeChange,
@@ -28,7 +29,11 @@ use crate::state::AppState;
 pub const EVENT_SQUEEZE: &str = "squeeze";
 
 /// How often the keeper looks for keys to keep alive.
-const KEEP_ALIVE_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+const KEEP_ALIVE_TICK: Duration = Duration::from_secs(30);
+/// A key whose ping failed is not pinged again for this long, or for as long
+/// as the server asks, up to [`PING_WAIT_MAX`].
+const PING_RETRY: Duration = Duration::from_secs(2 * 60);
+const PING_WAIT_MAX: Duration = Duration::from_secs(10 * 60);
 
 /// Boards and running squeezes, by provider id.
 #[derive(Default)]
@@ -37,8 +42,12 @@ pub struct SqueezeState {
     /// (`ProviderEntry::squeeze_target`).
     boards: Mutex<HashMap<String, (String, Arc<SqueezeBoard>)>>,
     runs: Mutex<HashMap<String, Arc<Squeeze>>>,
-    /// The keys of a provider as last read, for the keeper.
-    keys: Mutex<HashMap<String, Vec<String>>>,
+    /// The keys of a provider as last read, for the keeper (`None`: they
+    /// could not be read, and are not read again until they change).
+    keys: Mutex<HashMap<String, Option<Vec<String>>>>,
+    /// Keys whose ping failed, by provider id and fingerprint, with the
+    /// time before which they are not pinged again.
+    ping_after: Mutex<HashMap<(String, String), Instant>>,
 }
 
 impl SqueezeState {
@@ -50,17 +59,52 @@ impl SqueezeState {
         self.runs.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn keys(&self) -> MutexGuard<'_, HashMap<String, Vec<String>>> {
+    fn keys(&self) -> MutexGuard<'_, HashMap<String, Option<Vec<String>>>> {
         self.keys.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The keys of provider `id`, if read since they last changed.
-    fn cached_keys(&self, id: &str) -> Option<Vec<String>> {
+    fn ping_after(&self) -> MutexGuard<'_, HashMap<(String, String), Instant>> {
+        self.ping_after
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The keys of provider `id` if read since they last changed: `Some(None)`
+    /// if they could not be read.
+    fn cached_keys(&self, id: &str) -> Option<Option<Vec<String>>> {
         self.keys().get(id).cloned()
     }
 
-    fn cache_keys(&self, id: &str, keys: Vec<String>) {
+    fn cache_keys(&self, id: &str, keys: Option<Vec<String>>) {
         self.keys().insert(id.to_owned(), keys);
+    }
+
+    /// Provider `id` still has the key with this fingerprint, as last read.
+    fn has_key(&self, id: &str, fingerprint: &str) -> bool {
+        self.keys()
+            .get(id)
+            .and_then(Option::as_ref)
+            .is_some_and(|keys| keys.iter().any(|k| key_fingerprint(k) == fingerprint))
+    }
+
+    /// A ping of key `fingerprint` of provider `id` ended: answered (`None`),
+    /// or failed and not to be sent again for `wait`.
+    fn pinged(&self, id: &str, fingerprint: &str, wait: Option<Duration>) {
+        let key = (id.to_owned(), fingerprint.to_owned());
+        match wait {
+            None => {
+                self.ping_after().remove(&key);
+            }
+            Some(wait) => {
+                self.ping_after().insert(key, Instant::now() + wait);
+            }
+        }
+    }
+
+    fn may_ping(&self, id: &str, fingerprint: &str) -> bool {
+        self.ping_after()
+            .get(&(id.to_owned(), fingerprint.to_owned()))
+            .is_none_or(|t| *t <= Instant::now())
     }
 
     /// The providers among `entries` with keys to keep alive: a relay that
@@ -69,7 +113,7 @@ impl SqueezeState {
     pub fn due_for_keep_alive(
         &self,
         entries: &[ProviderEntry],
-        after: std::time::Duration,
+        after: Duration,
     ) -> Vec<(ProviderEntry, Arc<SqueezeBoard>, Vec<String>)> {
         entries
             .iter()
@@ -88,6 +132,7 @@ impl SqueezeState {
                     .into_iter()
                     .map(|t| t.fingerprint)
                     .filter(|f| board.idle(f).is_some_and(|idle| idle >= after))
+                    .filter(|f| self.may_ping(&e.config.id, f))
                     .collect();
                 (!due.is_empty()).then(|| (e.clone(), board, due))
             })
@@ -114,6 +159,7 @@ impl SqueezeState {
             run.stop();
         }
         self.keys().remove(id);
+        self.ping_after().retain(|(owner, _), _| owner != id);
         let board = if entry.crowded_relay() {
             SqueezeBoard::for_relay()
         } else {
@@ -131,6 +177,7 @@ impl SqueezeState {
             board.clear();
         }
         self.keys().remove(id);
+        self.ping_after().retain(|(owner, _), _| owner != id);
         if let Some(run) = self.runs().remove(id) {
             run.stop();
         }
@@ -147,6 +194,7 @@ impl SqueezeState {
     pub fn forget(&self, id: &str) {
         self.boards().remove(id);
         self.keys().remove(id);
+        self.ping_after().retain(|(owner, _), _| owner != id);
         if let Some(run) = self.runs().remove(id) {
             run.stop();
         }
@@ -262,7 +310,7 @@ pub async fn squeeze_start(
     let account = id.clone();
     let vouched = entry.vouched();
     let keys = blocking(move || secrets::get_keys(store.as_ref(), &account, vouched)).await?;
-    state.squeeze.cache_keys(&id, keys.clone());
+    state.squeeze.cache_keys(&id, Some(keys.clone()));
     if keys.is_empty() {
         return Err(CommandError::Settings(format!(
             "No API key for “{}”. Add one in Settings.",
@@ -347,7 +395,8 @@ pub fn spawn_keeper(app: AppHandle) {
     });
 }
 
-/// Send each key due for it a short translation (see `due_for_keep_alive`).
+/// Send each key due for it a short translation (see `due_for_keep_alive`),
+/// all at once.
 async fn keep_alive(app: &AppHandle) {
     let state = app.state::<AppState>();
     let entries = {
@@ -357,20 +406,24 @@ async fn keep_alive(app: &AppHandle) {
         }
         s.providers.clone()
     };
+    let mut pings = tokio::task::JoinSet::new();
     for (entry, board, due) in state.squeeze.due_for_keep_alive(&entries, KEEP_ALIVE_AFTER) {
         let id = entry.config.id.clone();
         let keys = match state.squeeze.cached_keys(&id) {
-            Some(keys) => keys,
+            Some(Some(keys)) => keys,
+            // Not read again until they change: no keychain prompt every round.
+            Some(None) => continue,
             None => {
                 let store = state.secrets.clone();
                 let account = id.clone();
                 let vouched = entry.vouched();
                 match blocking(move || secrets::get_keys(store.as_ref(), &account, vouched)).await {
                     Ok(keys) => {
-                        state.squeeze.cache_keys(&id, keys.clone());
+                        state.squeeze.cache_keys(&id, Some(keys.clone()));
                         keys
                     }
                     Err(e) => {
+                        state.squeeze.cache_keys(&id, None);
                         log::warn!(
                             "keep-alive: the keys of {} could not be read: {e}",
                             entry.config.name
@@ -380,25 +433,57 @@ async fn keep_alive(app: &AppHandle) {
                 }
             }
         };
-        for (index, key) in keys.iter().enumerate() {
-            if !due.contains(&key_fingerprint(key)) {
+        for (index, key) in keys.into_iter().enumerate() {
+            let print = key_fingerprint(&key);
+            if !due.contains(&print) {
                 continue;
             }
-            let outcome = ping(
-                &entry.config,
-                key.clone(),
-                Arc::clone(&board),
-                state.prompts(),
-            )
-            .await;
-            match outcome {
-                Ok(()) => log::info!("kept key {} of {} alive", index + 1, entry.config.name),
-                Err(e) => log::info!(
-                    "keeping key {} of {} alive failed: {e}",
-                    index + 1,
-                    entry.config.name
-                ),
-            }
+            let (app, entry, board) = (app.clone(), entry.clone(), Arc::clone(&board));
+            pings.spawn(async move { ping_one(&app, &entry, index, key, &print, board).await });
+        }
+    }
+    while pings.join_next().await.is_some() {}
+}
+
+/// Ping key `index` of provider `entry` unless the setting, the provider or
+/// the key changed since the round started.
+async fn ping_one(
+    app: &AppHandle,
+    entry: &ProviderEntry,
+    index: usize,
+    key: String,
+    print: &str,
+    board: Arc<SqueezeBoard>,
+) {
+    let state = app.state::<AppState>();
+    let id = &entry.config.id;
+    let unchanged = {
+        let s = state.settings();
+        s.keep_alive
+            && s.provider(id)
+                .is_some_and(|e| e.squeeze_target() == entry.squeeze_target())
+    };
+    if !unchanged || !state.squeeze.has_key(id, print) || !board.is_through(print) {
+        return;
+    }
+    let outcome = ping(&entry.config, key, Arc::clone(&board), state.prompts()).await;
+    if !state.squeeze.has_key(id, print) {
+        // The key was removed meanwhile: its answer does not count.
+        board.forget(print);
+        return;
+    }
+    let name = &entry.config.name;
+    match outcome {
+        Ok(()) => {
+            state.squeeze.pinged(id, print, None);
+            log::info!("kept key {} of {name} alive", index + 1);
+        }
+        Err(e) => {
+            let wait = e
+                .retry_after()
+                .map_or(PING_RETRY, |d| d.clamp(PING_RETRY, PING_WAIT_MAX));
+            state.squeeze.pinged(id, print, Some(wait));
+            log::info!("keeping key {} of {name} alive failed: {e}", index + 1);
         }
     }
 }
@@ -454,7 +539,7 @@ mod tests {
         let relay = entry("https://anyrouter.top/v1", 6);
         let board = state.board_for(&relay).unwrap();
         board.answered("fp-a");
-        let zero = std::time::Duration::ZERO;
+        let zero = Duration::ZERO;
         assert!(
             state
                 .due_for_keep_alive(std::slice::from_ref(&relay), zero)
@@ -466,7 +551,7 @@ mod tests {
         let due = state.due_for_keep_alive(std::slice::from_ref(&relay), zero);
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].2, ["fp-a".to_owned()]);
-        let hour = std::time::Duration::from_secs(3600);
+        let hour = Duration::from_secs(3600);
         assert!(
             state
                 .due_for_keep_alive(std::slice::from_ref(&relay), hour)
@@ -488,6 +573,21 @@ mod tests {
         other.note_turned_away();
         let both = state.due_for_keep_alive(&[relay.clone(), pool.clone()], zero);
         assert_eq!(both.len(), 2);
+        // A key whose ping failed waits, an answered one does not.
+        state.pinged("p-relay", "fp-a", Some(Duration::from_secs(60)));
+        assert_eq!(
+            state
+                .due_for_keep_alive(&[relay.clone(), pool.clone()], zero)
+                .len(),
+            1
+        );
+        state.pinged("p-relay", "fp-a", None);
+        assert_eq!(
+            state
+                .due_for_keep_alive(&[relay.clone(), pool.clone()], zero)
+                .len(),
+            2
+        );
         // Keys changed: nothing through until answered again.
         state.keys_changed("p-pool");
         assert_eq!(state.due_for_keep_alive(&[relay, pool], zero).len(), 1);
