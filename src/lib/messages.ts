@@ -216,6 +216,18 @@ export const messages = {
   "assist.copied": { en: "Copied.", zh: "已复制。" },
   "assist.applied": { en: "Applied. ⌘Z undoes it.", zh: "已应用，⌘Z 可撤销。" },
   "assist.discarded": { en: "Discarded.", zh: "已放弃。" },
+  "assist.show": { en: "Show", zh: "查看" },
+  "assist.revert": { en: "Revert", zh: "还原" },
+  "assist.revertEdited": {
+    en: "The text it put in was edited since, so it was not reverted. The card shows the text from before, to copy and put back by hand.",
+    zh: "采纳后的文字已经改动过，没有自动还原。卡片里列出了采纳前的原文，可以复制后手动替换。",
+  },
+  "assist.revertEditedInsert": {
+    en: "The inserted text was edited since, so it was not taken out. Delete it by hand.",
+    zh: "插入的文字已经改动过，没有自动删除，可以手动删除这段。",
+  },
+  "assist.original": { en: "Text before", zh: "采纳前的原文" },
+  "assist.hide": { en: "Hide", zh: "收起" },
   "assist.conflict": {
     en: "The text changed after the request. Let the model bring this revision onto the current text?",
     zh: "提出修改后，这段文字又被改动过。要让模型把这次修改套用到当前文本上吗？",

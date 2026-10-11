@@ -99,6 +99,11 @@ export class AssistJob {
   applying = $state(false);
   /** Being run again (Again, Re-apply): its buttons wait for that. */
   restarting = $state(false);
+  /** What applying put in, and the package lines it added to the preamble,
+   * for Revert (kept in step with later edits like the target). */
+  applied = $state<{ text: string; packages: { from: number; to: number; text: string } | null } | null>(null);
+  /** Revert found that text edited since: the card shows the text from before. */
+  revertBlocked = $state(false);
 
   constructor(
     started: AssistStarted,
@@ -126,15 +131,21 @@ export class AssistJob {
 }
 
 /** Map a job's target through an edit. Text typed right where new text
- * goes stays before it (the new paragraph follows what the author added). */
+ * goes stays before it (the new paragraph follows what the author added).
+ * An applied job covers the text it put in, whatever its target was. */
 function mapTarget(job: AssistJob, changes: ChangeDesc): void {
-  if (job.target.insert) {
+  if (job.target.insert && job.state !== "applied") {
     job.from = job.to = changes.mapPos(job.from, 1);
     return;
   }
   if (changes.touchesRange(job.from, job.to)) job.touched = true;
   job.from = changes.mapPos(job.from, 1);
   job.to = Math.max(job.from, changes.mapPos(job.to, -1));
+  const packages = job.applied?.packages;
+  if (packages) {
+    packages.from = changes.mapPos(packages.from, 1);
+    packages.to = Math.max(packages.from, changes.mapPos(packages.to, -1));
+  }
 }
 
 export class AssistStore {
@@ -217,12 +228,13 @@ export class AssistStore {
     }
   }
 
-  /** Keep the targets of open and failed jobs (Again runs there) in step
-   * with an edit, and of jobs still being started. */
+  /** Keep the targets of the jobs of this document in step with an edit
+   * (Again, a follow-up and a click on the card go there), and of jobs
+   * still being started. */
   map(changes: ChangeDesc): void {
     for (const edits of this.#starting) edits.changes = edits.changes ? edits.changes.composeDesc(changes) : changes;
     for (const job of this.jobs) {
-      if ((!job.open && job.state !== "failed") || job.epoch !== this.epoch) continue;
+      if (job.epoch !== this.epoch) continue;
       mapTarget(job, changes);
     }
   }
@@ -241,6 +253,12 @@ export class AssistStore {
   discard(job: AssistJob): void {
     if (job.state === "running") this.cancel(job);
     job.state = "discarded";
+  }
+
+  /** Forget one finished job. */
+  remove(job: AssistJob): void {
+    if (job.open) return;
+    this.jobs = this.jobs.filter((j) => j !== job);
   }
 
   /** Forget finished jobs. */

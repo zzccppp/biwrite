@@ -2,13 +2,18 @@
   import { type AssistJob, ACTION_LABEL } from "../assist.svelte";
   import { t } from "../i18n.svelte";
   import { formatCount, formatDuration } from "../logFormat";
+  import type { AssistResult } from "../types";
 
   interface Props {
     job: AssistJob;
     /** The job's document is no longer open. */
     stale: boolean;
     onaccept: (job: AssistJob) => void;
+    /** Undo an applied job's change, wherever later edits put it. */
+    onrevert: (job: AssistJob) => void;
     ondiscard: (job: AssistJob) => void;
+    /** Take a finished card off the list. */
+    onremove: (job: AssistJob) => void;
     onagain: (job: AssistJob) => void;
     onreapply: (job: AssistJob) => void;
     onfollowup: (job: AssistJob, question: string) => void;
@@ -16,10 +21,14 @@
     onstop: (job: AssistJob) => void;
   }
 
-  let { job, stale, onaccept, ondiscard, onagain, onreapply, onfollowup, onfocus, onstop }: Props = $props();
+  let { job, stale, onaccept, onrevert, ondiscard, onremove, onagain, onreapply, onfollowup, onfocus, onstop }: Props =
+    $props();
 
   let followUp = $state("");
   let copied = $state(false);
+  /** An applied or discarded card shows its result again. */
+  let expanded = $state(false);
+  const finished = $derived(job.state === "applied" || job.state === "discarded");
 
   const r = $derived(job.result);
   const unchanged = $derived(!!r?.revision && r.revision.trim() === job.target.text.trim());
@@ -43,7 +52,13 @@
   }
 </script>
 
-<article class="card" data-state={job.state} data-action={job.action}>
+<article
+  class="card"
+  class:expanded
+  class:blocked={job.revertBlocked}
+  data-state={job.state}
+  data-action={job.action}
+>
   <button class="head" onclick={() => onfocus(job)} title={job.target.text}>
     <span class="action smallcaps">{t(ACTION_LABEL[job.action])}</span>
     {#if job.reapplies}<span class="tag">{t("assist.reapplying")}</span>{/if}
@@ -69,78 +84,38 @@
       {#if !stale}<button class="btn small" disabled={job.restarting} onclick={() => onagain(job)}>{t("assist.again")}</button>{/if}
       <button class="btn small" onclick={() => ondiscard(job)}>{t("assist.discard")}</button>
     </div>
-  {:else if job.state === "applied"}
-    <p class="note">{t("assist.applied")}</p>
-  {:else if job.state === "discarded"}
-    <p class="note">{t("assist.discarded")}</p>
-  {:else if r}
-    {#if r.answer}
-      <section>
-        <h4 class="smallcaps">{t("assist.answer")}</h4>
-        <p class="answer">{r.answer}</p>
-      </section>
-    {/if}
-
-    {#if r.revision}
-      {#if job.action === "figure"}
-        <pre class="code">{r.revision}</pre>
-        {#if r.translation}
-          <section>
-            <h4 class="smallcaps">{t("assist.caption")}</h4>
-            <p class="translation" lang="zh-CN">{r.translation}</p>
-          </section>
-        {/if}
-        {#if r.missingPackages.length}
-          <p class="warn">
-            {r.preambleHere
-              ? t("assist.packagesAdded", { packages: r.missingPackages.join(", ") })
-              : t("assist.packagesNeeded", { packages: r.missingPackages.map((p) => `\\usepackage{${p}}`).join(" ") })}
-          </p>
-        {/if}
-      {:else if job.action === "write"}
-        <p class="written">{r.revision}</p>
-        {#if r.translation}
-          <section>
-            <h4 class="smallcaps">{t("assist.translation")}</h4>
-            <p class="translation written">{r.translation}</p>
-          </section>
-        {/if}
-      {:else if unchanged}
-        <p class="note">{t("assist.noChange")}</p>
-      {:else}
-        <p class="diff">
-          {#each r.diff as part, i (i)}<span class={part.kind}>{part.text}</span>{/each}
-        </p>
-        {#if r.translation}
-          <section>
-            <h4 class="smallcaps">{t("assist.translation")}</h4>
-            <p class="translation">{r.translation}</p>
-          </section>
-        {/if}
+  {:else if finished}
+    <div class="row">
+      <p class="note">{t(job.state === "applied" ? "assist.applied" : "assist.discarded")}</p>
+      <span class="spacer"></span>
+      {#if r}
+        <button class="btn small" aria-expanded={expanded} onclick={() => (expanded = !expanded)}
+          >{expanded ? t("assist.hide") : t("assist.show")}</button
+        >
       {/if}
-    {/if}
-
-    {#if r.changesZh.length || r.changesEn.length}
-      <section class="changes">
-        <h4 class="smallcaps">{t("assist.changes")}</h4>
-        {#if r.changesZh.length}
-          <ul lang="zh-CN">{#each r.changesZh as c, i (i)}<li>{c}</li>{/each}</ul>
-        {/if}
-        {#if r.changesEn.length}
-          <ul lang="en">{#each r.changesEn as c, i (i)}<li>{c}</li>{/each}</ul>
-        {/if}
+      {#if job.state === "applied" && job.applied && !stale}
+        <button class="btn small" onclick={() => onrevert(job)}>{t("assist.revert")}</button>
+      {/if}
+      <button class="btn small" onclick={() => onremove(job)}>{t("common.delete")}</button>
+    </div>
+    {#if job.state === "applied" && job.revertBlocked && !job.target.insert}
+      <section class="original">
+        <h4 class="smallcaps">{t("assist.original")}</h4>
+        <p class="answer">{job.target.text}</p>
+        <div class="row">
+          <button class="btn small" onclick={() => copy(job.target.text)}>
+            {copied ? t("assist.copied") : t("assist.copy")}
+          </button>
+        </div>
       </section>
     {/if}
-
-    {#if r.removed.length}
-      <p class="warn">{t("assist.removed", { items: r.removed.join(", ") })}</p>
+    {#if expanded && r}
+      {@render body(r)}
+      {@render follow()}
+      {@render meta(r)}
     {/if}
-    {#if r.repeated.length}
-      <p class="warn">{t("assist.repeated", { items: r.repeated.join(", ") })}</p>
-    {/if}
-    {#if r.revision && job.action !== "figure" && job.action !== "write" && r.translation && !r.translationMatches}
-      <p class="warn">{t("assist.translationDiffers")}</p>
-    {/if}
+  {:else if r}
+    {@render body(r)}
 
     {#if stale}
       <p class="warn">{t("assist.stale")}</p>
@@ -170,27 +145,104 @@
       </div>
     {/if}
 
-    {#if job.action === "ask" && !stale}
-      <div class="row follow">
-        <input
-          class="input"
-          bind:value={followUp}
-          placeholder={t("assist.followUp")}
-          onkeydown={(e) => e.key === "Enter" && ask()}
-        />
-        <button class="btn small" onclick={ask} disabled={!followUp.trim()}>{t("assist.followUpRun")}</button>
-      </div>
-    {/if}
-
-    <p class="meta">
-      {job.model} · {t("assist.usage", {
-        in: formatCount(r.usage.inputTokens),
-        out: formatCount(r.usage.outputTokens),
-        time: formatDuration(r.durationMs),
-      })}
-    </p>
+    {@render follow()}
+    {@render meta(r)}
   {/if}
 </article>
+
+{#snippet body(r: AssistResult)}
+  {#if r.answer}
+    <section>
+      <h4 class="smallcaps">{t("assist.answer")}</h4>
+      <p class="answer">{r.answer}</p>
+    </section>
+  {/if}
+
+  {#if r.revision}
+    {#if job.action === "figure"}
+      <pre class="code">{r.revision}</pre>
+      {#if r.translation}
+        <section>
+          <h4 class="smallcaps">{t("assist.caption")}</h4>
+          <p class="translation" lang="zh-CN">{r.translation}</p>
+        </section>
+      {/if}
+      {#if r.missingPackages.length}
+        <p class="warn">
+          {r.preambleHere
+            ? t("assist.packagesAdded", { packages: r.missingPackages.join(", ") })
+            : t("assist.packagesNeeded", { packages: r.missingPackages.map((p) => `\\usepackage{${p}}`).join(" ") })}
+        </p>
+      {/if}
+    {:else if job.action === "write"}
+      <p class="written">{r.revision}</p>
+      {#if r.translation}
+        <section>
+          <h4 class="smallcaps">{t("assist.translation")}</h4>
+          <p class="translation written">{r.translation}</p>
+        </section>
+      {/if}
+    {:else if unchanged}
+      <p class="note">{t("assist.noChange")}</p>
+    {:else}
+      <p class="diff">
+        {#each r.diff as part, i (i)}<span class={part.kind}>{part.text}</span>{/each}
+      </p>
+      {#if r.translation}
+        <section>
+          <h4 class="smallcaps">{t("assist.translation")}</h4>
+          <p class="translation">{r.translation}</p>
+        </section>
+      {/if}
+    {/if}
+  {/if}
+
+  {#if r.changesZh.length || r.changesEn.length}
+    <section class="changes">
+      <h4 class="smallcaps">{t("assist.changes")}</h4>
+      {#if r.changesZh.length}
+        <ul lang="zh-CN">{#each r.changesZh as c, i (i)}<li>{c}</li>{/each}</ul>
+      {/if}
+      {#if r.changesEn.length}
+        <ul lang="en">{#each r.changesEn as c, i (i)}<li>{c}</li>{/each}</ul>
+      {/if}
+    </section>
+  {/if}
+
+  {#if r.removed.length}
+    <p class="warn">{t("assist.removed", { items: r.removed.join(", ") })}</p>
+  {/if}
+  {#if r.repeated.length}
+    <p class="warn">{t("assist.repeated", { items: r.repeated.join(", ") })}</p>
+  {/if}
+  {#if r.revision && job.action !== "figure" && job.action !== "write" && r.translation && !r.translationMatches}
+    <p class="warn">{t("assist.translationDiffers")}</p>
+  {/if}
+{/snippet}
+
+{#snippet follow()}
+  {#if job.action === "ask" && !stale}
+    <div class="row follow">
+      <input
+        class="input"
+        bind:value={followUp}
+        placeholder={t("assist.followUp")}
+        onkeydown={(e) => e.key === "Enter" && ask()}
+      />
+      <button class="btn small" onclick={ask} disabled={!followUp.trim()}>{t("assist.followUpRun")}</button>
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet meta(r: AssistResult)}
+  <p class="meta">
+    {job.model} · {t("assist.usage", {
+      in: formatCount(r.usage.inputTokens),
+      out: formatCount(r.usage.outputTokens),
+      time: formatDuration(r.durationMs),
+    })}
+  </p>
+{/snippet}
 
 <style>
   .card {
@@ -207,8 +259,8 @@
     border-color: var(--rule-strong);
     box-shadow: 0 6px 18px -14px rgba(0, 0, 0, 0.4);
   }
-  .card[data-state="applied"],
-  .card[data-state="discarded"] {
+  .card[data-state="applied"]:not(.expanded):not(.blocked),
+  .card[data-state="discarded"]:not(.expanded) {
     opacity: 0.6;
   }
   .head {

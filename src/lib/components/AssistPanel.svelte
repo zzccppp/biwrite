@@ -22,6 +22,7 @@
     skill: string;
     onrun: () => void;
     onaccept: (job: AssistJob) => void;
+    onrevert: (job: AssistJob) => void;
     onagain: (job: AssistJob) => void;
     onreapply: (job: AssistJob) => void;
     onfollowup: (job: AssistJob, question: string) => void;
@@ -29,7 +30,7 @@
     onclose: () => void;
   }
 
-  let { store, target, ready, model, skill, onrun, onaccept, onagain, onreapply, onfollowup, onfocus, onclose }: Props =
+  let { store, target, ready, model, skill, onrun, onaccept, onrevert, onagain, onreapply, onfollowup, onfocus, onclose }: Props =
     $props();
 
   let instructionBox = $state<HTMLTextAreaElement>();
@@ -186,7 +187,9 @@
         {job}
         stale={job.epoch !== store.epoch}
         {onaccept}
+        {onrevert}
         ondiscard={(j) => store.discard(j)}
+        onremove={(j) => store.remove(j)}
         {onagain}
         {onreapply}
         {onfollowup}

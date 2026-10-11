@@ -827,12 +827,14 @@ const handlers: Record<string, (args: Args) => unknown> = {
     if (insert) from = to;
     const original = insert ? req.text.slice(...paragraphAround(req.text, req.from)) : req.text.slice(from, to);
     const p = POLISHED.default;
+    // A question asking for a change ("怎么改", "revise") gets a revision too.
+    const askRevises = req.action === "ask" && /改|revise|rewrite/i.test(req.instruction);
     const revision =
       req.action === "figure"
         ? TABLE
         : req.action === "write"
           ? WRITTEN.revision
-          : req.action === "ask"
+          : req.action === "ask" && !askRevises
             ? null
             : p.revision;
     const chunks = ["<revision>\nThis note asks", "<revision>\nThis note asks whether the same idea transfers", "<revision>\nThis note asks whether the same idea transfers to graph neural networks."];

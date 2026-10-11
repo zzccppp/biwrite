@@ -1298,12 +1298,14 @@
       const changes = [{ from, to, insert }];
       // A figure's missing packages go into the preamble, when it is here.
       let shift = 0;
+      let packages: { from: number; to: number; text: string } | null = null;
       if (job.action === "figure" && r.preambleHere && r.missingPackages.length) {
         const at = whole.search(/^[ \t]*\\begin\{document\}/m);
         const lines = r.missingPackages.map((p) => `\\usepackage{${p}}\n`).join("");
         if (at >= 0 && at < from) {
           changes.unshift({ from: at, to: at, insert: lines });
           shift = lines.length;
+          packages = { from: at, to: at + lines.length, text: lines };
         } else {
           session.flash(t("assist.packagesNotAdded", { packages: lines.trim().split("\n").join(" ") }));
         }
@@ -1314,12 +1316,66 @@
         scrollIntoView: true,
         userEvent: "input.assist",
       });
+      // From now on the job stands for the text it put in: a click on its
+      // card selects that text, and a follow-up asks about it.
+      job.from = from + shift;
+      job.to = from + shift + insert.length;
+      job.applied = { text: insert, packages };
       job.state = "applied";
       editor.focus();
       void flush();
     } finally {
       job.applying = false;
     }
+  }
+
+  /** Put back the text an applied job replaced (or take out what it
+   * inserted, with the package lines it added), when what it put in is
+   * still as it was. The card can then be accepted again. */
+  function revertJob(job: AssistJob): void {
+    const applied = job.applied;
+    if (!editor || job.state !== "applied" || !applied) return;
+    if (job.epoch !== assist.epoch) {
+      session.flash(t("assist.stale"));
+      return;
+    }
+    if (swapping) {
+      session.flash(t("doc.busySwapping"));
+      return;
+    }
+    const doc = editor.doc;
+    const { from, to } = job;
+    if (to > doc.length || doc.sliceString(from, to) !== applied.text) {
+      // Not overwritten: the card lists the text from before instead.
+      job.revertBlocked = true;
+      session.flash(t(job.target.insert ? "assist.revertEditedInsert" : "assist.revertEdited"));
+      return;
+    }
+    const original = job.target.insert ? "" : job.target.text;
+    const changes = [{ from, to, insert: original }];
+    // The package lines go too, unless they were edited (or are needed by
+    // something else the author wrote meanwhile: they then stay).
+    const p = applied.packages;
+    let removed = 0;
+    if (p && p.to <= from && doc.sliceString(p.from, p.to) === p.text) {
+      changes.unshift({ from: p.from, to: p.to, insert: "" });
+      removed = p.text.length;
+    }
+    editor.view.dispatch({
+      changes,
+      selection: { anchor: from - removed, head: from - removed + original.length },
+      scrollIntoView: true,
+      userEvent: "input.assist",
+    });
+    job.from = from - removed;
+    job.to = from - removed + original.length;
+    job.applied = null;
+    job.revertBlocked = false;
+    job.touched = false;
+    job.conflict = false;
+    job.state = "done";
+    editor.focus();
+    void flush();
   }
 
   /** Once a job's rerun started: the old card goes, unless it was applied meanwhile. */
@@ -1587,6 +1643,7 @@
         skill={skill ? `${skill.name} ${skill.version}` : "research-builder"}
         onrun={() => runAssist()}
         onaccept={acceptJob}
+        onrevert={revertJob}
         onagain={againJob}
         onreapply={reapplyJob}
         onfollowup={followUp}
