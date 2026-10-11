@@ -129,6 +129,13 @@ impl HttpProvider {
         self.core.keys.reload(keys);
     }
 
+    fn wanted(&self) -> &'static [(&'static str, &'static [&'static str])] {
+        match self.wire {
+            Wire::Chat | Wire::Responses => &[],
+            Wire::Anthropic => anthropic::WANTED,
+        }
+    }
+
     fn droppable(&self) -> &'static [(&'static str, &'static [&'static str])] {
         match self.wire {
             Wire::Chat => openai::DROPPABLE,
@@ -198,7 +205,9 @@ impl HttpProvider {
         on_partial: PartialFn<'_>,
     ) -> Result<Streamed, TranslateError> {
         let droppable = self.droppable();
+        let wanted = self.wanted();
         let mut param_retries = 0;
+        let mut feature_retries = 0;
         let mut key_retries = 0;
         let mut transient_retries = 0;
         loop {
@@ -239,6 +248,17 @@ impl HttpProvider {
                 param_retries += 1;
                 tap.note(format!(
                     "the endpoint rejected `{param}`: retrying without it"
+                ));
+                tap.finish(&Err::<(), _>(err), 0);
+                on_partial("");
+                continue;
+            }
+            if feature_retries < wanted.len()
+                && let Some(feature) = self.core.retry_with(&err, wanted, &body.sent)
+            {
+                feature_retries += 1;
+                tap.note(format!(
+                    "the endpoint asked for `{feature}`, so the request goes again with it"
                 ));
                 tap.finish(&Err::<(), _>(err), 0);
                 on_partial("");

@@ -523,3 +523,67 @@ async fn deepseek_translates_and_answers() {
         );
     }
 }
+
+/// AnyRouter's Claude models through the Anthropic API: the relay asks for
+/// the 1M-token context, and the request goes again with it. What comes
+/// back then is the model's answer or the relay at capacity, never the
+/// 1M request again. `BIWRITE_LIVE_ANYROUTER_KEY`, `BIWRITE_LIVE_CLAUDE_MODEL`.
+#[tokio::test]
+#[ignore = "needs BIWRITE_LIVE_ANYROUTER_KEY and network access"]
+async fn anyrouter_claude_gets_the_1m_context() {
+    let Ok(key) = std::env::var("BIWRITE_LIVE_ANYROUTER_KEY") else {
+        eprintln!("BIWRITE_LIVE_ANYROUTER_KEY is not set; skipping");
+        return;
+    };
+    let model =
+        std::env::var("BIWRITE_LIVE_CLAUDE_MODEL").unwrap_or_else(|_| "claude-opus-4-7".into());
+    let config = ProviderConfig {
+        id: "live-anyrouter-claude".into(),
+        name: "AnyRouter (Claude)".into(),
+        kind: biwrite_providers::ProviderKind::Anthropic,
+        base_url: "https://anyrouter.top".into(),
+        model,
+        temperature: 0.0,
+        effort: Default::default(),
+        wire_api: Default::default(),
+        service_tier: None,
+        key_concurrency: None,
+        max_retries: None,
+    }
+    .validated()
+    .unwrap();
+    let records = Arc::new(Records::default());
+    let provider = build_http(
+        &config,
+        Arc::new(move || Ok(vec![key.clone()])),
+        Arc::new(DefaultPrompts),
+        records.clone(),
+    )
+    .unwrap();
+    let request = TranslationRequest {
+        source: "Placeholder protection keeps citations intact.".into(),
+        ..Default::default()
+    };
+    let outcome = provider.translate(&request, &|_| {}).await;
+    println!("outcome: {outcome:?}");
+    let done: Vec<_> = records
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.state != RecordState::InFlight)
+        .cloned()
+        .collect();
+    for r in &done {
+        println!(
+            "record {}: {:?} http={:?} error={:?} notes={:?}",
+            r.id, r.state, r.http_status, r.error, r.notes
+        );
+    }
+    if let Err(e) = &outcome {
+        assert!(
+            !e.to_string().contains("1m"),
+            "the 1M context was asked for again: {e}"
+        );
+    }
+}

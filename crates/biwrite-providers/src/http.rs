@@ -35,6 +35,8 @@ pub(crate) struct Core {
     pub observer: Arc<dyn RequestObserver>,
     /// Optional parameters this endpoint rejected; they are not sent again.
     dropped: Mutex<HashSet<&'static str>>,
+    /// Optional features this endpoint asked for; they are sent from then on.
+    wanted: Mutex<HashSet<&'static str>>,
 }
 
 impl Core {
@@ -52,7 +54,42 @@ impl Core {
             prompts,
             observer,
             dropped: Mutex::new(HashSet::new()),
+            wanted: Mutex::new(HashSet::new()),
         })
+    }
+
+    pub fn is_wanted(&self, feature: &str) -> bool {
+        self.wanted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(feature)
+    }
+
+    /// If `err` says the endpoint needs one of the optional features
+    /// `candidates` that this request did not send, send it with every
+    /// later request and return its name so the caller retries with it.
+    pub fn retry_with(
+        &self,
+        err: &TranslateError,
+        candidates: &[(&'static str, &[&str])],
+        sent: &[&'static str],
+    ) -> Option<&'static str> {
+        let TranslateError::Rejected {
+            status: 400 | 422,
+            message,
+        } = err
+        else {
+            return None;
+        };
+        let lower = message.to_lowercase();
+        let (feature, _) = candidates.iter().find(|(feature, needles)| {
+            !sent.contains(feature) && needles.iter().any(|n| lower.contains(n))
+        })?;
+        self.wanted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(feature);
+        Some(feature)
     }
 
     pub fn is_dropped(&self, param: &str) -> bool {

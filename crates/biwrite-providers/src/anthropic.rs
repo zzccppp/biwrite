@@ -18,6 +18,9 @@ use crate::provider::{Body, Streamed, cut_off, refused};
 
 pub const API_VERSION: &str = "2023-06-01";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
+/// The 1M-token context window. Some relays serve their Claude models with
+/// it only and turn a request without it away (HTTP 400).
+const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
 /// Output ceiling per request (includes thinking tokens on adaptive models).
 const MAX_TOKENS: u32 = 32_000;
 
@@ -45,6 +48,19 @@ pub(crate) const DROPPABLE: &[(&str, &[&str])] = &[
     ("effort", &["effort", "output_config"]),
     ("fallbacks", &["fallback", "anthropic-beta"]),
 ];
+
+/// Optional features an endpoint may ask for, by words of its error. Once
+/// asked for, a feature goes with every request.
+pub(crate) const WANTED: &[(&str, &[&str])] = &[(
+    "context-1m",
+    &[
+        "1m 上下文",
+        "1m上下文",
+        "1m context",
+        "1m-context",
+        "context-1m",
+    ],
+)];
 
 pub(crate) fn sends_temperature(model: &str) -> bool {
     !NO_SAMPLING_PREFIXES.iter().any(|p| model.starts_with(p))
@@ -96,6 +112,9 @@ pub(crate) fn body(core: &Core, system: &str, user: &str, images: &[ImageInput])
         json["fallbacks"] = json!("default");
         sent.push("fallbacks");
     }
+    if core.is_wanted("context-1m") {
+        sent.push("context-1m");
+    }
     Body {
         json,
         sent,
@@ -107,15 +126,24 @@ pub(crate) fn body(core: &Core, system: &str, user: &str, images: &[ImageInput])
     }
 }
 
-/// Authentication and version headers (raw HTTP: there is no official Rust SDK).
+/// Authentication, version and beta headers (raw HTTP, since there is no
+/// official Rust SDK).
 pub(crate) fn headers(request: RequestBuilder, key: &str, sent: &[&'static str]) -> RequestBuilder {
     let request = request
         .header("x-api-key", key)
         .header("anthropic-version", API_VERSION);
-    if sent.contains(&"fallbacks") {
-        request.header("anthropic-beta", FALLBACK_BETA)
-    } else {
+    let betas: Vec<&str> = [
+        ("fallbacks", FALLBACK_BETA),
+        ("context-1m", CONTEXT_1M_BETA),
+    ]
+    .into_iter()
+    .filter(|(feature, _)| sent.contains(feature))
+    .map(|(_, beta)| beta)
+    .collect();
+    if betas.is_empty() {
         request
+    } else {
+        request.header("anthropic-beta", betas.join(","))
     }
 }
 
@@ -248,6 +276,26 @@ fn stream_error(err: &Value, key: &str) -> TranslateError {
 
 #[cfg(test)]
 mod tests {
+
+    /// Both betas go in one header, comma-separated.
+    #[test]
+    fn betas_share_one_header() {
+        let client = reqwest::Client::new();
+        let built = |sent: &[&'static str]| {
+            headers(client.post("http://localhost/v1/messages"), "k", sent)
+                .build()
+                .unwrap()
+        };
+        let none = built(&[]);
+        assert!(none.headers().get("anthropic-beta").is_none());
+        let both = built(&["fallbacks", "context-1m"]);
+        assert_eq!(
+            both.headers()["anthropic-beta"],
+            "server-side-fallback-2026-07-01,context-1m-2025-08-07"
+        );
+        let one = built(&["context-1m"]);
+        assert_eq!(one.headers()["anthropic-beta"], "context-1m-2025-08-07");
+    }
     use super::*;
 
     #[test]

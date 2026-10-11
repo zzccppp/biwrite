@@ -363,6 +363,46 @@ async fn anthropic_older_models_get_temperature_and_unsupported_effort_is_droppe
     assert!(reqs[1].json().get("output_config").is_none());
 }
 
+/// A relay that serves its Claude models with the 1M-token context only
+/// turns a request without it away (HTTP 400). The request goes again with
+/// the beta header, and so does every later one. Another 400 adds nothing.
+#[tokio::test]
+async fn anthropic_relays_asking_for_the_1m_context_get_it() {
+    let server = MockServer::start().await;
+    server.push(Canned::json(
+        400,
+        r#"{"error":"1m 上下文已经全量可用，请启用 1m 上下文后重试","type":"error"}"#,
+    ));
+    server.push(anthropic_ok(&["好"], "end_turn"));
+    server.push(anthropic_ok(&["好"], "end_turn"));
+    let (t, _) = translator(ProviderKind::Anthropic, &server, "claude-opus-4-7");
+    assert_eq!(run(&t, &request("Good")).await.0.unwrap(), "好");
+    assert_eq!(run(&t, &request("Good")).await.0.unwrap(), "好");
+    let reqs = server.requests();
+    assert_eq!(reqs.len(), 3);
+    assert_eq!(reqs[0].header("anthropic-beta"), None);
+    assert_eq!(
+        reqs[1].header("anthropic-beta"),
+        Some("context-1m-2025-08-07")
+    );
+    assert_eq!(
+        reqs[2].header("anthropic-beta"),
+        Some("context-1m-2025-08-07"),
+        "remembered for later requests"
+    );
+
+    let other = MockServer::start().await;
+    other.push(Canned::json(
+        400,
+        r#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: too large"}}"#,
+    ));
+    let (t, _) = translator(ProviderKind::Anthropic, &other, "claude-opus-4-7");
+    assert!(run(&t, &request("Good")).await.0.is_err());
+    let reqs = other.requests();
+    assert_eq!(reqs.len(), 1, "not sent again");
+    assert_eq!(reqs[0].header("anthropic-beta"), None);
+}
+
 #[tokio::test]
 async fn anthropic_refusal_and_stream_errors() {
     let server = MockServer::start().await;
