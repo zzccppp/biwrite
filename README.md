@@ -34,6 +34,7 @@ the toolbar opens it on GitHub.
 * [Updates](#updates)
 * [Glossary, cache and logs](#glossary-cache-and-logs)
 * [Development](#development)
+* [Friends](#friends)
 
 ## What it does
 
@@ -317,3 +318,7 @@ The workflow checks that the tag matches the app version, builds both
 installers and creates the GitHub Release with them attached. A tag with a
 suffix (`v0.2.1-beta.1`) is published as a pre-release, which the app lists
 under *Updates* as well.
+
+## Friends
+
+* [LINUX DO](https://linux.do/), the community where BiWrite is discussed.
