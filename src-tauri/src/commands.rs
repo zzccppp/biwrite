@@ -376,6 +376,13 @@ pub async fn retranslate_segment(state: State<'_, AppState>, id: u64) -> Command
     Ok(())
 }
 
+/// Translate the edited paragraphs still waiting out the translation delay
+/// now (a swap needs them). Returns how many there were.
+#[tauri::command]
+pub async fn translate_held(state: State<'_, AppState>) -> CommandResult<usize> {
+    Ok(state.engine.translate_held())
+}
+
 #[tauri::command]
 pub async fn retranslate_all(state: State<'_, AppState>) -> CommandResult<()> {
     if translations_are_own(&state) {

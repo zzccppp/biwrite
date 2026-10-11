@@ -51,6 +51,10 @@ const ASSIST_BUSY = Number(PARAMS.get("assistbusy") ?? 0);
 const ZH_FILE = PARAMS.has("zhfile") && LATEX;
 /** `wrong`: that Chinese file was taken for English. */
 const WRONG = PARAMS.has("wrong");
+/** `hold`: an edited paragraph waits out the translation delay before it is translated. */
+const HOLD = PARAMS.has("hold");
+/** `slow=MS`: the cache answers after MS milliseconds, with many groups (settings fill in late). */
+const SLOW = Number(PARAMS.get("slow") ?? 0);
 
 const SAMPLE = `Graph neural networks can learn new tasks from a few examples in context.
 
@@ -106,6 +110,11 @@ const state = {
   kept: new Set<number>(),
   /** `keep` of each swap asked for, in order. */
   swaps: [] as boolean[],
+  /** Edited blocks waiting out the translation delay, with the time they are released. */
+  held: new Map<number, number>(),
+  /** Calls of `translate_held`, and the delays set, in order (for UI tests). */
+  heldCalls: 0,
+  delays: [] as number[],
   /** PDFs read, per language, and clicks in a PDF looked up. */
   pdfReads: { en: 0, zh: 0 },
   inverse: 0,
@@ -189,6 +198,7 @@ const state = {
     logDir: "/Users/me/Library/Logs/app.biwrite.desktop",
     requestLog: { enabled: true, persist: true } as LogSettings,
     batchSize: 3,
+    translateDelay: 5,
     matchPool: true,
     effectiveConcurrency: 12,
     latex: { compileOnSave: true },
@@ -255,10 +265,19 @@ function snapshot(full = true): Snapshot {
     const waiting = !chineseSource && state.pending.has(index);
     const failed = !skipped && !chineseSource && state.failed.has(index);
     const filling = chineseSource && state.kept.has(index);
+    const holding = !skipped && !chineseSource && state.held.has(index);
     return {
       id: s.id,
       version: state.version++,
-      status: skipped ? "skipped" : failed ? "error" : waiting || filling ? "translating" : "translated",
+      status: skipped
+        ? "skipped"
+        : failed
+          ? "error"
+          : waiting || filling
+            ? "translating"
+            : holding
+              ? "queued"
+              : "translated",
       text: skipped || waiting || failed ? null : shown,
       partial: false,
       error: failed ? "provider server error (HTTP 500)" : null,
@@ -336,6 +355,27 @@ function fillKept(): number {
     }, 1400 + 700 * k);
   });
   return kept.length;
+}
+
+/** Hold the blocks edited from `before` to `state.text` for the translation delay (`hold`). */
+function holdEdited(before: string): void {
+  const delay = state.settings.translateDelay * 1000;
+  if (!HOLD || delay === 0 || state.direction !== state.home) return;
+  const old = layout(before).map((s) => before.slice(s.from, s.to));
+  const until = Date.now() + delay;
+  layout(state.text).forEach((s, i) => {
+    if (s.kind.type === "paragraph" && state.text.slice(s.from, s.to) !== old[i]) state.held.set(i, until);
+  });
+  setTimeout(() => releaseHeld(false), delay + 20);
+}
+
+/** Translate the held blocks whose time is up (or all of them). Their translations arrive at once. */
+function releaseHeld(all: boolean): number {
+  const now = Date.now();
+  const due = [...state.held].filter(([, until]) => all || until <= now).map(([i]) => i);
+  for (const i of due) state.held.delete(i);
+  if (due.length > 0) void emit("segment-states", snapshot().states);
+  return due.length;
 }
 
 /** Translations of the pending blocks arrive. */
@@ -785,7 +825,9 @@ const handlers: Record<string, (args: Args) => unknown> = {
   open_manual: () => null,
   get_session: () => session(),
   update_document: (a) => {
+    const before = state.text;
     state.text = String(a.text);
+    holdEdited(before);
     // A filled block (now Chinese) is no longer waiting.
     const segs = layout(state.text);
     for (const index of [...state.kept]) {
@@ -802,6 +844,17 @@ const handlers: Record<string, (args: Args) => unknown> = {
   set_auto_translate: () => null,
   retranslate_segment: () => null,
   retranslate_all: () => null,
+  translate_held: () => {
+    state.heldCalls++;
+    const n = state.held.size;
+    if (n === 0) return 0;
+    // Sent now, so translating for a moment and then translated.
+    for (const i of state.held.keys()) state.pending.add(i);
+    state.held.clear();
+    void emit("segment-states", snapshot().states);
+    finishPending(800);
+    return n;
+  },
   get_settings: () => state.settings,
   set_assistant_provider: (a) => {
     state.settings.assistantProvider = String(a.id);
@@ -818,6 +871,12 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.settings.batchSize = Number(a.size);
     return state.settings;
   },
+  set_translate_delay: (a) => {
+    state.settings.translateDelay = Math.min(60, Number(a.seconds));
+    state.delays.push(state.settings.translateDelay);
+    if (state.settings.translateDelay === 0) releaseHeld(true);
+    return state.settings;
+  },
   set_match_pool: (a) => {
     state.settings.matchPool = Boolean(a.on);
     state.settings.effectiveConcurrency = state.settings.matchPool ? 12 : state.settings.concurrency;
@@ -829,7 +888,16 @@ const handlers: Record<string, (args: Args) => unknown> = {
     if (i >= 0) state.settings.providers[i] = { ...state.settings.providers[i], ...p };
     return state.settings;
   },
-  get_cache: () => ({ entries: 1284, bytes: 2_310_000, location: "/Users/me/Library/Application Support/app.biwrite.desktop/cache.sqlite3", groups: [] }),
+  get_cache: async () => {
+    const location = "/Users/me/Library/Application Support/app.biwrite.desktop/cache.sqlite3";
+    if (SLOW === 0) return { entries: 1284, bytes: 2_310_000, location, groups: [] };
+    await wait(SLOW);
+    const providers = ["main", "lab", "backup", "DeepSeek", "OpenAI", "Anthropic"];
+    const groups = providers.flatMap((provider, i) =>
+      (["en-zh", "zh-en"] as const).map((direction, j) => ({ id: `g${i}${j}`, provider, model: `model-${i}`, direction, entries: 100 + 10 * i + j })),
+    );
+    return { entries: 1284, bytes: 2_310_000, location, groups };
+  },
   get_prompt: (a) => ({
     text: a.direction === "en-zh" ? "You translate academic English into Chinese…" : "You translate the author's Chinese…",
     isDefault: true,

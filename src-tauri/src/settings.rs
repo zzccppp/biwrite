@@ -14,6 +14,9 @@ use crate::secrets::Vouched;
 
 pub const MOCK_ID: &str = "mock";
 const DEFAULT_CONCURRENCY: usize = 4;
+/// Seconds an edited paragraph stays unchanged before it is translated.
+const DEFAULT_TRANSLATE_DELAY: u64 = 5;
+pub const MAX_TRANSLATE_DELAY: u64 = 60;
 /// Most parallel requests (a large key pool can carry this many).
 pub const MAX_CONCURRENCY: usize = 32;
 
@@ -86,6 +89,9 @@ pub struct AppSettings {
     pub request_log: LogSettings,
     /// Paragraphs translated together in one request (1: one per request).
     pub batch_size: usize,
+    /// Seconds an edited paragraph stays unchanged before it is translated
+    /// (0 translates at once).
+    pub translate_delay: u64,
     /// With a per-key limit, run as many requests as the pool carries
     /// (keys × limit) instead of `concurrency`.
     pub match_pool: bool,
@@ -135,6 +141,7 @@ impl Default for AppSettings {
             assistant_provider: String::new(),
             request_log: LogSettings::default(),
             batch_size: 1,
+            translate_delay: DEFAULT_TRANSLATE_DELAY,
             match_pool: true,
             skill_folder: None,
             latex: LatexSettings::default(),
@@ -202,6 +209,7 @@ impl AppSettings {
         }
         self.concurrency = self.concurrency.clamp(1, MAX_CONCURRENCY);
         self.batch_size = self.batch_size.clamp(1, biwrite_engine::MAX_BATCH);
+        self.translate_delay = self.translate_delay.min(MAX_TRANSLATE_DELAY);
         self
     }
 
@@ -403,6 +411,7 @@ pub struct SettingsView {
     pub assistant_ready: bool,
     pub request_log: LogSettings,
     pub batch_size: usize,
+    pub translate_delay: u64,
     pub match_pool: bool,
     /// Parallel requests in effect (see `AppSettings::effective_concurrency`).
     pub effective_concurrency: usize,
@@ -440,6 +449,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         assistant_ready: settings.assistant().config.kind != ProviderKind::Mock,
         request_log: settings.request_log,
         batch_size: settings.batch_size,
+        translate_delay: settings.translate_delay,
         match_pool: settings.match_pool,
         effective_concurrency: settings.effective_concurrency(),
         latex: settings.latex.clone(),
@@ -502,6 +512,28 @@ mod tests {
             key_names: BTreeMap::new(),
             key_parts: 0,
         }
+    }
+
+    #[test]
+    fn the_translation_delay_is_five_seconds_unless_set_and_at_most_a_minute() {
+        let dir =
+            std::env::temp_dir().join(format!("biwrite-settings-delay-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        // Files from before the delay existed.
+        std::fs::write(&path, r#"{"concurrency": 3}"#).unwrap();
+        assert_eq!(load(&path).translate_delay, 5);
+        std::fs::write(&path, r#"{"translateDelay": 0}"#).unwrap();
+        assert_eq!(load(&path).translate_delay, 0);
+        std::fs::write(&path, r#"{"translateDelay": 3600}"#).unwrap();
+        assert_eq!(load(&path).translate_delay, MAX_TRANSLATE_DELAY);
+        let s = AppSettings {
+            translate_delay: 12,
+            ..AppSettings::default()
+        };
+        save(&path, &s).unwrap();
+        assert_eq!(load(&path).translate_delay, 12);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

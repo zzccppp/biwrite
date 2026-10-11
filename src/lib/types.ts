@@ -195,6 +195,8 @@ export interface SettingsView {
   requestLog: LogSettings;
   /** Paragraphs per translation request. */
   batchSize: number;
+  /** Seconds an edited paragraph stays unchanged before it is translated (0 translates at once). */
+  translateDelay: number;
   /** Parallel requests follow the key pool. */
   matchPool: boolean;
   /** Parallel requests in effect. */

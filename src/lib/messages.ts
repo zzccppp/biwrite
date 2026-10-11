@@ -71,6 +71,11 @@ export const messages = {
     zh: "只改变界面文字，翻译方向不变。",
   },
   "settings.pacing": { en: "Requests", zh: "请求节奏" },
+  "settings.delay": { en: "Wait after an edit · {n} s", zh: "改动后等待 · {n} 秒" },
+  "settings.delayHint": {
+    en: "An edited paragraph is sent for translation once it has stayed unchanged this long, so editing it does not send a request at every pause. At 0 it is sent at once. A swap, the PDF of the other language, an export and saving a paired file send the waiting paragraphs at once.",
+    zh: "段落停止改动满这段时间后才发去翻译，连续修改同一段时不会每停顿一下就发一次请求。设为 0 秒则改动后立即翻译。交换语言、生成另一语言的 PDF、导出译文和保存配对文件时，等待中的段落会立即发出。",
+  },
   "settings.batch": { en: "Paragraphs per request · {n}", zh: "每次请求的段落数 · {n}" },
   "settings.batchHint": {
     en: "Several new paragraphs share one request, so fewer requests reach the provider. Edited paragraphs are always sent alone.",

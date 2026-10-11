@@ -525,6 +525,8 @@ pub async fn latex_compile(
             let other = if lang == source_lang(direction) {
                 text.clone()
             } else {
+                // Paragraphs waiting out the translation delay go now.
+                state.engine.translate_held();
                 let mirror = state.engine.compose_mirror();
                 untranslated = mirror.untranslated;
                 mirror.text
@@ -885,6 +887,7 @@ pub(crate) fn translation_tex(
     let translated = if source_lang(state.engine.direction()) == target {
         text
     } else {
+        state.engine.translate_held();
         state.engine.compose_mirror().text
     };
     let stem = state

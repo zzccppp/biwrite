@@ -522,6 +522,9 @@
           return;
         }
       }
+      // Paragraphs edited moments ago still wait out the translation delay.
+      // The swap needs their translations, so they are sent now.
+      await ipc.translateHeld().catch(() => 0);
       const c = session.counts;
       const waiting = c.pending + c.translating + c.error;
       let keep = false;

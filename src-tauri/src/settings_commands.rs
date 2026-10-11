@@ -456,6 +456,23 @@ pub async fn set_batch_size(
     Ok(state.settings_view())
 }
 
+/// Seconds an edited paragraph stays unchanged before it is translated
+/// (0 translates at once).
+#[tauri::command]
+pub async fn set_translate_delay(
+    state: State<'_, AppState>,
+    seconds: u64,
+) -> CommandResult<SettingsView> {
+    let seconds = seconds.min(crate::settings::MAX_TRANSLATE_DELAY);
+    {
+        let mut s = state.settings();
+        s.translate_delay = seconds;
+        state.persist(&s)?;
+    }
+    state.engine.set_edit_delay(Duration::from_secs(seconds));
+    Ok(state.settings_view())
+}
+
 /// Let parallel requests follow the key pool (keys × per-key limit).
 #[tauri::command]
 pub async fn set_match_pool(state: State<'_, AppState>, on: bool) -> CommandResult<SettingsView> {

@@ -107,6 +107,8 @@ pub async fn export_bilingual(
 ) -> CommandResult<Option<ExportView>> {
     // Normally a no-op: the frontend flushes edits first.
     state.sync_text(document, &text)?;
+    // Paragraphs waiting out the translation delay go now.
+    state.engine.translate_held();
     let current = state.file().path.clone();
     let suggested = format!("{}.bilingual.md", file_stem(current.as_deref()));
     let dir = current.as_deref().and_then(Path::parent);

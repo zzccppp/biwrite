@@ -84,7 +84,7 @@ Click \ui{New} in the toolbar, find the venue in \ui{Papers and templates} (\fig
 \shot{f-new}{(1) The ICLR 2027 template, (2) New paper}
 
 \subsection{Step 2: Writing with the translation alongside}
-Write English on the left. 0.8 seconds after you stop typing, the right pane shows the Chinese of the paragraphs you changed (\fig{o-editor}). A first draft in Chinese works too. When BiWrite finds the text is Chinese, it translates it into English instead (Section~\ref{sec:zhfile}).
+Write English on the left. 0.8 seconds after you stop typing, your changes reach the translation queue, and a changed paragraph is translated once it has stayed unchanged for 5 more seconds. The right pane then shows its Chinese (\fig{o-editor}). Settings can change the 5 seconds to anything from 0 to 60 (Section~\ref{sec:pacing}). A first draft in Chinese works too. When BiWrite finds the text is Chinese, it translates it into English instead (Section~\ref{sec:zhfile}).
 
 \subsection{Step 3: Writing in the manner of a published paper}
 For paragraphs with a familiar shape, such as an introduction or related work, the writing assistant can write in the manner of a published paper.
@@ -137,7 +137,7 @@ Put the exported Chinese \texttt{.tex} next to the English main file as \texttt{
 \subsection{Open and edit}
 \ui{Open} in the toolbar (\fig{w-open} \n{1}, \cmdkey O) opens a \texttt{.tex}, \texttt{.md} or \texttt{.txt} file. A LaTeX project of several files lists its files in the title bar \n{2}, to move between them. Each block on the right is one paragraph, heading or caption of the source. Click a block and the cursor moves to its paragraph, which is highlighted on both sides \n{3}.
 
-0.8 seconds after you stop typing, only the paragraphs you changed are translated again, streamed as they arrive. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back exactly as they were.
+Only the paragraphs you changed are translated again. Each is sent once it has stayed unchanged for the wait set in Settings (5 seconds by default), and its translation streams in as it arrives. A language swap, the PDF of the other language, an export and saving a paired file send the waiting paragraphs at once. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back exactly as they were.
 
 \shot[0.8]{w-open}{(1) Open a file, (2) the files of the project, (3) the paragraph's translation}
 
@@ -414,14 +414,16 @@ The \ui{Writing assistant} section of Settings (\fig{c-assistant} \n{1}) picks t
 \shot{c-assistant}{(1) The model of the writing assistant}
 
 \subsection{Request pacing}
+\label{sec:pacing}
 The \ui{Requests} section (\fig{c-pacing}) controls how many requests reach the provider.
 \begin{itemize}
-\item \n{1} Paragraphs per request: 1 by default. With 2 to 8, several new paragraphs share one request, which suits providers with rate limits. Edited paragraphs are always sent alone, so their translation is revised minimally.
-\item \n{2} Parallel requests: the number of requests at once.
-\item \n{3} With \ui{Use the whole key pool}, it is the number of keys times the requests per key.
+\item \n{1} Wait after an edit: 5 seconds by default, 0 to 60. An edited paragraph is sent for translation once it has stayed unchanged this long, so editing it does not send a request at every pause. At 0 it is sent at once.
+\item \n{2} Paragraphs per request: 1 by default. With 2 to 8, several new paragraphs share one request, which suits providers with rate limits. Edited paragraphs are always sent alone, so their translation is revised minimally.
+\item \n{3} Parallel requests: the number of requests at once.
+\item \n{4} With \ui{Use the whole key pool}, it is the number of keys times the requests per key.
 \end{itemize}
 
-\shot{c-pacing}{(1) Paragraphs per request, (2) parallel requests, (3) follow the key pool}
+\shot{c-pacing}{(1) Wait after an edit, (2) paragraphs per request, (3) parallel requests, (4) follow the key pool}
 
 \subsection{Interface language}
 \ui{Language} at the top of Settings (\fig{c-language} \n{1}) switches the interface between English and Chinese. Translation directions do not change.

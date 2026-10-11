@@ -101,6 +101,7 @@ pub fn run() {
                 EngineSettings {
                     concurrency: settings.effective_concurrency(),
                     batch_size: settings.batch_size,
+                    edit_delay: std::time::Duration::from_secs(settings.translate_delay),
                     ..EngineSettings::default()
                 },
                 tauri::async_runtime::handle().inner().clone(),
@@ -170,6 +171,7 @@ pub fn run() {
             commands::set_mode,
             commands::retranslate_segment,
             commands::retranslate_all,
+            commands::translate_held,
             commands::set_auto_translate,
             commands::set_dirty,
             commands::swap_languages,
@@ -191,6 +193,7 @@ pub fn run() {
             settings_commands::rename_api_key,
             settings_commands::test_api_key,
             settings_commands::set_batch_size,
+            settings_commands::set_translate_delay,
             settings_commands::set_match_pool,
             settings_commands::set_assistant_provider,
             settings_commands::set_active_provider,

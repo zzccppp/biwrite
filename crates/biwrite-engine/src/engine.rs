@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use biwrite_core::glossary::Glossary;
 use biwrite_core::lang::{moved_into, plainly_written_in};
@@ -74,6 +75,45 @@ impl Inner {
         }
     }
 
+    /// Queue the edited paragraphs whose quiet time is over, or (`all`)
+    /// every held one, ahead of the backlog. Returns how many were released.
+    pub fn release_held(self: &Arc<Self>, all: bool) -> usize {
+        let mut st = self.lock();
+        let now = tokio::time::Instant::now();
+        let due: Vec<SegmentId> = st
+            .held
+            .iter()
+            .filter(|(_, until)| all || **until <= now)
+            .map(|(id, _)| *id)
+            .collect();
+        if due.is_empty() {
+            return 0;
+        }
+        for id in &due {
+            st.held.remove(id);
+        }
+        // In document order, the order the author wrote them in.
+        let order: Vec<SegmentId> = st
+            .doc
+            .segments()
+            .iter()
+            .map(|s| s.id)
+            .filter(|id| due.contains(id))
+            .collect();
+        let ready: Vec<SegmentId> = order
+            .into_iter()
+            .filter(|&id| self.reconcile_one(&mut st, id))
+            .collect();
+        st.enqueue_all(&ready, Priority::Urgent);
+        self.pump(&mut st);
+        let states = st.take_touched();
+        self.release(st);
+        if !states.is_empty() {
+            self.sink.segment_states(&states);
+        }
+        due.len()
+    }
+
     /// Bring every segment's translation state in line with the current text.
     /// Segments in `urgent` (just edited) jump the queue; the rest keep their
     /// place or join the back.
@@ -82,7 +122,10 @@ impl Inner {
         let (mut now, mut later) = (Vec::new(), Vec::new());
         for id in ids {
             if self.reconcile_one(st, id) {
-                if urgent.contains(&id) {
+                if st.held.contains_key(&id) {
+                    // Edited moments ago, so queued once its quiet time is over.
+                    st.set_status(id, SegmentStatus::Queued);
+                } else if urgent.contains(&id) {
                     now.push(id);
                 } else {
                     later.push(id);
@@ -459,13 +502,30 @@ impl Engine {
         if text == st.doc.text() && mode == st.doc.mode() {
             return;
         }
+        // A new mode divides the whole text anew. Nothing was typed, so
+        // nothing waits for the edit delay.
+        let typed = mode == st.doc.mode();
         let report = st.doc.apply(text, mode);
         for id in &report.removed {
             st.cancel(*id);
             st.meta.remove(id);
+            st.held.remove(id);
         }
-        // What the user just edited goes ahead of any backlog.
+        // What the user just edited goes ahead of any backlog, once it has
+        // stayed unchanged for the edit delay.
         let edited: HashSet<SegmentId> = report.added.into_iter().chain(report.changed).collect();
+        let delay = st.settings.edit_delay;
+        if typed && !delay.is_zero() && st.settings.auto_translate && !edited.is_empty() {
+            let until = tokio::time::Instant::now() + delay;
+            for id in &edited {
+                st.held.insert(*id, until);
+            }
+            let inner = Arc::clone(&self.inner);
+            self.inner.runtime.spawn(async move {
+                tokio::time::sleep(delay).await;
+                inner.release_held(false);
+            });
+        }
         self.inner.reconcile(st, &edited);
         self.inner.pump(st);
         st.revision += 1;
@@ -534,6 +594,8 @@ impl Engine {
     /// running goes on as it is. Returns how many paragraphs were taken up.
     pub fn continue_translation(&self, other_language: bool) -> usize {
         let mut st = self.inner.lock();
+        // What waits out the edit delay goes now as well.
+        st.held.clear();
         let mode = st.doc.mode();
         let target = st.direction.flipped();
         let text = st.doc.text();
@@ -588,6 +650,8 @@ impl Engine {
 
     fn force(&self, st: &mut State, ids: &[SegmentId], priority: Priority) {
         for &id in ids {
+            // Asked for now, so no edit delay.
+            st.held.remove(&id);
             st.cancel(id);
             st.update(id, |m| {
                 m.forced = true;
@@ -615,6 +679,24 @@ impl Engine {
             }
         }
         self.emit_touched(st);
+    }
+
+    /// How long an edited paragraph waits after its last change before it
+    /// is translated. Zero translates at once.
+    pub fn set_edit_delay(&self, delay: Duration) {
+        let mut st = self.inner.lock();
+        st.settings.edit_delay = delay;
+        if delay.is_zero() {
+            drop(st);
+            self.inner.release_held(true);
+        }
+    }
+
+    /// Translate the edited paragraphs still waiting out the edit delay now
+    /// (before a swap, a Chinese PDF or a paired file's save, which need
+    /// them). Returns how many there were.
+    pub fn translate_held(&self) -> usize {
+        self.inner.release_held(true)
     }
 
     pub fn set_concurrency(&self, n: usize) {
@@ -751,7 +833,7 @@ impl Engine {
     /// Number of queued plus in-flight jobs.
     pub fn pending(&self) -> usize {
         let st = self.inner.lock();
-        st.queue.len() + st.running.len()
+        st.queue.len() + st.running.len() + st.held.len()
     }
 
     pub(crate) fn emit_touched(&self, mut st: MutexGuard<'_, State>) {

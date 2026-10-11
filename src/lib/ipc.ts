@@ -62,6 +62,8 @@ export const ipc = {
     invoke<Snapshot | null>("set_mode", { mode, text, document }),
   retranslateSegment: (id: number) => invoke<void>("retranslate_segment", { id }),
   retranslateAll: () => invoke<void>("retranslate_all"),
+  /** Translate the edited paragraphs waiting out the translation delay now; returns how many. */
+  translateHeld: () => invoke<number>("translate_held"),
   setAutoTranslate: (on: boolean) => invoke<void>("set_auto_translate", { on }),
   setDirty: (dirty: boolean) => invoke<void>("set_dirty", { dirty }),
   /** `keep`: swap now, untranslated paragraphs stay as they are. */
@@ -112,6 +114,7 @@ export const settingsIpc = {
     invoke<SettingsView>("rename_api_key", { id, fingerprint, name }),
   testKey: (id: string, fingerprint: string) => invoke<string>("test_api_key", { id, fingerprint }),
   setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),
+  setTranslateDelay: (seconds: number) => invoke<SettingsView>("set_translate_delay", { seconds }),
   setMatchPool: (on: boolean) => invoke<SettingsView>("set_match_pool", { on }),
   setCheckUpdates: (on: boolean) => invoke<SettingsView>("set_check_updates", { on }),
   setCloseToTray: (on: boolean) => invoke<SettingsView>("set_close_to_tray", { on }),

@@ -613,9 +613,19 @@ fn set_behind(state: &AppState, path: &Path, behind: bool) {
     }
 }
 
+/// A save writes the mirror, so the paragraphs waiting out the translation
+/// delay are sent for translation now instead of after the delay.
+fn translate_held_for_mirror(state: &AppState) {
+    let paired = state.file().pair.is_some();
+    if paired {
+        state.engine.translate_held();
+    }
+}
+
 /// Write the mirror if its translations are ready and it is as it was read
 /// (changes made to it elsewhere are never overwritten).
 pub async fn save_mirror(state: &AppState) -> CommandResult<Option<MirrorSaved>> {
+    translate_held_for_mirror(state);
     let (path, mut saved, text, links, bytes, expected) = {
         let mut guard = state.file();
         let fs = &mut *guard;
@@ -756,6 +766,7 @@ pub fn mirror_path_for(old_source: &Path, new_source: &Path, old_mirror: &Path) 
 /// Write the mirror to `dest` (a Save As of the document): the pair moves
 /// there, and the old mirror stays as it was.
 pub async fn save_mirror_as(state: &AppState, dest: PathBuf) -> CommandResult<Option<MirrorSaved>> {
+    translate_held_for_mirror(state);
     let (text, links, bytes, mut saved, behind) = {
         let fs = state.file();
         let Some(pair) = fs.pair.as_ref() else {

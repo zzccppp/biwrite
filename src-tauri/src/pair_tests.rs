@@ -16,6 +16,10 @@ use crate::settings::{AppSettings, Paths};
 use crate::state::AppState;
 
 pub(crate) fn app_state(dir: &Path) -> AppState {
+    app_state_with(dir, EngineSettings::default())
+}
+
+pub(crate) fn app_state_with(dir: &Path, settings: EngineSettings) -> AppState {
     let engine = Engine::new(
         Arc::new(MockTranslator::with_delay(
             Duration::from_millis(1),
@@ -23,7 +27,7 @@ pub(crate) fn app_state(dir: &Path) -> AppState {
         )),
         Arc::new(MemoryCache::default()),
         Arc::new(NullSink),
-        EngineSettings::default(),
+        settings,
         tokio::runtime::Handle::current(),
     );
     let secrets: Arc<dyn SecretStore> = Arc::new(MemoryStore::default());
@@ -162,6 +166,75 @@ async fn round_trip(dir: &Path, en_path: &Path, zh_path: &Path) {
     assert!(saved.written && saved.changed == 1, "{saved:?}");
     let en_after = std::fs::read_to_string(en_path).unwrap();
     assert_eq!(changed_units(&edited, &en_after).len(), 1);
+}
+
+/// With a translation delay, saving a pair sends the edited paragraph at
+/// once instead of after the delay, and the mirror is written as soon as
+/// its translation is in.
+#[tokio::test]
+async fn saving_a_pair_does_not_wait_for_the_translation_delay() {
+    let (dir, en_path, zh_path) = project("delay", EN, ZH);
+    let state = app_state_with(
+        &dir,
+        EngineSettings {
+            edit_delay: Duration::from_secs(600),
+            ..EngineSettings::default()
+        },
+    );
+    pairing::open(
+        &state,
+        en_path.clone(),
+        read(&en_path),
+        Some((zh_path.clone(), read(&zh_path))),
+    );
+    settle(&state).await;
+    let units = biwrite_core::pair::units(EN, biwrite_core::Mode::Latex);
+    let second = &EN[units[2].content.clone()];
+    let edited = EN.replacen(second, &format!("{second} Edited."), 1);
+    state.engine.update(edited.clone());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(state.engine.pending(), 1, "the edit waits out the delay");
+
+    let first = crate::commands::write_document(&state, en_path.clone(), edited, None)
+        .await
+        .unwrap()
+        .mirror
+        .unwrap();
+    assert_eq!(first.pending, 1, "{first:?}");
+    // The save sent it, so this takes milliseconds instead of the delay.
+    settle(&state).await;
+    let saved = pairing::save_mirror(&state).await.unwrap().unwrap();
+    assert!(saved.written && saved.changed == 1, "{saved:?}");
+    let zh_after = std::fs::read_to_string(&zh_path).unwrap();
+    assert_eq!(changed_units(ZH, &zh_after).len(), 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The translated PDF and an export are made from the translations, so an
+/// edit waiting out the delay is sent when they are asked for.
+#[tokio::test]
+async fn the_translated_tex_sends_what_waits() {
+    let (dir, en_path, _) = project("delay-tex", EN, ZH);
+    std::fs::remove_dir_all(dir.join("sections_zh")).unwrap();
+    let state = app_state_with(
+        &dir,
+        EngineSettings {
+            edit_delay: Duration::from_secs(600),
+            ..EngineSettings::default()
+        },
+    );
+    pairing::open(&state, en_path.clone(), read(&en_path), None);
+    settle(&state).await;
+    let edited = EN.replacen("three steps.", "three short steps.", 1);
+    state.engine.update(edited.clone());
+    assert_eq!(state.engine.pending(), 1);
+    let document = state.engine.document();
+    crate::latex_commands::translation_tex(&state, edited.clone(), document).unwrap();
+    settle(&state).await;
+    let (_, body) = crate::latex_commands::translation_tex(&state, edited, document).unwrap();
+    // The mock translation reverses the text.
+    assert!(body.contains(".spets trohs eerht"), "{body}");
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[tokio::test]

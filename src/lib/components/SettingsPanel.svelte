@@ -108,7 +108,25 @@
   }
 
   onMount(() => {
-    if (focus) requestAnimationFrame(() => body?.querySelector(`#${focus}`)?.scrollIntoView({ block: "start" }));
+    const scroller = body;
+    const target = focus ? scroller?.querySelector<HTMLElement>(`#${focus}`) : null;
+    if (!scroller || !target) return;
+    // The sections above fill in after opening (the TeX status, the cache,
+    // the logs) and push the section down. It is scrolled to again whenever
+    // they change size, until the user scrolls or clicks or ten seconds pass.
+    const show = () => target.scrollIntoView({ block: "start" });
+    const sizes = new ResizeObserver(show);
+    for (const section of scroller.children) sizes.observe(section);
+    const user = ["wheel", "touchstart", "pointerdown", "keydown"];
+    const stop = () => {
+      sizes.disconnect();
+      clearTimeout(timer);
+      for (const name of user) scroller.removeEventListener(name, stop);
+    };
+    const timer = setTimeout(stop, 10_000);
+    for (const name of user) scroller.addEventListener(name, stop, { passive: true });
+    requestAnimationFrame(show);
+    return stop;
   });
 </script>
 
@@ -256,6 +274,18 @@
 
     <section>
       <h3 class="smallcaps">{t("settings.pacing")}</h3>
+      <label class="field">
+        <span class="label">{t("settings.delay", { n: settings.translateDelay })}</span>
+        <input
+          type="range"
+          min="0"
+          max="60"
+          step="1"
+          value={settings.translateDelay}
+          onchange={(e) => run(() => settingsIpc.setTranslateDelay(Number(e.currentTarget.value)))}
+        />
+        <span class="hint">{t("settings.delayHint")}</span>
+      </label>
       <label class="field">
         <span class="label">{t("settings.batch", { n: settings.batchSize })}</span>
         <input

@@ -35,6 +35,10 @@ pub struct EngineSettings {
     /// Segments translated together in one request (1: one per request).
     /// Only fresh translations are batched, never revisions of an edit.
     pub batch_size: usize,
+    /// How long a paragraph the author edits stays untranslated after the
+    /// last change to it, so that typing on does not send a request after
+    /// every pause. Zero translates at once.
+    pub edit_delay: Duration,
 }
 
 impl Default for EngineSettings {
@@ -49,6 +53,7 @@ impl Default for EngineSettings {
             backoff_max: Duration::from_secs(60),
             stream_throttle: Duration::from_millis(50),
             batch_size: 1,
+            edit_delay: Duration::ZERO,
         }
     }
 }
@@ -185,6 +190,9 @@ pub(crate) struct State {
     pub version_seq: u64,
     pub queue: VecDeque<SegmentId>,
     pub running: HashMap<SegmentId, Running>,
+    /// Edited paragraphs waiting out [`EngineSettings::edit_delay`], each
+    /// queued no earlier than the instant given.
+    pub held: HashMap<SegmentId, tokio::time::Instant>,
     pub translator: Arc<dyn Translator>,
     pub settings: EngineSettings,
     pub glossary: Glossary,
@@ -209,6 +217,7 @@ impl State {
             version_seq: 0,
             queue: VecDeque::new(),
             running: HashMap::new(),
+            held: HashMap::new(),
             translator,
             settings,
             glossary: Glossary::default(),
@@ -395,6 +404,7 @@ impl State {
 
     pub fn cancel_all(&mut self) {
         self.queue.clear();
+        self.held.clear();
         for (_, running) in self.running.drain() {
             running.abort.abort();
         }
