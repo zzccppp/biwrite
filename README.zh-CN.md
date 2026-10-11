@@ -2,6 +2,10 @@
 
 # BiWrite
 
+[![LINUX DO 友情链接](https://img.shields.io/badge/LINUX%20DO-%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5-ffb003?style=for-the-badge&labelColor=1c1c1e&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCIgdmlld0JveD0iMCAwIDEyMCAxMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI%2BPGNsaXBQYXRoIGlkPSJhIj48Y2lyY2xlIGN4PSI2MCIgY3k9IjYwIiByPSI0NyIvPjwvY2xpcFBhdGg%2BPGNpcmNsZSBmaWxsPSIjZjBmMGYwIiBjeD0iNjAiIGN5PSI2MCIgcj0iNTAiLz48cmVjdCBmaWxsPSIjMWMxYzFlIiBjbGlwLXBhdGg9InVybCgjYSkiIHg9IjEwIiB5PSIxMCIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIzMCIvPjxyZWN0IGZpbGw9IiNmMGYwZjAiIGNsaXAtcGF0aD0idXJsKCNhKSIgeD0iMTAiIHk9IjQwIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjQwIi8%2BPHJlY3QgZmlsbD0iI2ZmYjAwMyIgY2xpcC1wYXRoPSJ1cmwoI2EpIiB4PSIxMCIgeT0iODAiIHdpZHRoPSIxMDAiIGhlaWdodD0iMzAiLz48L3N2Zz4%3D)](https://linux.do/)
+
+**友情链接** · [LINUX DO](https://linux.do/)，BiWrite 交流讨论的社区。
+
 BiWrite 是一个中英双语的论文写作桌面编辑器。左侧编写正文（LaTeX、Markdown 或纯文本），右侧逐段显示另一种语言，只有改动过的段落会重新翻译。LaTeX 论文在源码旁边编译成 PDF，点击 PDF 中的句子即可在源码中选中该句。写作助手按 [research-builder](https://github.com/qzkinhit/research-builder) 写作技能的规则润色、修改、回答问题、参照已发表的论文仿写新段落和生成图表。界面可选英文或中文。
 
 图文说明书先按一篇论文从模板到投稿的顺序介绍完整写作流程，再逐步介绍每项功能：[使用说明（PDF）](docs/manual/BiWrite-Manual-zh.pdf) · [User guide (PDF)](docs/manual/BiWrite-Manual-en.pdf)。软件工具栏的「说明书」按钮会在 GitHub 上打开它。
@@ -22,7 +26,6 @@ BiWrite 是一个中英双语的论文写作桌面编辑器。左侧编写正文
 * [版本更新](#版本更新)
 * [术语表、缓存与日志](#术语表缓存与日志)
 * [开发](#开发)
-* [友情链接](#友情链接)
 
 ## 功能一览
 
@@ -173,7 +176,3 @@ git push origin v0.2.0
 ```
 
 工作流会检查标签与版本号一致，构建两个安装包并创建附带安装包的 GitHub Release。带后缀的标签（`v0.2.1-beta.1`）发布为预发布版本，软件的「版本更新」中同样会列出。
-
-## 友情链接
-
-* [LINUX DO](https://linux.do/)，BiWrite 交流讨论的社区。

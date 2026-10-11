@@ -2,6 +2,10 @@
 
 # BiWrite
 
+[![LINUX DO friend link](https://img.shields.io/badge/LINUX%20DO-Friend%20link-ffb003?style=for-the-badge&labelColor=1c1c1e&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCIgdmlld0JveD0iMCAwIDEyMCAxMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI%2BPGNsaXBQYXRoIGlkPSJhIj48Y2lyY2xlIGN4PSI2MCIgY3k9IjYwIiByPSI0NyIvPjwvY2xpcFBhdGg%2BPGNpcmNsZSBmaWxsPSIjZjBmMGYwIiBjeD0iNjAiIGN5PSI2MCIgcj0iNTAiLz48cmVjdCBmaWxsPSIjMWMxYzFlIiBjbGlwLXBhdGg9InVybCgjYSkiIHg9IjEwIiB5PSIxMCIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIzMCIvPjxyZWN0IGZpbGw9IiNmMGYwZjAiIGNsaXAtcGF0aD0idXJsKCNhKSIgeD0iMTAiIHk9IjQwIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjQwIi8%2BPHJlY3QgZmlsbD0iI2ZmYjAwMyIgY2xpcC1wYXRoPSJ1cmwoI2EpIiB4PSIxMCIgeT0iODAiIHdpZHRoPSIxMDAiIGhlaWdodD0iMzAiLz48L3N2Zz4%3D)](https://linux.do/)
+
+**Friend link** · [LINUX DO](https://linux.do/), the community where BiWrite is discussed.
+
 A desktop editor for writing an academic paper in English and Chinese at
 once. You write on the left (LaTeX, Markdown or plain text). The right pane
 shows the other language, one block per paragraph, and only the paragraphs
@@ -34,7 +38,6 @@ the toolbar opens it on GitHub.
 * [Updates](#updates)
 * [Glossary, cache and logs](#glossary-cache-and-logs)
 * [Development](#development)
-* [Friends](#friends)
 
 ## What it does
 
@@ -318,7 +321,3 @@ The workflow checks that the tag matches the app version, builds both
 installers and creates the GitHub Release with them attached. A tag with a
 suffix (`v0.2.1-beta.1`) is published as a pre-release, which the app lists
 under *Updates* as well.
-
-## Friends
-
-* [LINUX DO](https://linux.do/), the community where BiWrite is discussed.
