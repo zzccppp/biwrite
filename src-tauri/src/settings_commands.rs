@@ -23,12 +23,12 @@ use crate::state::AppState;
 const TEST_SENTENCE: &str =
     "Graph neural networks can learn new tasks from a few examples in context.";
 
-fn not_found(id: &str) -> CommandError {
+pub(crate) fn not_found(id: &str) -> CommandError {
     CommandError::Settings(format!("unknown provider {id}"))
 }
 
 /// Run blocking keychain work off the async runtime.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> CommandResult<T> {
     tokio::task::spawn_blocking(f)
@@ -107,6 +107,12 @@ pub async fn save_provider(
         s.active_provider == id
     };
     state.invalidate_assistant();
+    // Moved to another host, model or API, or no longer squeezable: its
+    // squeeze stops.
+    let saved = state.settings().provider(&id).cloned();
+    if let Some(entry) = saved {
+        state.squeeze.board_for(&entry);
+    }
     if is_active {
         state.apply_active_provider()?;
     }
@@ -131,6 +137,7 @@ pub async fn delete_provider(
     let was_active = {
         let mut s = state.settings();
         s.providers.retain(|p| p.config.id != id);
+        state.squeeze.forget(&id);
         let was_active = s.active_provider == id;
         if was_active {
             s.active_provider = MOCK_ID.to_owned();
@@ -238,6 +245,8 @@ pub async fn add_api_keys(
         }
         state.persist(&s)?;
     }
+    // The squeeze tries the keys it read when it started.
+    state.squeeze.stop(&id);
     // Added keys: requests in flight go on.
     state.reload_keys(&id)?;
     Ok(state.settings_view())
@@ -427,6 +436,8 @@ pub async fn test_api_key(
         state.prompts(),
         state.request_log.clone(),
     )?;
+    // A key that answers got through.
+    state.squeeze.join(&entry, &provider);
     let request = TranslationRequest {
         source: TEST_SENTENCE.to_owned(),
         ..Default::default()
@@ -583,6 +594,8 @@ fn update_key_count(
     count: usize,
     parts: usize,
 ) -> CommandResult<SettingsView> {
+    // The squeeze tries the keys it read when it started.
+    state.squeeze.stop(id);
     let is_active = {
         let mut s = state.settings();
         if !s.set_key_count(id, count, parts) {
@@ -653,6 +666,9 @@ pub async fn test_provider(state: State<'_, AppState>, id: String) -> CommandRes
         state.prompts(),
         state.request_log.clone(),
     )?;
+    if let Some(http) = &built.http {
+        state.squeeze.join(&entry, http);
+    }
     let request = TranslationRequest {
         source: TEST_SENTENCE.to_owned(),
         ..Default::default()

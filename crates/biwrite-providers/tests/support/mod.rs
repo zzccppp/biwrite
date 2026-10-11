@@ -125,7 +125,7 @@ impl MockServer {
     }
 }
 
-async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<Recorded> {
+pub async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<Recorded> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     let head_end = loop {

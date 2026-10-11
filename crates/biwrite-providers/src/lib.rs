@@ -22,6 +22,7 @@ mod observe;
 mod openai;
 mod provider;
 mod responses;
+mod squeeze;
 
 pub mod clean;
 pub mod config;
@@ -44,6 +45,10 @@ pub use observe::{
 };
 pub use prompt::{DefaultPrompts, PromptFiles, PromptSource};
 pub use provider::{HttpProvider, TRANSLATE};
+pub use squeeze::{
+    ChangeFn, DROP_AFTER, KeyProgress, PROBE_TEXT, STALE_AFTER, Squeeze, SqueezeBoard,
+    SqueezeChange, ThroughView,
+};
 
 /// Build the translator for a (validated) provider configuration, without a
 /// request log.

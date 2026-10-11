@@ -36,6 +36,8 @@ import type {
   SegmentState,
   SessionUsage,
   SessionView,
+  SqueezeEvent,
+  SqueezeView,
   SettingsView,
   SkillInfo,
   Snapshot,
@@ -113,6 +115,9 @@ export const settingsIpc = {
   renameKey: (id: string, fingerprint: string, name: string) =>
     invoke<SettingsView>("rename_api_key", { id, fingerprint, name }),
   testKey: (id: string, fingerprint: string) => invoke<string>("test_api_key", { id, fingerprint }),
+  squeezeStatus: (id: string) => invoke<SqueezeView>("squeeze_status", { id }),
+  squeezeStart: (id: string) => invoke<SqueezeView>("squeeze_start", { id }),
+  squeezeStop: (id: string) => invoke<SqueezeView>("squeeze_stop", { id }),
   setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),
   setTranslateDelay: (seconds: number) => invoke<SettingsView>("set_translate_delay", { seconds }),
   setMatchPool: (on: boolean) => invoke<SettingsView>("set_match_pool", { on }),
@@ -230,6 +235,7 @@ export interface EngineEvents {
   onRequest(record: RequestRecord): void;
   onAssist(event: AssistEvent): void;
   onFills(fills: Fill[]): void;
+  onSqueeze(event: SqueezeEvent): void;
 }
 
 export async function subscribe(handlers: EngineEvents): Promise<UnlistenFn> {
@@ -240,6 +246,7 @@ export async function subscribe(handlers: EngineEvents): Promise<UnlistenFn> {
     listen<RequestRecord>("request-log", (e) => handlers.onRequest(e.payload)),
     listen<AssistEvent>("assist", (e) => handlers.onAssist(e.payload)),
     listen<Fill[]>("segment-fills", (e) => handlers.onFills(e.payload)),
+    listen<SqueezeEvent>("squeeze", (e) => handlers.onSqueeze(e.payload)),
   ]);
   return () => unlisten.forEach((fn) => fn());
 }

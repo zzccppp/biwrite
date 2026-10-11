@@ -17,6 +17,7 @@ use crate::request_log::RequestLog;
 use crate::secrets::SecretStore;
 use crate::settings::{AppSettings, Paths};
 use crate::skills::SkillStore;
+use crate::squeeze_commands::SqueezeState;
 use crate::updater::UpdateState;
 
 /// An HTTP provider in use, with the id of its settings entry.
@@ -95,6 +96,8 @@ pub struct AppState {
     pub skills: SkillStore,
     pub latex: LatexState,
     pub updates: UpdateState,
+    /// Keys that got through to crowded relays, and squeezes running.
+    pub squeeze: SqueezeState,
 }
 
 impl AppState {
@@ -131,6 +134,7 @@ impl AppState {
             skills,
             latex,
             updates: UpdateState::default(),
+            squeeze: SqueezeState::default(),
         }
     }
 

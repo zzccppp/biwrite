@@ -88,6 +88,9 @@ impl AppState {
             self.prompts(),
             self.request_log.clone(),
         )?;
+        if let Some(http) = &built.http {
+            self.squeeze.join(settings.active(), http);
+        }
         self.engine.set_translator(built.translator);
         self.engine
             .set_concurrency(settings.effective_concurrency());
@@ -127,6 +130,8 @@ impl AppState {
                 .as_ref()
                 .filter(|(used, http)| used == id && same_destination(http.config(), &entry.config))
             {
+                // Two keys or more: getting through may apply now.
+                self.squeeze.join(entry, http);
                 http.reload_keys(Arc::clone(&keys));
             }
             // An assistant provider being built now read the old keys.
@@ -137,6 +142,7 @@ impl AppState {
         }
         match in_use(&self.translation_http) {
             Some(http) => {
+                self.squeeze.join(entry, &http);
                 http.reload_keys(keys);
                 self.engine.set_concurrency(concurrency);
                 self.engine.retry_failed();
@@ -209,6 +215,7 @@ impl AppState {
                 Arc::new(DefaultPrompts),
                 self.request_log.clone(),
             )?;
+            self.squeeze.join(&entry, &http);
             // No other lock is held while reading the settings: they come
             // before the providers in use.
             if self.settings().assistant().config != entry.config {

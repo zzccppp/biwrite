@@ -15,10 +15,15 @@
 //!   and no limit this is a provider without a pool.
 //! - The keys can be read again ([`KeyPool::reload`]) while requests are in
 //!   flight: a key that stays keeps its state and its requests in flight.
+//! - With a [`SqueezeBoard`] that counts the relay as crowded (see
+//!   [`SqueezeBoard::crowded`]), keys that got through go first, and a
+//!   request waits for room on one of them. One of them that fails with a
+//!   server error is tried again at once rather than paused, until the board
+//!   drops it. Otherwise the pool takes turns as without a board.
 
 use std::pin::pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use biwrite_core::ContentHash;
@@ -27,6 +32,7 @@ use serde::Serialize;
 use tokio::sync::Notify;
 
 use crate::observe::KeyUse;
+use crate::squeeze::SqueezeBoard;
 
 /// Fetches the provider's keys (from the OS keychain in the app), in pool
 /// order. Called lazily on a blocking thread: once per translator, and again
@@ -40,6 +46,8 @@ const MAX_COOLDOWN: Duration = Duration::from_secs(120);
 /// Pause after a server or network error, so the next request tries
 /// another key first.
 const TRANSIENT_PAUSE: Duration = Duration::from_secs(2);
+/// Longest wait for room on a key that got through before looking again.
+const LOOK_AGAIN: Duration = Duration::from_secs(1);
 /// A rejected key is tried again after this long (an account topped up, a
 /// rejection that was not about the key after all).
 const REJECTED_RETRY: Duration = Duration::from_secs(600);
@@ -125,6 +133,8 @@ struct PoolState {
     /// The keys `slots` describe, in pool order, and the reading
     /// ([`KeyPool::epoch`]) they come from.
     keys: Arc<[String]>,
+    /// The keys' fingerprints, in the same order.
+    fingerprints: Vec<String>,
     epoch: u64,
     slots: Vec<Slot>,
 }
@@ -134,6 +144,7 @@ impl Default for PoolState {
         Self {
             next: 0,
             keys: Arc::from(Vec::new()),
+            fingerprints: Vec::new(),
             epoch: 0,
             slots: Vec::new(),
         }
@@ -159,6 +170,7 @@ impl PoolState {
             .map(|k| self.slot(k).cloned().unwrap_or_default())
             .collect();
         self.slots = slots;
+        self.fingerprints = keys.iter().map(|k| fingerprint(k)).collect();
         self.keys = Arc::clone(keys);
         self.epoch = epoch;
     }
@@ -181,6 +193,8 @@ pub(crate) struct KeyPool {
     state: Mutex<PoolState>,
     /// Signalled whenever a lease ends or the keys change.
     freed: Notify,
+    /// The keys of this provider that got through a crowded relay.
+    board: OnceLock<Arc<SqueezeBoard>>,
 }
 
 /// A key handed out for one request. Dropping it frees the key's slot.
@@ -246,7 +260,7 @@ fn fault(err: &TranslateError) -> Fault {
     }
 }
 
-fn mentions_quota(message: &str) -> bool {
+pub(crate) fn mentions_quota(message: &str) -> bool {
     let lower = message.to_lowercase();
     [
         "insufficient_quota",
@@ -293,7 +307,14 @@ impl KeyPool {
             loaded: tokio::sync::Mutex::new(None),
             state: Mutex::new(PoolState::default()),
             freed: Notify::new(),
+            board: OnceLock::new(),
         }
+    }
+
+    /// Prefer the keys on `board`, and record there the keys that get
+    /// through. Only the first board joined counts.
+    pub fn join_board(&self, board: Arc<SqueezeBoard>) {
+        let _ = self.board.set(board);
     }
 
     fn state(&self) -> MutexGuard<'_, PoolState> {
@@ -396,7 +417,38 @@ impl KeyPool {
         let ready = |s: &Slot| s.ready(now);
         let start = st.next % count;
         let order: Vec<usize> = (0..count).map(|k| (start + k) % count).collect();
-        let index = if st.slots.iter().any(ready) {
+        // Keys that got through count only while the server turns other
+        // keys away: a pool where every key answers takes turns.
+        let through: Vec<bool> = match self.board.get() {
+            Some(board) if board.crowded() => st
+                .fingerprints
+                .iter()
+                .map(|f| board.is_through(f))
+                .collect(),
+            _ => vec![false; count],
+        };
+        let index = if (0..count).any(|i| through[i] && st.slots[i].rejected.is_none()) {
+            // Keys that got through answer, and the others are most likely
+            // turned away. A request waits for room on one of them, or for
+            // its pause to end, and looks again within a second: the relay
+            // may stop turning keys away, or another key may get through.
+            let index = order
+                .iter()
+                .copied()
+                .filter(|&i| through[i] && ready(&st.slots[i]) && has_room(&st.slots[i]))
+                .min_by_key(|&i| st.slots[i].in_flight);
+            if index.is_none() {
+                let soon = now + LOOK_AGAIN;
+                let until = (0..count)
+                    .filter(|&i| through[i])
+                    .filter_map(|i| st.slots[i].cool_until)
+                    .filter(|&t| t > now)
+                    .min()
+                    .map_or(soon, |t| t.min(soon));
+                return Pick::Wait(Some(until));
+            }
+            index
+        } else if st.slots.iter().any(ready) {
             // Full ready keys are waited for: a paused or rejected key
             // would most likely fail.
             order
@@ -442,6 +494,28 @@ impl KeyPool {
         let fault = fault(err);
         if fault == Fault::None {
             return Failover::No;
+        }
+        let server = matches!(err, TranslateError::Server { .. });
+        if let Some(board) = self.board.get() {
+            let print = fingerprint(&lease.key);
+            let was_through = board.is_through(&print);
+            let still_through = board.failed(&print, err, lease.started);
+            if still_through && server && board.crowded() {
+                // A key that got through to a crowded relay fails now and
+                // then: it is asked again at once, without a pause.
+                if let Some(slot) = self.state().slot_mut(&lease.key) {
+                    slot.route = random_u64();
+                }
+                return if self.epoch.load(Ordering::Acquire) != self.state().epoch {
+                    Failover::KeysChanged
+                } else {
+                    Failover::Now
+                };
+            }
+            // A key that never got through, turned away by the server.
+            if server && !was_through {
+                board.note_turned_away();
+            }
         }
         let mut st = self.state();
         let now = Instant::now();
@@ -495,6 +569,9 @@ impl KeyPool {
     /// it no longer holds. A failure of a request sent after it is newer
     /// news, and stays.
     pub fn succeeded(&self, lease: &Lease<'_>) {
+        if let Some(board) = self.board.get() {
+            board.answered(&fingerprint(&lease.key));
+        }
         if let Some(slot) = self.state().slot_mut(&lease.key) {
             slot.ok_at = slot.ok_at.max(Some(lease.started));
             if slot
@@ -1032,5 +1109,182 @@ mod tests {
         p.report(&long, &quota);
         drop(long);
         assert_eq!(p.status().unwrap()[0].state, "ready");
+    }
+
+    fn busy() -> TranslateError {
+        TranslateError::Server {
+            status: 500,
+            retry_after: None,
+        }
+    }
+
+    /// A pool at a crowded relay.
+    fn boarded(keys: &[&str], limit: Option<u32>) -> (KeyPool, Arc<SqueezeBoard>) {
+        let p = pool(keys, limit);
+        let board = SqueezeBoard::for_relay();
+        p.join_board(Arc::clone(&board));
+        (p, board)
+    }
+
+    /// The relay turned keys away often enough to count as crowded.
+    fn crowd(board: &SqueezeBoard) {
+        for _ in 0..crate::squeeze::CROWDED_AFTER {
+            board.note_turned_away();
+        }
+        assert!(board.crowded());
+    }
+
+    #[tokio::test]
+    async fn a_key_that_gets_through_goes_first() {
+        let (p, board) = boarded(&["k-aaaa", "k-bbbb", "k-cccc"], None);
+        // Turned away twice, then the third key gets through.
+        for _ in 0..2 {
+            let l = p.acquire().await.unwrap();
+            p.report(&l, &busy());
+        }
+        tokio::time::sleep(TRANSIENT_PAUSE).await;
+        let l = p.acquire().await.unwrap();
+        assert_eq!(l.key, "k-cccc");
+        p.succeeded(&l);
+        drop(l);
+        assert!(board.is_through(&fingerprint("k-cccc")));
+        // Every request goes to it now, several at a time.
+        let held: Vec<_> = futures_lite_join(&p, 4).await;
+        assert!(held.iter().all(|l| l.key == "k-cccc"));
+    }
+
+    async fn futures_lite_join(p: &KeyPool, n: usize) -> Vec<Lease<'_>> {
+        let mut out = Vec::new();
+        for _ in 0..n {
+            out.push(p.acquire().await.unwrap());
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_full_key_that_got_through_is_waited_for() {
+        let (p, board) = boarded(&["k-aaaa", "k-bbbb"], Some(1));
+        board.answered(&fingerprint("k-bbbb"));
+        let turned = p.acquire().await.unwrap();
+        assert_eq!(turned.key, "k-aaaa");
+        p.report(&turned, &busy());
+        drop(turned);
+        crowd(&board);
+        tokio::time::sleep(TRANSIENT_PAUSE).await;
+        let first = p.acquire().await.unwrap();
+        assert_eq!(first.key, "k-bbbb");
+        // The other key is free again, but would be turned away.
+        let waiting = tokio::time::timeout(Duration::from_millis(50), p.acquire()).await;
+        assert!(
+            waiting.is_err(),
+            "waits for room on the key that got through"
+        );
+        let next = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            drop(first);
+        };
+        let (second, ()) = tokio::join!(p.acquire(), next);
+        assert_eq!(second.unwrap().key, "k-bbbb");
+    }
+
+    #[tokio::test]
+    async fn a_key_through_is_asked_again_at_once_until_it_fails_six_times() {
+        let (p, board) = boarded(&["k-aaaa", "k-bbbb"], None);
+        board.answered(&fingerprint("k-aaaa"));
+        let first = p.acquire().await.unwrap();
+        drop(first);
+        let turned = p.acquire().await.unwrap();
+        assert_eq!(turned.key, "k-bbbb");
+        p.report(&turned, &busy());
+        drop(turned);
+        crowd(&board);
+        for n in 1..crate::squeeze::DROP_AFTER {
+            let l = p.acquire().await.unwrap();
+            assert_eq!(l.key, "k-aaaa", "try {n}");
+            assert_eq!(p.report(&l, &busy()), Failover::Now);
+            drop(l);
+            assert_eq!(p.status().unwrap()[0].state, "ready", "no pause");
+        }
+        let l = p.acquire().await.unwrap();
+        assert_eq!(l.key, "k-aaaa");
+        p.report(&l, &busy());
+        drop(l);
+        assert!(!board.is_through(&fingerprint("k-aaaa")));
+        // Back to taking turns: the paused key waits.
+        assert_eq!(p.acquire().await.unwrap().key, "k-bbbb");
+    }
+
+    #[tokio::test]
+    async fn a_pool_where_every_key_answers_takes_turns_with_a_board() {
+        let (p, board) = boarded(&["k-aaaa", "k-bbbb", "k-cccc"], None);
+        let mut used = Vec::new();
+        for _ in 0..6 {
+            let l = p.acquire().await.unwrap();
+            used.push(l.key.clone());
+            p.succeeded(&l);
+        }
+        assert_eq!(board.through().len(), 3);
+        assert_eq!(
+            used,
+            ["k-aaaa", "k-bbbb", "k-cccc", "k-aaaa", "k-bbbb", "k-cccc"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_pool_with_a_board_pauses_and_takes_turns_as_before() {
+        let p = pool(&["k-aaaa", "k-bbbb", "k-cccc"], None);
+        let board = SqueezeBoard::new();
+        p.join_board(Arc::clone(&board));
+        let a = p.acquire().await.unwrap();
+        p.succeeded(&a);
+        drop(a);
+        // Server errors now and then, of a key that answered and of one that
+        // did not: each pauses its key and hands over, as without a board.
+        for key in ["k-bbbb", "k-cccc", "k-aaaa"] {
+            let l = p.acquire().await.unwrap();
+            assert_eq!(l.key, key);
+            assert_eq!(p.report(&l, &busy()), Failover::Now);
+            drop(l);
+            tokio::time::sleep(TRANSIENT_PAUSE).await;
+        }
+        assert!(!board.crowded());
+        let state = p.status().unwrap();
+        assert!(state.iter().all(|s| s.state == "ready"), "{state:?}");
+        let used: Vec<String> = futures_lite_join(&p, 3)
+            .await
+            .into_iter()
+            .map(|l| l.key.clone())
+            .collect();
+        assert_eq!(used, ["k-bbbb", "k-cccc", "k-aaaa"]);
+    }
+
+    #[tokio::test]
+    async fn a_waiting_request_finds_a_key_that_got_through_elsewhere() {
+        let (p, board) = boarded(&["k-aaaa", "k-bbbb", "k-cccc"], Some(1));
+        board.answered(&fingerprint("k-aaaa"));
+        crowd(&board);
+        let held = p.acquire().await.unwrap();
+        assert_eq!(held.key, "k-aaaa");
+        // A squeeze gets the third key through while this request waits.
+        let later = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            board.answered(&fingerprint("k-cccc"));
+        };
+        let (next, ()) = tokio::join!(
+            tokio::time::timeout(Duration::from_secs(3), p.acquire()),
+            later
+        );
+        assert_eq!(next.expect("found within a second").unwrap().key, "k-cccc");
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn without_a_board_nothing_changes() {
+        let p = pool(&["k-aaaa", "k-bbbb"], None);
+        let l = p.acquire().await.unwrap();
+        p.succeeded(&l);
+        drop(l);
+        // Turns are still taken.
+        assert_eq!(p.acquire().await.unwrap().key, "k-bbbb");
     }
 }

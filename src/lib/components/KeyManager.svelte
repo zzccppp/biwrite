@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { count, t } from "../i18n.svelte";
   import { errorMessage, settingsIpc } from "../ipc";
-  import type { KeyEntry, ProviderView, SettingsView } from "../types";
+  import type { KeyEntry, ProviderView, SettingsView, SqueezeKey, SqueezeView } from "../types";
 
   interface Props {
     provider: ProviderView;
@@ -18,6 +18,9 @@
   let busy = $state<string | null>(null);
   let message = $state<{ ok: boolean; text: string } | null>(null);
   let loaded = $state(false);
+  let squeeze = $state<SqueezeView | null>(null);
+  /** Ticks every few seconds, so "3 min ago" moves on. */
+  let now = $state(Date.now());
 
   const perKey = $derived(provider.keyConcurrency ?? null);
   const parallel = $derived(perKey ? keys.length * perKey : null);
@@ -43,6 +46,43 @@
     }
     loaded = true;
   }
+
+  async function refreshSqueeze(): Promise<void> {
+    now = Date.now();
+    if (!provider.squeezable && !squeeze?.running) return;
+    try {
+      squeeze = await settingsIpc.squeezeStatus(provider.id);
+    } catch {
+      // The next tick tries again.
+    }
+  }
+
+  async function toggleSqueeze(): Promise<void> {
+    const view = await act("squeeze", () =>
+      squeeze?.running ? settingsIpc.squeezeStop(provider.id) : settingsIpc.squeezeStart(provider.id),
+    );
+    if (view) squeeze = view;
+  }
+
+  function squeezeOf(k: KeyEntry): SqueezeKey | undefined {
+    return squeeze?.keys.find((s) => s.fingerprint === k.fingerprint);
+  }
+
+  function ago(ms: number): string {
+    const minutes = Math.floor((now - ms) / 60_000);
+    if (minutes < 1) return t("squeeze.agoNow");
+    if (minutes < 60) return t("squeeze.agoMin", { n: minutes });
+    return t("squeeze.agoHour", { n: Math.floor(minutes / 60) });
+  }
+
+  /** A key that got through and was not answered for five minutes may
+   * have lost its place. */
+  const STALE_MS = 5 * 60_000;
+
+  /** Keys that got through are shown while that matters: the relay turns
+   * keys away, or a squeeze ran. A pool where every key answers shows its
+   * usual states. */
+  const showThrough = $derived(!!squeeze && (squeeze.running || squeeze.started !== null || squeeze.crowded));
 
   /** Live state from the provider in use (no keychain access). */
   async function refreshState(): Promise<void> {
@@ -134,7 +174,11 @@
 
   onMount(() => {
     void reload();
-    const timer = setInterval(() => void refreshState(), 1500);
+    void refreshSqueeze();
+    const timer = setInterval(() => {
+      void refreshState();
+      void refreshSqueeze();
+    }, 1500);
     return () => clearInterval(timer);
   });
 
@@ -190,6 +234,12 @@
         {#each [3, 5, 8, 10, 15, 20, 50, 100] as n (n)}<option value={n}>{n}</option>{/each}
       </select>
     </label>
+    {#if squeeze?.running || (provider.squeezable && keys.length > 0)}
+      <span class="spacer"></span>
+      <button class="btn squeeze" class:primary={!squeeze?.running} onclick={toggleSqueeze} disabled={!!busy}>
+        {squeeze?.running ? t("squeeze.stop") : t("squeeze.start")}
+      </button>
+    {/if}
   </div>
 
   <div class="table">
@@ -202,7 +252,14 @@
       <span></span>
     </div>
     {#each keys as k (k.fingerprint)}
-      <div class="entry" data-state={k.state}>
+      {@const sq = squeezeOf(k)}
+      {@const through = showThrough && !!sq?.throughSince && k.state !== "cooling" && k.state !== "rejected"}
+      <div
+        class="entry"
+        data-state={k.state}
+        data-squeeze={through ? "through" : sq?.refused ? "refused" : squeeze?.running && sq ? "trying" : null}
+        class:stale={through && !!sq?.lastOk && now - sq.lastOk > STALE_MS}
+      >
         <span class="mono faint">{k.number}</span>
         <input
           class="input name"
@@ -213,7 +270,17 @@
           spellcheck="false"
         />
         <span class="mono">…{k.tail}</span>
-        <span class="state" title={k.detail ?? ""}>{t(stateLabel[k.state])}</span>
+        {#if through && sq?.throughSince}
+          <span class="state" title={sq.lastOk ? t("squeeze.lastOk", { ago: ago(sq.lastOk) }) : ""}>
+            {t("squeeze.through", { ago: ago(sq.throughSince) })}
+          </span>
+        {:else if squeeze?.running && sq && !sq.refused}
+          <span class="state" title={sq.lastError ?? ""}>{t("squeeze.trying", { n: sq.tries + (sq.trying ? 1 : 0) })}</span>
+        {:else}
+          <span class="state" title={sq?.lastError ?? k.detail ?? ""}>
+            {t(stateLabel[sq?.refused ? "rejected" : k.state])}
+          </span>
+        {/if}
         <span class="num mono">{k.inFlight}</span>
         <span class="actions">
           <button class="btn" onclick={() => test(k)} disabled={!!busy}>
@@ -377,8 +444,19 @@
   .entry[data-state="cooling"] .state {
     color: var(--accent);
   }
-  .entry[data-state="rejected"] .state {
+  .entry[data-state="rejected"] .state,
+  .entry[data-squeeze="refused"] .state {
     color: var(--error);
+  }
+  .entry[data-squeeze="through"] .state {
+    color: #3f8f5a;
+    font-style: normal;
+  }
+  .entry[data-squeeze="through"].stale .state {
+    color: var(--accent);
+  }
+  .entry[data-squeeze="trying"] .state {
+    color: var(--accent);
   }
   .actions {
     display: inline-flex;

@@ -45,6 +45,7 @@
     SavedView,
     SessionView,
     SettingsView,
+    SqueezeEvent,
     SkillInfo,
   } from "./lib/types";
 
@@ -72,6 +73,95 @@
   let settingsFocus = $state<string | null>(null);
   /** A newer release found at startup. */
   let updateAvailable = $state<string | null>(null);
+  /** Squeezes running in the background, by provider id. */
+  let squeezes = $state<Record<string, SqueezeEvent>>({});
+  const squeezeLabel = $derived.by(() => {
+    const running = Object.values(squeezes).filter((e) => e.running);
+    if (running.length === 0) return null;
+    return {
+      text: running.map((e) => t("squeeze.status", { through: e.through, total: e.total })).join(" · "),
+      title: running.map((e) => e.providerName).join(" · "),
+    };
+  });
+
+  /** A key got through: shown until dismissed, with the time since a key of
+   * that provider was last answered, as a key left idle loses its place
+   * within minutes. */
+  let squeezeAlert = $state<{
+    providerId: string;
+    name: string;
+    through: number;
+    total: number;
+    lastOk: number;
+  } | null>(null);
+  let alertNow = $state(Date.now());
+  $effect(() => {
+    const id = squeezeAlert?.providerId;
+    if (!id) return;
+    const timer = setInterval(() => void refreshAlert(id), 15_000);
+    return () => clearInterval(timer);
+  });
+  // A provider removed meanwhile leaves nothing to switch to.
+  $effect(() => {
+    const id = squeezeAlert?.providerId;
+    if (id && settings && !settings.providers.some((p) => p.id === id)) squeezeAlert = null;
+  });
+  const alertAgo = $derived.by(() => {
+    if (!squeezeAlert) return "";
+    const minutes = Math.floor((alertNow - squeezeAlert.lastOk) / 60_000);
+    if (minutes < 1) return t("squeeze.agoNow");
+    if (minutes < 60) return t("squeeze.agoMin", { n: minutes });
+    return t("squeeze.agoHour", { n: Math.floor(minutes / 60) });
+  });
+
+  /** The keys of the alert's provider as they are now. */
+  async function refreshAlert(id: string): Promise<void> {
+    alertNow = Date.now();
+    try {
+      const view = await settingsIpc.squeezeStatus(id);
+      if (squeezeAlert?.providerId !== id) return;
+      const through = view.keys.filter((k) => k.throughSince !== null);
+      squeezeAlert =
+        through.length === 0
+          ? null
+          : { ...squeezeAlert, through: through.length, lastOk: Math.max(...through.map((k) => k.lastOk ?? 0)) };
+    } catch {
+      // The next tick tries again.
+    }
+  }
+
+  function onSqueeze(event: SqueezeEvent): void {
+    squeezes = { ...squeezes, [event.providerId]: event };
+    if (event.kind === "through") {
+      session.flash(t("squeeze.noticeThrough", { name: event.providerName, n: event.number }));
+      alertNow = Date.now();
+      squeezeAlert = {
+        providerId: event.providerId,
+        name: event.providerName,
+        through: event.through,
+        total: event.total,
+        lastOk: alertNow,
+      };
+    } else if (squeezeAlert?.providerId === event.providerId) {
+      squeezeAlert = event.through === 0 ? null : { ...squeezeAlert, through: event.through, total: event.total };
+    }
+    if (event.kind === "ended" && event.allThrough) {
+      session.flash(
+        event.through === event.total
+          ? t("squeeze.noticeAll", { name: event.providerName })
+          : t("squeeze.noticeUsable", { name: event.providerName, n: event.through }),
+      );
+    }
+  }
+
+  async function useSqueezed(): Promise<void> {
+    if (!squeezeAlert) return;
+    try {
+      settings = await settingsIpc.setActive(squeezeAlert.providerId);
+    } catch (err) {
+      session.flash(errorMessage(err));
+    }
+  }
   /** Swap as soon as every paragraph is translated (the swap button was pressed early). */
   let swapWhenReady = $state(false);
   /** The swap button was pressed early, so the next press swaps at once. */
@@ -1340,6 +1430,7 @@
           onRequest: (record) => requestLog.apply(record),
           onAssist: (event) => assist.onEvent(event),
           onFills: (fills) => applyFills(fills),
+          onSqueeze: (event) => onSqueeze(event),
         });
         if (disposed) off();
         else unlisten = off;
@@ -1504,8 +1595,20 @@
   {/if}
   </div>
 
+  {#if squeezeAlert}
+    <div class="squeeze-alert" role="status" class:stale={alertNow - squeezeAlert.lastOk > 5 * 60_000}>
+      <span>{t("squeeze.alert", { name: squeezeAlert.name, through: squeezeAlert.through, total: squeezeAlert.total })}</span>
+      <span class="ago" title={t("squeeze.lastOk", { ago: alertAgo })}>{alertAgo}</span>
+      {#if settings && settings.activeProvider !== squeezeAlert.providerId}
+        <button class="btn primary" onclick={useSqueezed}>{t("squeeze.use")}</button>
+      {/if}
+      <button class="btn" onclick={() => (squeezeAlert = null)}>{t("squeeze.dismiss")}</button>
+    </div>
+  {/if}
+
   <StatusBar
     {session}
+    squeezing={squeezeLabel}
     provider={settings?.activeLabel ?? ""}
     update={updateAvailable}
     onupdate={() => openSettings("updates")}
@@ -1571,6 +1674,33 @@
 {/if}
 
 <style>
+  .squeeze-alert {
+    position: fixed;
+    right: 16px;
+    bottom: 34px;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: min(560px, calc(100vw - 32px));
+    padding: 9px 12px;
+    background: var(--paper);
+    border: 1px solid #3f8f5a;
+    border-radius: 6px;
+    box-shadow: 0 12px 32px -18px rgba(0, 0, 0, 0.45);
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  .squeeze-alert .ago {
+    color: #3f8f5a;
+    white-space: nowrap;
+  }
+  .squeeze-alert.stale {
+    border-color: var(--accent);
+  }
+  .squeeze-alert.stale .ago {
+    color: var(--accent);
+  }
   .app {
     display: grid;
     grid-template-rows: auto 1fr auto;

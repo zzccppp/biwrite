@@ -57,7 +57,35 @@ pub fn same_destination(a: &ProviderConfig, b: &ProviderConfig) -> bool {
     a.kind == b.kind && origin(a) == origin(b)
 }
 
+/// A relay that, when full, answers only the keys that got through.
+fn is_crowded_relay(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host.contains("anyrouter"))
+}
+
 impl ProviderEntry {
+    /// Getting through applies to it: a crowded relay, or a pool of
+    /// several keys.
+    pub fn squeezable(&self) -> bool {
+        self.config.kind != ProviderKind::Mock && (self.key_count >= 2 || self.crowded_relay())
+    }
+
+    /// A relay that, when full, answers only the keys that got through
+    /// (AnyRouter): the key pool sends to those keys first without a squeeze
+    /// started for it.
+    pub fn crowded_relay(&self) -> bool {
+        is_crowded_relay(&self.config.base_url)
+    }
+
+    /// What a key that got through got through to. A key through for one
+    /// host, model and API is not through for another.
+    pub fn squeeze_target(&self) -> String {
+        let c = &self.config;
+        format!("{:?} {} {} {:?}", c.kind, c.base_url, c.model, c.wire_api)
+    }
+
     /// How much of the stored keys may be read. Versions without key pools
     /// drop `key_count` when they save the settings (it then loads as 1),
     /// versions that keep a pool in one item drop `key_parts` (then the
@@ -387,6 +415,8 @@ pub struct ProviderView {
     pub key_names: BTreeMap<String, String>,
     pub builtin: bool,
     pub needs_key: bool,
+    /// Getting through applies (see `ProviderEntry::squeezable`).
+    pub squeezable: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -435,6 +465,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
                 key_names: p.key_names.clone(),
                 builtin: p.config.id == MOCK_ID,
                 needs_key: p.config.kind.needs_key(),
+                squeezable: p.squeezable(),
             })
             .collect(),
         active_provider: active.config.id.clone(),

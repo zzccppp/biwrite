@@ -55,6 +55,10 @@ const WRONG = PARAMS.has("wrong");
 const HOLD = PARAMS.has("hold");
 /** `slow=MS`: the cache answers after MS milliseconds, with many groups (settings fill in late). */
 const SLOW = Number(PARAMS.get("slow") ?? 0);
+/** `active=mock`: the offline mock translates (the relay is not in use). */
+const ACTIVE = PARAMS.get("active");
+/** `squeeze=N`: a squeeze gets key k through on its (N + k - 1)-th try, key 6 is invalid. */
+const SQUEEZE = Number(PARAMS.get("squeeze") ?? 3);
 
 const SAMPLE = `Graph neural networks can learn new tasks from a few examples in context.
 
@@ -143,6 +147,7 @@ const state = {
         keyNames: {},
         builtin: true,
         needsKey: false,
+        squeezable: false,
       },
       {
         id: "p-relay",
@@ -161,10 +166,11 @@ const state = {
         keyNames: {},
         builtin: false,
         needsKey: true,
+        squeezable: true,
       },
     ] as ProviderView[],
-    activeProvider: "p-relay",
-    activeLabel: "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+    activeProvider: ACTIVE === "mock" ? "mock" : "p-relay",
+    activeLabel: ACTIVE === "mock" ? "Mock" : "AnyRouter (GPT-6 Astra) · gpt-6-astra",
     concurrency: 4,
     docNote: "",
     presets: [
@@ -355,6 +361,77 @@ function fillKept(): number {
     }, 1400 + 700 * k);
   });
   return kept.length;
+}
+
+/** A squeeze of the relay's pool: tries per key, and when each key got through. */
+const squeezeRun = {
+  running: false,
+  started: null as number | null,
+  tries: POOL.map(() => 0),
+  through: POOL.map(() => null as number | null),
+  timer: undefined as ReturnType<typeof setInterval> | undefined,
+};
+
+function squeezeView() {
+  return {
+    running: squeezeRun.running,
+    started: squeezeRun.started,
+    crowded: squeezeRun.started !== null,
+    // Like the backend: the keys a squeeze tried, and the keys through.
+    keys: squeezeRun.started === null
+      ? []
+      : POOL.map((k, i) => ({
+          fingerprint: k.fingerprint,
+          throughSince: squeezeRun.through[i],
+          lastOk: squeezeRun.through[i],
+          tries: squeezeRun.tries[i],
+          trying: squeezeRun.running && squeezeRun.through[i] === null && !(i === 5 && squeezeRun.tries[i] > 0),
+          refused: i === 5 && squeezeRun.tries[i] > 0,
+          lastError:
+            squeezeRun.tries[i] === 0 || squeezeRun.through[i] !== null
+              ? null
+              : i === 5
+                ? "request rejected (HTTP 401): invalid token"
+                : "provider server error (HTTP 500)",
+        })),
+  };
+}
+
+function squeezeEvent(change: Record<string, unknown>): void {
+  void emit("squeeze", {
+    ...change,
+    providerId: "p-relay",
+    providerName: "AnyRouter (GPT-6 Astra)",
+    running: squeezeRun.running,
+    through: squeezeRun.through.filter((t) => t !== null).length,
+    total: POOL.length,
+  });
+}
+
+function startSqueeze(): void {
+  squeezeRun.running = true;
+  squeezeRun.started = Date.now();
+  squeezeEvent({ kind: "started" });
+  squeezeRun.timer = setInterval(() => {
+    POOL.forEach((_, i) => {
+      if (squeezeRun.through[i] !== null || (i === 5 && squeezeRun.tries[i] > 0)) return;
+      squeezeRun.tries[i] += 1;
+      if (i < 5 && squeezeRun.tries[i] >= SQUEEZE + i) {
+        squeezeRun.through[i] = Date.now();
+        squeezeEvent({ kind: "through", number: i + 1 });
+      } else {
+        squeezeEvent({ kind: "tried" });
+      }
+    });
+    if (squeezeRun.through.slice(0, 5).every((t) => t !== null)) stopSqueeze(true);
+  }, 600);
+}
+
+function stopSqueeze(allThrough: boolean): void {
+  if (!squeezeRun.running) return;
+  clearInterval(squeezeRun.timer);
+  squeezeRun.running = false;
+  squeezeEvent({ kind: "ended", allThrough });
 }
 
 /** Hold the blocks edited from `before` to `state.text` for the translation delay (`hold`). */
@@ -867,6 +944,22 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return state.settings;
   },
   test_api_key: () => "图神经网络可以从上下文中的少量示例学习新任务。",
+  set_active_provider: (a) => {
+    const p = state.settings.providers.find((x) => x.id === String(a.id));
+    if (!p) throw new Error(`unknown provider ${String(a.id)}`);
+    state.settings.activeProvider = p.id;
+    state.settings.activeLabel = p.kind === "mock" ? "Mock" : `${p.name} · ${p.model}`;
+    return clone(state.settings);
+  },
+  squeeze_status: () => clone(squeezeView()),
+  squeeze_start: () => {
+    if (!squeezeRun.running) startSqueeze();
+    return clone(squeezeView());
+  },
+  squeeze_stop: () => {
+    stopSqueeze(false);
+    return clone(squeezeView());
+  },
   set_batch_size: (a) => {
     state.settings.batchSize = Number(a.size);
     return state.settings;

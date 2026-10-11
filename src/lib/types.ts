@@ -157,6 +157,8 @@ export interface ProviderView extends ProviderConfig {
   keyNames: Record<string, string>;
   builtin: boolean;
   needsKey: boolean;
+  /** Getting through applies: a crowded relay, or several keys. */
+  squeezable: boolean;
 }
 
 export interface Preset {
@@ -261,6 +263,41 @@ export interface KeyEntry {
   inFlight: number;
   detail: string | null;
 }
+
+/** One key of a provider getting through to a crowded relay. */
+export interface SqueezeKey {
+  fingerprint: string;
+  /** When it got through (Unix ms), while it counts as through. */
+  throughSince: number | null;
+  /** When it was last answered (Unix ms). */
+  lastOk: number | null;
+  tries: number;
+  trying: boolean;
+  refused: boolean;
+  lastError: string | null;
+}
+
+export interface SqueezeView {
+  running: boolean;
+  /** The relay turned keys away lately, so keys that got through go first. */
+  crowded: boolean;
+  started: number | null;
+  keys: SqueezeKey[];
+}
+
+export type SqueezeChange =
+  | { kind: "started" }
+  | { kind: "tried" }
+  | { kind: "through"; number: number }
+  | { kind: "ended"; allThrough: boolean };
+
+export type SqueezeEvent = SqueezeChange & {
+  providerId: string;
+  providerName: string;
+  running: boolean;
+  through: number;
+  total: number;
+};
 
 // ── Request log ──────────────────────────────────────────────────────
 

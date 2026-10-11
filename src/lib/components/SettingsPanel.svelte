@@ -72,6 +72,7 @@
       keyNames: {},
       builtin: false,
       needsKey: true,
+      squeezable: false,
     };
   }
 

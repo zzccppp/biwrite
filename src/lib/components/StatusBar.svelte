@@ -4,6 +4,9 @@
 
   interface Props {
     session: Session;
+    /** Squeezes running in the background ("Squeezing 1/6"), and the
+     * providers they squeeze. */
+    squeezing: { text: string; title: string } | null;
     /** Active provider, e.g. "DeepSeek · deepseek-chat". */
     provider: string;
     /** A newer release, found at startup. */
@@ -12,7 +15,7 @@
     ondismisserror: () => void;
   }
 
-  let { session, provider, update, onupdate, ondismisserror }: Props = $props();
+  let { session, squeezing, provider, update, onupdate, ondismisserror }: Props = $props();
 
   function compact(n: number): string {
     if (n < 1000) return String(n);
@@ -55,6 +58,7 @@
       <button class="update" onclick={onupdate}>{t("updates.available", { version: update })}</button>
       <span class="dot">·</span>
     {/if}
+    {#if squeezing}<span class="squeezing" title={squeezing.title}>{squeezing.text}</span><span class="dot">·</span>{/if}
     {#if provider}<span class="provider">{provider}</span><span class="dot">·</span>{/if}
     <span>{compact(session.usage.requests)} <span class="smallcaps">{t("status.requests")}</span></span>
     <span class="dot">·</span>
@@ -110,6 +114,10 @@
   }
   .dot {
     color: var(--faint);
+  }
+  .squeezing {
+    color: var(--accent);
+    white-space: nowrap;
   }
   .provider {
     color: var(--ink-2);

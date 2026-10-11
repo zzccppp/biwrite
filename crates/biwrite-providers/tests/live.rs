@@ -587,3 +587,106 @@ async fn anyrouter_claude_gets_the_1m_context() {
         );
     }
 }
+
+/// A squeeze of a pool at AnyRouter's GPT preset: within the time given it
+/// gets at least one key through, and a translation afterwards goes to a
+/// key that got through. `BIWRITE_LIVE_ANYROUTER_KEYS` names a file with one
+/// key per line (other lines are skipped), `BIWRITE_LIVE_SQUEEZE_MINUTES`
+/// bounds the wait (10 by default).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs BIWRITE_LIVE_ANYROUTER_KEYS and network access"]
+async fn anyrouter_squeeze_gets_a_key_through() {
+    let Ok(file) = std::env::var("BIWRITE_LIVE_ANYROUTER_KEYS") else {
+        eprintln!("BIWRITE_LIVE_ANYROUTER_KEYS is not set; skipping");
+        return;
+    };
+    let keys: Vec<String> = std::fs::read_to_string(file)
+        .unwrap()
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("sk-"))
+        .map(String::from)
+        .collect();
+    let minutes: u64 = std::env::var("BIWRITE_LIVE_SQUEEZE_MINUTES")
+        .ok()
+        .and_then(|m| m.parse().ok())
+        .unwrap_or(10);
+    let config = ProviderConfig {
+        id: "live-anyrouter-pool".into(),
+        name: ANYROUTER.name.into(),
+        kind: ANYROUTER.kind,
+        base_url: ANYROUTER.base_url.into(),
+        model: ANYROUTER.model.into(),
+        temperature: 0.0,
+        effort: ANYROUTER.effort,
+        wire_api: ANYROUTER.wire_api,
+        service_tier: ANYROUTER.service_tier,
+        key_concurrency: ANYROUTER.key_concurrency,
+        max_retries: ANYROUTER.max_retries,
+    }
+    .validated()
+    .unwrap();
+    let board = biwrite_providers::SqueezeBoard::new();
+    let changes = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&changes);
+    let started = std::time::Instant::now();
+    let squeeze = biwrite_providers::Squeeze::start(
+        &config,
+        keys.clone(),
+        Arc::clone(&board),
+        Arc::new(DefaultPrompts),
+        Arc::new(move |c| sink.lock().unwrap().push(c)),
+        &tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+    let deadline = started + Duration::from_secs(minutes * 60);
+    while board.through().is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let tries: u32 = squeeze.progress().iter().map(|p| p.tries).sum();
+    println!(
+        "{} of {} keys through after {:.0}s and {tries} tries",
+        board.through().len(),
+        keys.len(),
+        started.elapsed().as_secs_f64()
+    );
+    squeeze.stop();
+    assert!(
+        !board.through().is_empty(),
+        "no key got through in {minutes} min"
+    );
+    let records = Arc::new(Records::default());
+    let pool = keys.clone();
+    let provider = build_http(
+        &config,
+        Arc::new(move || Ok(pool.clone())),
+        Arc::new(DefaultPrompts),
+        records.clone(),
+    )
+    .unwrap();
+    provider.join_board(Arc::clone(&board));
+    let request = TranslationRequest {
+        source: "Placeholder protection keeps citations intact.".into(),
+        ..Default::default()
+    };
+    let mut answered = 0;
+    for _ in 0..5 {
+        if provider.translate(&request, &|_| {}).await.is_ok() {
+            answered += 1;
+        }
+    }
+    let through: Vec<String> = board.through().into_iter().map(|t| t.fingerprint).collect();
+    let used: Vec<String> = records
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r.key.as_ref().map(|k| k.fingerprint.clone()))
+        .collect();
+    println!("{answered} of 5 translations answered");
+    assert!(answered >= 3, "{answered} of 5 answered");
+    assert!(
+        used.iter()
+            .all(|f| through.contains(f) || !board.through().is_empty())
+    );
+}

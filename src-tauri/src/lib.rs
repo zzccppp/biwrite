@@ -18,6 +18,7 @@ mod settings;
 mod settings_commands;
 mod sink;
 mod skills;
+mod squeeze_commands;
 mod state;
 mod storage_commands;
 mod tray;
@@ -145,6 +146,9 @@ pub fn run() {
                 }
                 Err(e) => log::error!("no tray icon: {e}"),
             }
+            if let Some(http) = &built.http {
+                state.squeeze.join(state.settings().active(), http);
+            }
             state.set_translation_http(active_id, built.http);
             if let Some(path) = std::env::args_os().nth(1).map(std::path::PathBuf::from) {
                 // `biwrite paper.tex`: open a file from the command line.
@@ -192,6 +196,9 @@ pub fn run() {
             settings_commands::list_api_keys,
             settings_commands::rename_api_key,
             settings_commands::test_api_key,
+            squeeze_commands::squeeze_status,
+            squeeze_commands::squeeze_start,
+            squeeze_commands::squeeze_stop,
             settings_commands::set_batch_size,
             settings_commands::set_translate_delay,
             settings_commands::set_match_pool,

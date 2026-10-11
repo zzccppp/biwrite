@@ -24,6 +24,7 @@ use crate::http::{Core, error_from_response, invalid, send};
 use crate::keys::{Failover, KeyFn, KeyStatus, Lease};
 use crate::observe::{Declared, RequestObserver, RequestRecord, Tap, endpoint_label};
 use crate::prompt::{self, PromptSource};
+use crate::squeeze::SqueezeBoard;
 use crate::{anthropic, openai, responses};
 
 /// Purpose of translation requests (part of every record).
@@ -121,6 +122,12 @@ impl HttpProvider {
     /// The configuration it was built for.
     pub fn config(&self) -> &ProviderConfig {
         &self.core.config
+    }
+
+    /// Send requests to the keys on `board` first, and record there the
+    /// keys that get through (see [`crate::squeeze`]).
+    pub fn join_board(&self, board: Arc<SqueezeBoard>) {
+        self.core.keys.join_board(board);
     }
 
     /// The keys changed: read them from `keys` before the next request.
