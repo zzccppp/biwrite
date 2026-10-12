@@ -687,6 +687,30 @@ export const messages = {
     en: "Editing {edit}. Translation is paused, so {n} paragraphs stay in {kept} until you choose All, then Continue with the rest.",
     zh: "正在编辑{edit}。自动翻译已暂停，仍有 {n} 段是{kept}，可在“全部”菜单里点“继续翻译剩余段落”。",
   },
+  "doc.swappedFillingOwn.one": {
+    en: "Editing {edit}. The paragraph not translated yet is still in {kept} and is put in {edit} once its translation arrives. Saving before then writes it into {file} in {kept}.",
+    zh: "正在编辑{edit}。尚未译完的 {n} 段仍是{kept}，译好后会替换到左侧；在此之前保存，会把它按{kept}原样写入 {file}。",
+  },
+  "doc.swappedFillingOwn.many": {
+    en: "Editing {edit}. The {n} paragraphs not translated yet are still in {kept} and are put in {edit} as their translations arrive. Saving before then writes them into {file} in {kept}.",
+    zh: "正在编辑{edit}。尚未译完的 {n} 段仍是{kept}，译好后会替换到左侧；在此之前保存，会把它们按{kept}原样写入 {file}。",
+  },
+  "doc.swappedPausedOwn.one": {
+    en: "Editing {edit}. Translation is paused, so {n} paragraph stays in {kept} until you choose All, then Continue with the rest. Saving before then writes it into {file} in {kept}.",
+    zh: "正在编辑{edit}。自动翻译已暂停，仍有 {n} 段是{kept}，可在“全部”菜单里点“继续翻译剩余段落”；在此之前保存，会把它按{kept}原样写入 {file}。",
+  },
+  "doc.swappedPausedOwn.many": {
+    en: "Editing {edit}. Translation is paused, so {n} paragraphs stay in {kept} until you choose All, then Continue with the rest. Saving before then writes them into {file} in {kept}.",
+    zh: "正在编辑{edit}。自动翻译已暂停，仍有 {n} 段是{kept}，可在“全部”菜单里点“继续翻译剩余段落”；在此之前保存，会把它们按{kept}原样写入 {file}。",
+  },
+  "doc.savedOtherLanguage.one": {
+    en: "{name} was saved with {n} paragraph still in {lang}, as it was left by the early swap. Save again once it is translated.",
+    zh: "{name} 已保存，其中 {n} 段仍是提前切换时留下的{lang}原文。译好后请再保存一次。",
+  },
+  "doc.savedOtherLanguage.many": {
+    en: "{name} was saved with {n} paragraphs still in {lang}, as they were left by the early swap. Save again once they are translated.",
+    zh: "{name} 已保存，其中 {n} 段仍是提前切换时留下的{lang}原文。译好后请再保存一次。",
+  },
   "doc.retargetedAuto": {
     en: "This text is {lang}, so it is now translated into {other}. Saving writes it as it is.",
     zh: "原文是{lang}，已改为翻译成{other}。保存时写入的仍是左侧的原文。",

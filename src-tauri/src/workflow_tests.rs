@@ -20,7 +20,7 @@ use biwrite_engine::{
 use biwrite_latex::templates;
 use tauri::Manager;
 
-use crate::commands::{home_text, open_path, swap, write_document};
+use crate::commands::{continue_left, home_text, open_path, swap, write_document};
 use crate::latex_commands::{Lang, LatexState, latex_compile, latex_forward, latex_inverse};
 use crate::pairing;
 use crate::request_log::{LogSettings, NoSink, RequestLog};
@@ -394,7 +394,10 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
         fills.0.lock().unwrap().is_empty(),
         "paused: nothing filled yet"
     );
-    assert_eq!(state.engine.continue_translation(true), 1);
+    assert_eq!(
+        continue_left(&state, early.text.clone(), state.engine.document()).unwrap(),
+        1
+    );
     settle(&state).await;
     let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
     assert_eq!(filled.len(), 1);
@@ -1032,7 +1035,10 @@ async fn a_pair_swaps_now_and_fills_in_the_paragraph_on_its_way() {
     assert_eq!(read(&main), SHORT, "nothing written yet");
     assert_eq!(read(&zh_path), zh);
 
-    assert_eq!(state.engine.continue_translation(true), 1);
+    assert_eq!(
+        continue_left(&state, early.text.clone(), state.engine.document()).unwrap(),
+        1
+    );
     settle(&state).await;
     let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
     assert_eq!(filled.len(), 1, "{filled:?}");
@@ -1078,7 +1084,10 @@ async fn swapping_back_home_now_fills_in_the_paragraph_on_its_way() {
     assert!(back.text.contains(&to_zh(" and more")), "kept in Chinese");
     assert_eq!(read(&main), SHORT, "nothing written yet");
 
-    assert_eq!(state.engine.continue_translation(true), 1);
+    assert_eq!(
+        continue_left(&state, back.text.clone(), state.engine.document()).unwrap(),
+        1
+    );
     settle(&state).await;
     let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
     assert_eq!(filled.len(), 1, "{filled:?}");
@@ -1095,5 +1104,487 @@ async fn swapping_back_home_now_fills_in_the_paragraph_on_its_way() {
     assert_eq!(read(&main), now);
     let again = swap(&state, now, false).unwrap();
     assert_eq!(again.text, zh_edited, "the Chinese as typed");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A paired paper with its Chinese file next to it, opened and translated.
+async fn paired(
+    name: &str,
+    english: &str,
+) -> (PathBuf, AppState, Arc<Fills>, PathBuf, PathBuf, String) {
+    let dir = temp(name);
+    let (state, _translator, fills) = workflow_state(&dir);
+    let main = dir.join("paper.tex");
+    let zh_path = dir.join("paper_zh.tex");
+    std::fs::write(&main, english).unwrap();
+    open_path(&state, main.clone()).await.unwrap();
+    settle(&state).await;
+    let zh = state.engine.compose_mirror().text;
+    std::fs::write(&zh_path, &zh).unwrap();
+    let view = open_path(&state, main.clone()).await.unwrap();
+    assert!(view.pair.is_some(), "paired");
+    settle(&state).await;
+    (dir, state, fills, main, zh_path, zh)
+}
+
+/// A pair swapped at once and straight back, translation paused, before
+/// the paragraph that went over in English is put in Chinese: that English
+/// is no translation of the English paragraph. The paragraph waits for one,
+/// and so does the Chinese file, which then gets the Chinese.
+#[tokio::test]
+async fn a_pair_swapped_back_before_the_fill_waits_for_the_translation() {
+    let (dir, state, _fills, main, zh_path, zh) = paired("pair-back", SHORT).await;
+    state.engine.set_auto_translate(false);
+    let edited = SHORT.replace("twelve datasets.", "twelve datasets and three more.");
+    state.engine.update(edited.clone());
+    let early = swap(&state, edited.clone(), true).unwrap();
+    assert_eq!(early.other_language, 1, "saving would write it in English");
+    // Nothing reads as waiting in the Chinese file: one press swaps back.
+    let back = swap(&state, early.text.clone(), false).unwrap();
+    assert_eq!(back.text, edited);
+    assert_eq!(back.other_language, 0);
+
+    let saved = write_document(&state, main.clone(), edited.clone(), None)
+        .await
+        .unwrap();
+    let mirror = saved.mirror.unwrap();
+    assert_eq!(mirror.pending, 1, "{mirror:?}");
+    assert!(!mirror.written);
+    assert_eq!(read(&zh_path), zh, "the Chinese file waits");
+    assert_eq!(read(&main), edited);
+
+    state.engine.set_auto_translate(true);
+    settle(&state).await;
+    let done = pairing::save_mirror(&state).await.unwrap().unwrap();
+    assert!(done.written, "{done:?}");
+    let zh_now = read(&zh_path);
+    assert!(!zh_now.contains("twelve datasets"), "{zh_now}");
+    assert!(
+        zh_now.contains(&to_zh("we test it on twelve datasets and three more.")),
+        "{zh_now}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// As above with translation on: swapped back at once while the fill is
+/// still queued, the paragraph is translated afresh and the Chinese file
+/// gets the Chinese.
+#[tokio::test]
+async fn a_pair_swapped_back_while_the_fill_is_queued_gets_the_chinese() {
+    let (dir, state, _fills, main, zh_path, _zh) = paired("pair-back-on", SHORT).await;
+    let edited = SHORT.replace("twelve datasets.", "twelve datasets and three more.");
+    state.engine.update(edited.clone());
+    // No settling: the edit's translation is on its way.
+    let early = swap(&state, edited.clone(), true).unwrap();
+    let back = swap(&state, early.text.clone(), true).unwrap();
+    assert_eq!(back.text, edited);
+    settle(&state).await;
+    let saved = write_document(&state, main.clone(), edited.clone(), None)
+        .await
+        .unwrap();
+    assert!(
+        saved.mirror.as_ref().is_some_and(|m| m.written),
+        "{:?}",
+        saved.mirror
+    );
+    let zh_now = read(&zh_path);
+    assert!(!zh_now.contains("twelve datasets"), "{zh_now}");
+    assert!(
+        zh_now.contains(&to_zh("we test it on twelve datasets and three more.")),
+        "{zh_now}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+const WITH_EQUATION: &str = "\\documentclass{article}\n\\begin{document}\n\\section{Method}\nwe assign one action per row.\n\\begin{equation}\nx = y\n\\end{equation}\nwe test it on twelve datasets.\n\\end{document}\n";
+
+/// A paragraph put in Chinese by its fill after an early pair swap, then
+/// edited before the save, stays where it is in the English file with its
+/// new translation. It sits after an equation, so it has no paired
+/// neighbour to go next to: it is the fill's paragraph, never a new one.
+#[tokio::test]
+async fn a_filled_paragraph_edited_before_the_save_stays_in_the_pair() {
+    let (dir, state, fills, main, zh_path, _zh) = paired("pair-fill-edit", WITH_EQUATION).await;
+    state.engine.set_auto_translate(false);
+    let edited = WITH_EQUATION.replace("twelve datasets.", "twelve datasets and three more.");
+    state.engine.update(edited.clone());
+    let early = swap(&state, edited.clone(), true).unwrap();
+    assert_eq!(
+        continue_left(&state, early.text.clone(), state.engine.document()).unwrap(),
+        1
+    );
+    settle(&state).await;
+    let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
+    assert_eq!(filled.len(), 1, "{filled:?}");
+    let now = early.text.replacen(&filled[0].old, &filled[0].new, 1);
+    state.engine.update(now.clone());
+    settle(&state).await;
+    // The author goes on editing the paragraph, now in Chinese.
+    let rewritten = now.replacen(&to_zh("more."), &to_zh("morex."), 1);
+    assert_ne!(now, rewritten);
+    state.engine.update(rewritten.clone());
+    state.engine.set_auto_translate(true);
+    settle(&state).await;
+
+    let saved = write_document(&state, zh_path.clone(), rewritten.clone(), None)
+        .await
+        .unwrap();
+    let mirror = saved.mirror.unwrap();
+    assert!(mirror.written, "{mirror:?}");
+    assert_eq!(mirror.left_out, 0, "{mirror:?}");
+    assert_eq!(saved.other_language, 0);
+    assert_eq!(
+        read(&main),
+        WITH_EQUATION.replace("twelve datasets.", "twelve datasets and three morex.")
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Back to the file's own language at once with a Chinese paragraph on its
+/// way, a save writes it in Chinese as it is and says so, as the swap did.
+/// Once it is put in English, the next save writes English and says
+/// nothing.
+#[tokio::test]
+async fn saving_paragraphs_left_in_chinese_says_so() {
+    let dir = temp("home-now-save");
+    let (state, _translator, fills) = workflow_state(&dir);
+    let main = dir.join("paper.tex");
+    std::fs::write(&main, SHORT).unwrap();
+    open_path(&state, main.clone()).await.unwrap();
+    settle(&state).await;
+    let swapped = swap(&state, SHORT.to_owned(), false).unwrap();
+    assert_eq!(
+        swapped.other_language, 0,
+        "the Chinese is composed, not saved"
+    );
+
+    state.engine.set_auto_translate(false);
+    let target = to_zh("we test it on twelve datasets.");
+    let zh_edited = swapped
+        .text
+        .replacen(&target, &format!("{target}{}", to_zh(" and more")), 1);
+    state.engine.update(zh_edited.clone());
+    let back = swap(&state, zh_edited, true).unwrap();
+    assert_eq!(back.other_language, 1);
+    let own = home_text(&state, back.text.clone()).unwrap();
+    let saved = write_document(&state, main.clone(), own, None)
+        .await
+        .unwrap();
+    assert_eq!(saved.other_language, 1);
+    assert!(
+        read(&main).contains(&to_zh(" and more")),
+        "written as it is"
+    );
+
+    assert_eq!(
+        continue_left(&state, back.text.clone(), state.engine.document()).unwrap(),
+        1
+    );
+    settle(&state).await;
+    let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
+    assert_eq!(filled.len(), 1, "{filled:?}");
+    let now = back.text.replacen(&filled[0].old, &filled[0].new, 1);
+    state.engine.update(now.clone());
+    let saved = write_document(&state, main.clone(), now, None)
+        .await
+        .unwrap();
+    assert_eq!(saved.other_language, 0);
+    assert_eq!(
+        read(&main),
+        SHORT.replace("twelve datasets.", "twelve datasets. and more")
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A paragraph kept in English by an early pair swap and then edited in the
+/// Chinese editor, still English, stays a paragraph left in English: saving
+/// says so and the English file gets the edit as typed. Swapped back, it is
+/// translated afresh, and the Chinese file ends up in Chinese.
+#[tokio::test]
+async fn an_edited_paragraph_left_in_english_is_still_one() {
+    let (dir, state, _fills, main, zh_path, _zh) = paired("pair-edited-standin", SHORT).await;
+    state.engine.set_auto_translate(false);
+    let edited = SHORT.replace("twelve datasets.", "twelve datasets and three more.");
+    state.engine.update(edited.clone());
+    let early = swap(&state, edited.clone(), true).unwrap();
+    let typo = early.text.replacen("three more.", "three more ones.", 1);
+    state.engine.update(typo.clone());
+    assert_eq!(state.left_in_other_language(), 1);
+    state.engine.set_auto_translate(true);
+    settle(&state).await;
+    let saved = write_document(&state, zh_path.clone(), typo.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(saved.other_language, 1);
+    assert!(read(&main).contains("twelve datasets and three more ones."));
+
+    let back = swap(&state, typo.clone(), false).unwrap();
+    assert!(back.text.contains("twelve datasets and three more ones."));
+    settle(&state).await;
+    let saved = write_document(&state, main.clone(), back.text.clone(), None)
+        .await
+        .unwrap();
+    assert!(
+        saved.mirror.as_ref().is_some_and(|m| m.written),
+        "{:?}",
+        saved.mirror
+    );
+    let zh_now = read(&zh_path);
+    assert!(!zh_now.contains("three more ones."), "{zh_now}");
+    assert!(zh_now.contains(&to_zh("three more ones.")), "{zh_now}");
+    let again = swap(&state, back.text, false).unwrap();
+    assert!(!again.text.contains("three more ones."));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Continue as the window asks for it, with a pair and back home, takes up
+/// the paragraphs an early swap left in the other language.
+#[tokio::test]
+async fn continue_takes_up_what_an_early_swap_left_with_a_pair_and_at_home() {
+    let (dir, state, fills, _main, _zh_path, _zh) = paired("pair-continue", SHORT).await;
+    state.engine.set_auto_translate(false);
+    let edited = SHORT.replace("twelve datasets.", "twelve datasets and three more.");
+    state.engine.update(edited.clone());
+    let early = swap(&state, edited, true).unwrap();
+    assert_eq!(
+        continue_left(&state, early.text.clone(), state.engine.document()).unwrap(),
+        1
+    );
+    settle(&state).await;
+    assert_eq!(fills.0.lock().unwrap().len(), 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let dir = temp("home-continue");
+    let (state, _translator, fills) = workflow_state(&dir);
+    let main = dir.join("paper.tex");
+    std::fs::write(&main, SHORT).unwrap();
+    open_path(&state, main).await.unwrap();
+    settle(&state).await;
+    let swapped = swap(&state, SHORT.to_owned(), false).unwrap();
+    state.engine.set_auto_translate(false);
+    let target = to_zh("we test it on twelve datasets.");
+    let zh_edited = swapped
+        .text
+        .replacen(&target, &format!("{target}{}", to_zh(" and more")), 1);
+    state.engine.update(zh_edited.clone());
+    let back = swap(&state, zh_edited, true).unwrap();
+    assert_eq!(
+        continue_left(&state, back.text, state.engine.document()).unwrap(),
+        1
+    );
+    settle(&state).await;
+    assert_eq!(fills.0.lock().unwrap().len(), 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The fill and an edit of it reach the engine in one update (typed right
+/// after the fill landed): the paragraph keeps its place in the pair.
+#[tokio::test]
+async fn a_fill_edited_in_the_same_update_stays_in_the_pair() {
+    let (dir, state, fills, main, zh_path, _zh) =
+        paired("pair-fill-edit-once", WITH_EQUATION).await;
+    state.engine.set_auto_translate(false);
+    let edited = WITH_EQUATION.replace("twelve datasets.", "twelve datasets and three more.");
+    state.engine.update(edited.clone());
+    let early = swap(&state, edited.clone(), true).unwrap();
+    continue_left(&state, early.text.clone(), state.engine.document()).unwrap();
+    settle(&state).await;
+    let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
+    assert_eq!(filled.len(), 1, "{filled:?}");
+    let now = early.text.replacen(&filled[0].old, &filled[0].new, 1);
+    let rewritten = now.replacen(&to_zh("more."), &to_zh("morex."), 1);
+    state.engine.update(rewritten.clone());
+    state.engine.set_auto_translate(true);
+    settle(&state).await;
+    let saved = write_document(&state, zh_path.clone(), rewritten, None)
+        .await
+        .unwrap();
+    let mirror = saved.mirror.unwrap();
+    assert!(mirror.written, "{mirror:?}");
+    assert_eq!(mirror.left_out, 0, "{mirror:?}");
+    assert_eq!(
+        read(&main),
+        WITH_EQUATION.replace("twelve datasets.", "twelve datasets and three morex.")
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A paragraph kept by an early pair swap goes over exactly as typed, its
+/// new comment included (not escaped as translations are), so it stays a
+/// paragraph left in English until its fill lands.
+#[tokio::test]
+async fn a_kept_paragraph_with_a_comment_goes_over_as_typed() {
+    let (dir, state, fills, main, zh_path, _zh) = paired("pair-kept-comment", SHORT).await;
+    let edited = SHORT.replace("twelve datasets.", "twelve datasets. % add three more");
+    state.engine.update(edited.clone());
+    // Swapped at once, while its translation is on its way.
+    let early = swap(&state, edited.clone(), true).unwrap();
+    assert!(
+        early.text.contains("twelve datasets. % add three more"),
+        "{}",
+        early.text
+    );
+    settle(&state).await;
+    assert_eq!(fills.0.lock().unwrap().len(), 1, "filled, not refused");
+    let saved = write_document(&state, zh_path.clone(), early.text.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(saved.other_language, 1);
+    let back = swap(&state, early.text, false).unwrap();
+    assert_eq!(back.text, edited);
+    settle(&state).await;
+    write_document(&state, main.clone(), back.text, None)
+        .await
+        .unwrap();
+    let zh_now = read(&zh_path);
+    assert!(!zh_now.contains("twelve datasets"), "{zh_now}");
+    assert!(!zh_now.contains("\\%"), "{zh_now}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Saved with a paragraph left in English, then swapped back: the Chinese
+/// file is behind (it holds the English until the paragraph is translated
+/// afresh), so the pair counts as unsaved.
+#[tokio::test]
+async fn a_pair_swapped_back_from_a_paragraph_left_in_english_is_unsaved() {
+    let (dir, state, _fills, _main, zh_path, _zh) = paired("pair-back-unsaved", SHORT).await;
+    state.engine.set_auto_translate(false);
+    let edited = SHORT.replace("twelve datasets.", "twelve datasets and three more.");
+    state.engine.update(edited.clone());
+    let early = swap(&state, edited.clone(), true).unwrap();
+    write_document(&state, zh_path.clone(), early.text.clone(), None)
+        .await
+        .unwrap();
+    let back = swap(&state, early.text, false).unwrap();
+    assert!(back.pair.as_ref().is_some_and(|p| p.dirty));
+    assert!(state.is_dirty());
+    state.engine.set_auto_translate(true);
+    settle(&state).await;
+    assert!(state.is_dirty(), "the Chinese file still holds English");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+const KINDS: &str = "\\documentclass{article}\n\\begin{document}\n\\section{our method}\\label{sec:m}\nwe assign one action per row. % note\n\n\\begin{itemize}\n  \\item first point here\n  \\item[b)] second point here\n\\end{itemize}\n\\begin{figure}\n\\centering\n\\caption[short]{a figure of the results}\\label{fig:r}\n\\end{figure}\n\\subsection*{related work}\nmore text here.\n\\end{document}\n";
+
+/// Headings, list items and captions put into English by their fills keep
+/// their IDs as paragraphs do.
+#[tokio::test]
+async fn fills_of_headings_items_and_captions_keep_their_ids() {
+    let dir = temp("fill-kinds");
+    let (state, _translator, fills) = workflow_state(&dir);
+    let main = dir.join("paper.tex");
+    std::fs::write(&main, KINDS).unwrap();
+    open_path(&state, main).await.unwrap();
+    settle(&state).await;
+    let swapped = swap(&state, KINDS.to_owned(), false).unwrap();
+    state.engine.set_auto_translate(false);
+    let mut zh = swapped.text.clone();
+    for en in [
+        "our method",
+        "first point here",
+        "second point here",
+        "a figure of the results",
+        "related work",
+        "we assign one action per row.",
+    ] {
+        let z = to_zh(en);
+        assert!(zh.contains(&z), "{en}: {zh}");
+        zh = zh.replacen(&z, &format!("{z}{}", to_zh("x")), 1);
+    }
+    state.engine.update(zh.clone());
+    let back = swap(&state, zh, true).unwrap();
+    assert_eq!(back.other_language, 6);
+    let ids = |state: &AppState| -> Vec<_> {
+        state
+            .engine
+            .snapshot()
+            .layout
+            .iter()
+            .map(|s| (s.id, s.kind))
+            .collect()
+    };
+    let before = ids(&state);
+    continue_left(&state, back.text.clone(), state.engine.document()).unwrap();
+    settle(&state).await;
+    let filled: Vec<Fill> = std::mem::take(&mut *fills.0.lock().unwrap());
+    assert_eq!(filled.len(), 6, "{filled:?}");
+    let mut now = back.text;
+    for f in &filled {
+        now = now.replacen(&f.old, &f.new, 1);
+    }
+    state.engine.update(now);
+    assert_eq!(ids(&state), before);
+    assert_eq!(state.left_in_other_language(), 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// With a pair, Continue sends the fill, then the author edits the
+/// paragraph, still English, before it lands: saving still says so, and
+/// swapped back the Chinese file gets Chinese, never the English.
+#[tokio::test]
+async fn a_paragraph_left_in_english_edited_after_continue_is_still_one() {
+    let (dir, state, _fills, main, zh_path, _zh) = paired("pair-continue-edit", SHORT).await;
+    state.engine.set_auto_translate(false);
+    let edited = SHORT.replace("twelve datasets.", "twelve datasets and three more.");
+    state.engine.update(edited.clone());
+    let early = swap(&state, edited, true).unwrap();
+    continue_left(&state, early.text.clone(), state.engine.document()).unwrap();
+    let typo = early.text.replacen("three more.", "three more ones.", 1);
+    state.engine.update(typo.clone());
+    settle(&state).await;
+    let saved = write_document(&state, zh_path.clone(), typo.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(saved.other_language, 1);
+    let back = swap(&state, typo, false).unwrap();
+    state.engine.set_auto_translate(true);
+    settle(&state).await;
+    write_document(&state, main.clone(), back.text, None)
+        .await
+        .unwrap();
+    let zh_now = read(&zh_path);
+    assert!(!zh_now.contains("three more ones."), "{zh_now}");
+    assert!(zh_now.contains(&to_zh("three more ones.")), "{zh_now}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Back home with Chinese paragraphs an early swap left, enough to tip the
+/// text towards Chinese: the swap button's check for a file read as the
+/// wrong language leaves the file alone.
+#[tokio::test]
+async fn paragraphs_left_by_an_early_swap_never_make_the_file_chinese() {
+    let dir = temp("home-left-retarget");
+    let (state, _translator, _fills) = workflow_state(&dir);
+    let main = dir.join("paper.tex");
+    std::fs::write(&main, SHORT).unwrap();
+    open_path(&state, main).await.unwrap();
+    settle(&state).await;
+    let swapped = swap(&state, SHORT.to_owned(), false).unwrap();
+    state.engine.set_auto_translate(false);
+    let more: String = (0..6)
+        .map(|i| {
+            format!(
+                "\n\n{}",
+                to_zh(&format!("a new chinese paragraph number {i} with words"))
+            )
+        })
+        .collect();
+    let zh_more = swapped.text.replacen(
+        "\\end{document}",
+        &format!("{more}\n\n\\end{{document}}"),
+        1,
+    );
+    state.engine.update(zh_more.clone());
+    let back = swap(&state, zh_more, true).unwrap();
+    assert!(back.other_language >= 6, "{}", back.other_language);
+    assert_eq!(
+        biwrite_core::lang::written_in(&back.text, Mode::Latex),
+        Some(Direction::ZhEn),
+        "Chinese prevails"
+    );
+    let retargeted = crate::commands::retarget(&state, back.text, true).unwrap();
+    assert!(retargeted.is_none());
+    assert_eq!(state.file().home, Direction::EnZh);
+    assert!(state.left_in_other_language() >= 6);
     std::fs::remove_dir_all(&dir).unwrap();
 }

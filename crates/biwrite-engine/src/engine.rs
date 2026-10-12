@@ -168,14 +168,59 @@ impl Inner {
         let Some(meta) = st.meta.get(&id) else {
             return false;
         };
-        let forced = meta.forced;
+        let mut forced = meta.forced;
         match meta.fill {
             Some(fill) if fill == hash => {
                 return self.reconcile_fill(st, id, hash, content, forced);
             }
-            // Edited since: a paragraph of the edited language like any other.
-            Some(_) => st.update(id, |m| m.fill = None),
+            // Edited since: a paragraph of the edited language like any
+            // other. What forced the fill (Continue) is done with too.
+            Some(_) => {
+                st.update(id, |m| {
+                    m.fill = None;
+                    m.forced = false;
+                });
+                forced = false;
+            }
             None => {}
+        }
+        // A stand-in edited before its fill: still in the language of the
+        // translations (and the edit no step towards the edited one), or a
+        // stand-in's text back (an undo, a paragraph deleted and put back
+        // under a new ID), it is one, its own text its translation exactly
+        // (what the other side's file gets). Filled (its fill's text has the
+        // author's original as seed) or translated afresh on request, it is
+        // a paragraph like any other. Being put into the edited language by
+        // hand, the mark stays with its old text, for an undo.
+        if let Some(meta) = st.meta.get(&id)
+            && !meta.is_standin(hash)
+            && (meta.standin.is_some() || st.standin_texts.contains(&hash))
+        {
+            // A fill's seed is the author's original under the fill's hash
+            // (an early swap's is the stand-in's own text).
+            let filled = meta
+                .seed
+                .as_ref()
+                .is_some_and(|(h, original)| *h == hash && *original != content);
+            let mode = st.doc.mode();
+            // Its translation is its text before the edit.
+            let towards_edited = meta
+                .translation
+                .as_deref()
+                .is_some_and(|before| moved_into(st.direction, before, &content, mode));
+            let still_other =
+                plainly_written_in(st.direction.flipped(), &content, mode) && !towards_edited;
+            let marked = meta.standin.is_some();
+            if forced || filled {
+                if marked {
+                    st.update(id, |m| m.standin = None);
+                }
+            } else if st.standin_texts.contains(&hash) || still_other {
+                st.update(id, |m| m.standin = Some(hash));
+                st.standin_texts.insert(hash);
+                adopt(st, id, hash, content.clone(), content, true);
+                return false;
+            }
         }
         let Some(meta) = st.meta.get(&id) else {
             return false;
@@ -263,6 +308,10 @@ impl Inner {
         if let Some(original) = seed {
             adopt(st, id, hash, content.clone(), original, true);
         }
+        // The offline translator's answers are no translations to put in.
+        if st.translator.is_placeholder() {
+            return forced || st.settings.auto_translate;
+        }
         let toward = st.direction.flipped();
         let key = st.cache_key_toward(toward, hash, st.glossary_fp_toward(toward, &content));
         match self.cache.get(&key) {
@@ -334,6 +383,8 @@ impl Engine {
         st.meta.clear();
         st.direction = Direction::EnZh;
         st.seeds.clear();
+        st.filled.clear();
+        st.standin_texts.clear();
         st.document += 1;
         st.doc = biwrite_core::DocumentModel::new(st.doc.next_id());
         st.doc.apply(text, mode);
@@ -364,7 +415,8 @@ impl Engine {
     /// still written in the language of the translations (a paired swap
     /// made before their translations arrived). They are translated the
     /// other way round and replaced in the editor ([`crate::Fill`]), and
-    /// their translation stays the exact one given in `known`.
+    /// their translation stays the exact one given in `known`, their own
+    /// text: a stand-in until then ([`Self::standins`]).
     pub fn load_known_filling(
         &self,
         text: String,
@@ -378,6 +430,8 @@ impl Engine {
         st.meta.clear();
         st.direction = direction;
         st.seeds.clear();
+        st.filled.clear();
+        st.standin_texts.clear();
         st.document += 1;
         st.doc = biwrite_core::DocumentModel::new(st.doc.next_id());
         st.doc.apply(text, mode);
@@ -395,7 +449,10 @@ impl Engine {
             let Some(&(id, hash)) = segments.get(index) else {
                 continue;
             };
-            st.meta.entry(id).or_insert_with(SegMeta::new).fill = Some(hash);
+            let meta = st.meta.entry(id).or_insert_with(SegMeta::new);
+            meta.fill = Some(hash);
+            meta.standin = Some(hash);
+            st.standin_texts.insert(hash);
         }
         self.inner.reconcile(&mut st, &HashSet::new());
         self.inner.pump(&mut st);
@@ -415,6 +472,21 @@ impl Engine {
     pub fn text_and_translations(&self) -> (String, Vec<(SegmentId, Option<String>)>) {
         let st = self.inner.lock();
         (st.doc.text().to_owned(), Self::translations_of(&st))
+    }
+
+    /// Paragraphs still in the language of the translations since an early
+    /// swap, whose translation is their own text until they are put into
+    /// the edited language (their fill waits, failed, or is on its way). A
+    /// save writes them as they are. Swapped back, they are no originals:
+    /// their counterparts are translated afresh.
+    pub fn standins(&self) -> HashSet<SegmentId> {
+        let st = self.inner.lock();
+        st.doc
+            .segments()
+            .iter()
+            .filter(|s| st.meta.get(&s.id).is_some_and(|m| m.is_standin(s.hash)))
+            .map(|s| s.id)
+            .collect()
     }
 
     /// Whether the up-to-date translation of `id` is an exact original (a
@@ -505,7 +577,22 @@ impl Engine {
         // A new mode divides the whole text anew. Nothing was typed, so
         // nothing waits for the edit delay.
         let typed = mode == st.doc.mode();
-        let report = st.doc.apply(text, mode);
+        // A paragraph the editor put into the other language keeps its ID.
+        let filled = std::mem::take(&mut st.filled);
+        let before: Vec<Option<ContentHash>> = filled
+            .iter()
+            .map(|r| st.doc.get(r.id).map(|s| s.hash))
+            .collect();
+        let report = st.doc.apply_expecting(text, mode, &filled);
+        // Still expected while the paragraph is untouched: the editor puts a
+        // fill only over the text it was made for. Replaced, edited or gone,
+        // it is expected no more.
+        st.filled = filled
+            .into_iter()
+            .zip(before)
+            .filter(|(r, before)| before.is_some() && st.doc.get(r.id).map(|s| s.hash) == *before)
+            .map(|(r, _)| r)
+            .collect();
         for id in &report.removed {
             st.cancel(*id);
             st.meta.remove(id);
@@ -587,11 +674,12 @@ impl Engine {
     }
 
     /// Translate what is left: paragraphs without an up-to-date translation
-    /// (failed, or waiting while translation is paused) and, with
-    /// `other_language`, paragraphs still written in the language of the
-    /// translations (left so by an early swap), which are translated the
-    /// other way round and replaced in the editor. Work already queued or
-    /// running goes on as it is. Returns how many paragraphs were taken up.
+    /// (failed, or waiting while translation is paused), stand-ins (left in
+    /// the language of the translations by an early swap, see
+    /// [`Self::standins`]) and, with `other_language`, any paragraph plainly
+    /// written in that language. Those are translated the other way round
+    /// and replaced in the editor. Work already queued or running goes on as
+    /// it is. Returns how many paragraphs were taken up.
     pub fn continue_translation(&self, other_language: bool) -> usize {
         let mut st = self.inner.lock();
         // What waits out the edit delay goes now as well.
@@ -623,7 +711,12 @@ impl Engine {
             // Plainly in the other language: Chinese dense with English
             // names reads as English, and putting it "into Chinese" would
             // make the Chinese its exact original.
-            if other_language && !translated_away && plainly_written_in(target, content, mode) {
+            // Left by an early swap: put into the edited language whatever
+            // side is edited (a pair, or back home).
+            let standin = m.is_standin(s.hash);
+            if standin
+                || (other_language && !translated_away && plainly_written_in(target, content, mode))
+            {
                 fills.push((s.id, s.hash));
             } else if m.translated_hash != Some(s.hash) || m.status == SegmentStatus::Error {
                 rest.push(s.id);
@@ -648,14 +741,20 @@ impl Engine {
         fills.len() + rest.len()
     }
 
+    /// Translate `ids` afresh. A stand-in is put into the edited language
+    /// instead (its translation stays its own text).
     fn force(&self, st: &mut State, ids: &[SegmentId], priority: Priority) {
         for &id in ids {
             // Asked for now, so no edit delay.
             st.held.remove(&id);
+            let hash = st.doc.get(id).map(|s| s.hash);
             st.cancel(id);
             st.update(id, |m| {
                 m.forced = true;
                 m.error = None;
+                if let Some(hash) = hash.filter(|h| m.is_standin(*h)) {
+                    m.fill = Some(hash);
+                }
             });
         }
         st.enqueue_all(ids, priority);
@@ -799,6 +898,7 @@ impl Engine {
                 }
             });
         }
+        st.rearm_failed_fills();
         self.inner.reconcile(&mut st, &HashSet::new());
         self.inner.pump(&mut st);
         self.emit_touched(st);
@@ -817,6 +917,7 @@ impl Engine {
         for id in failed {
             st.update(id, |m| m.error = None);
         }
+        st.rearm_failed_fills();
         self.inner.reconcile(&mut st, &HashSet::new());
         self.inner.pump(&mut st);
         self.emit_touched(st);

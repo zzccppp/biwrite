@@ -683,13 +683,6 @@ fn build_is_current(state: &AppState, lang: Lang) -> bool {
         && (paired || build.direction == state.engine.direction())
 }
 
-/// The editor holds the open file's own language (as on disk, give or
-/// take unsaved edits): always with a pair, else unless swapped.
-fn editing_own_language(state: &AppState) -> bool {
-    let fs = state.file();
-    fs.pair.is_some() || state.engine.direction() == fs.home
-}
-
 /// `paper_zh` → `paper`: the name of a Chinese file without its language tag.
 fn without_chinese_tag(stem: &str) -> &str {
     ["_zh", "-zh", ".zh", "_cn", "-cn", "_chinese"]
@@ -1028,7 +1021,7 @@ pub async fn latex_inverse(
     }
     // Another file of the project that is open now (the build was made
     // while a different one was): its text on disk is what TeX read.
-    let same_file_on_disk = editing_own_language(&state);
+    let same_file_on_disk = state.editing_own_language();
     if current.as_ref() == Some(&file) && same_file_on_disk {
         let saved = state.file().file.text().to_owned();
         let l = map_line(&saved, &text, line);
@@ -1176,7 +1169,7 @@ pub async fn latex_forward(
                 return Ok(Vec::new());
             };
             (pdf, build.doc_file.clone(), line)
-        } else if let Some(path) = current.filter(|_| editing_own_language(&state)) {
+        } else if let Some(path) = current.filter(|_| state.editing_own_language()) {
             // Another file of the project: as saved.
             let saved = state.file().file.text().to_owned();
             let line = map_line(&text, &saved, line_of(&text, at) + 1);

@@ -28,7 +28,7 @@ pub mod utf16;
 
 pub use bilingual::{Bilingual, bilingual_markdown};
 pub use compose::{ComposeError, Composed, Insert, compose};
-pub use document::{ApplyReport, DocSegment, DocumentModel, SegmentId, similarity};
+pub use document::{ApplyReport, DocSegment, DocumentModel, Replacement, SegmentId, similarity};
 pub use glossary::GlossaryEntry;
 pub use hash::ContentHash;
 pub use lang::Direction;

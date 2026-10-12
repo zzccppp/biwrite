@@ -196,3 +196,116 @@ fn pasting_over_long_chinese_sections_stays_fast() {
     );
     assert_eq!(report.added.len(), 16);
 }
+
+/// The replacement of the paragraph with ID `id` by `text`.
+fn replacement(id: u64, text: &str) -> Replacement {
+    Replacement {
+        id: SegmentId(id),
+        hash: ContentHash::of(text),
+        text: text.to_owned(),
+    }
+}
+
+const CHINESE: &str = "第二段谈的是另一个话题，细节很多。";
+
+/// A paragraph replaced on purpose by text that shares nothing with it (put
+/// into the other language) keeps its ID when the caller expects that text.
+#[test]
+fn an_expected_replacement_keeps_its_id() {
+    let mut d = doc(&paragraphs(3));
+    let before = ids(&d);
+    let replaced = paragraphs(3).replace(
+        "Paragraph number 1 talks about topic 1 in some detail.",
+        CHINESE,
+    );
+    let mut plain = doc(&paragraphs(3));
+    plain.apply(replaced.clone(), Mode::Plain);
+    assert_ne!(
+        ids(&plain)[1],
+        before[1],
+        "unexpected, it is a new paragraph"
+    );
+
+    let expected = [replacement(before[1], CHINESE)];
+    let report = d.apply_expecting(replaced, Mode::Plain, &expected);
+    assert_eq!(ids(&d), before);
+    assert_eq!(report.changed, vec![SegmentId(before[1])]);
+    assert!(report.added.is_empty() && report.removed.is_empty());
+}
+
+/// The replacement edited before it reached the document (both in one
+/// apply) still keeps the ID: it pairs by the replacement's text.
+#[test]
+fn an_expected_replacement_edited_at_once_keeps_its_id() {
+    let mut d = doc(&paragraphs(3));
+    let before = ids(&d);
+    let edited = CHINESE.replace("细节很多", "细节不少");
+    let replaced = paragraphs(3).replace(
+        "Paragraph number 1 talks about topic 1 in some detail.",
+        &edited,
+    );
+    let expected = [replacement(before[1], CHINESE)];
+    d.apply_expecting(replaced, Mode::Plain, &expected);
+    assert_eq!(ids(&d), before);
+}
+
+/// An expected ID still in use, or text that is not there (yet), changes
+/// nothing.
+#[test]
+fn an_expected_replacement_never_takes_an_id_in_use() {
+    let mut d = doc(&paragraphs(3));
+    let before = ids(&d);
+    let added = format!("{}\n\n{CHINESE}", paragraphs(3));
+    let expected = [replacement(before[1], CHINESE)];
+    d.apply_expecting(added, Mode::Plain, &expected);
+    assert_eq!(&ids(&d)[..3], &before[..]);
+    assert!(
+        !before.contains(&ids(&d)[3]),
+        "a new ID for the new paragraph"
+    );
+    let report = d.apply_expecting(paragraphs(3), Mode::Plain, &expected);
+    assert_eq!(ids(&d), before);
+    assert_eq!(report.removed.len(), 1);
+}
+
+/// A replacement whose text is the paragraph right after it ("Methods"
+/// filled as "方法", before a "方法" of its own) stays in place: the two
+/// keep their IDs in order, not swapped.
+#[test]
+fn an_expected_replacement_beside_its_twin_stays_in_place() {
+    let mut d = doc("Methods are described here.\n\n方法在这里描述。\n\nThe end.");
+    let before = ids(&d);
+    let twin = "方法在这里描述。";
+    let expected = [replacement(before[0], twin)];
+    d.apply_expecting(
+        format!("{twin}\n\n{twin}\n\nThe end."),
+        Mode::Plain,
+        &expected,
+    );
+    assert_eq!(ids(&d), before);
+}
+
+/// The paragraph to be replaced is deleted instead, before or after a twin
+/// of its replacement's text: the twin keeps its own ID.
+#[test]
+fn a_deleted_replacement_leaves_its_twin_alone() {
+    let twin = "方法在这里描述。";
+    for (old, deleted, kept) in [
+        (
+            format!("Methods are described here.\n\n{twin}\n\nThe end."),
+            0,
+            [1, 2],
+        ),
+        (
+            format!("{twin}\n\nMethods are described here.\n\nThe end."),
+            1,
+            [0, 2],
+        ),
+    ] {
+        let mut d = doc(&old);
+        let before = ids(&d);
+        let expected = [replacement(before[deleted], twin)];
+        d.apply_expecting(format!("{twin}\n\nThe end."), Mode::Plain, &expected);
+        assert_eq!(ids(&d), vec![before[kept[0]], before[kept[1]]], "{old}");
+    }
+}

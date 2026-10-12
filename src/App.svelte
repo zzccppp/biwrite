@@ -489,11 +489,9 @@
       // Rust marked the file clean; re-report if the user kept typing meanwhile.
       session.dirty = !editor.doc.eq(doc);
       if (session.dirty) setDirty(true);
-      reportMirror(saved.name, saved.mirror);
-      if (copy) {
-        session.flash(t("doc.projectSaved", { folder: copy.folder, n: copy.copied }));
-        if (copy.leftOut.length > 0) session.error = t("doc.projectLeftOut", { files: copy.leftOut.join(", ") });
-      }
+      const leftOut = copy && copy.leftOut.length > 0 ? [t("doc.projectLeftOut", { files: copy.leftOut.join(", ") })] : [];
+      reportMirror(saved.name, saved.mirror, saved.otherLanguage, leftOut);
+      if (copy) session.flash(t("doc.projectSaved", { folder: copy.folder, n: copy.copied }));
       if (wasUntitled && saved.suggestedMode !== session.mode) changeMode(saved.suggestedMode);
       if (saved.path.toLowerCase().endsWith(".tex")) {
         // Saved elsewhere, the PDFs on show belong to the old file.
@@ -556,15 +554,19 @@
   /**
    * Paragraphs left in the language of the translations by an early swap,
    * now translated: each replaces its text on the left, unless the user
-   * changed it meanwhile. Not unsaved changes, since the file's own text
-   * stays the same. `keep`: hold fills for paragraphs not known yet.
+   * changed it meanwhile. While the other language is edited without a
+   * pair, the file's own text stays the same, so that is no unsaved change.
+   * In the file's own language (a pair, or back home) it is: what a save
+   * wrote is still in the other language. `keep`: hold fills for paragraphs
+   * not known yet.
    */
   function applyFills(fills: Fill[], keep = true): void {
     if (!editor || swapping) {
       if (keep) pendingFills = [...pendingFills, ...fills].slice(-500);
       return;
     }
-    const clean = !session.dirty;
+    const intoFile = session.pair !== null || !session.swapped;
+    const clean = !session.dirty && !intoFile;
     let applied = false;
     for (const fill of fills) {
       const range = session.index.range(fill.id);
@@ -580,6 +582,7 @@
       }
     }
     if (applied && clean) savedDoc = editor.doc;
+    else if (applied && intoFile && !session.dirty) setDirty(true);
   }
 
   /** The cursor's paragraph, by position, to find it again after a reload. */
@@ -664,7 +667,16 @@
         kept: langName(edited === "zh-en" ? "en-zh" : "zh-en"),
         n: waiting,
       };
-      if (keep) {
+      const left = view.otherLanguage;
+      if (keep && left > 0) {
+        // In the file's own language now: a save writes them as they are.
+        const own = { ...names, n: left, file: view.name };
+        session.flash(
+          session.autoTranslate
+            ? count(left, "doc.swappedFillingOwn.one", "doc.swappedFillingOwn.many", own)
+            : count(left, "doc.swappedPausedOwn.one", "doc.swappedPausedOwn.many", own),
+        );
+      } else if (keep) {
         session.flash(
           session.autoTranslate
             ? count(waiting, "doc.swappedFilling.one", "doc.swappedFilling.many", names)
@@ -678,7 +690,16 @@
     } finally {
       swapping = false;
       editor?.setEditable(true);
+      releaseHeldFills();
     }
+  }
+
+  /** No new document after all (a swap that waits or failed): the fills held meanwhile belong to this one. */
+  function releaseHeldFills(): void {
+    if (pendingFills.length === 0) return;
+    const held = pendingFills;
+    pendingFills = [];
+    applyFills(held);
   }
 
   function retranslateActive(): void {
@@ -725,6 +746,7 @@
     } finally {
       swapping = false;
       editor?.setEditable(true);
+      releaseHeldFills();
     }
   }
 
@@ -813,17 +835,37 @@
     if (mirrorWaiting && c.error === 0) void writeMirror();
   });
 
-  /** Problems and left-out paragraphs of a paired-file write, as a sticky message. */
-  function mirrorProblems(mirror: MirrorSaved): void {
-    const notes: string[] = [];
-    if (mirror.problem === "changedOnDisk") notes.push(t("doc.mirrorChangedOnDisk", { mirror: mirror.name }));
-    if (mirror.problem === "structure") notes.push(t("doc.mirrorStructure", { mirror: mirror.name }));
-    if (mirror.leftOut > 0) notes.push(t("doc.mirrorLeftOut", { mirror: mirror.name, n: mirror.leftOut }));
+  /** Problems and left-out paragraphs of a paired-file write, after `notes`, as a sticky message. */
+  function mirrorProblems(mirror: MirrorSaved | null, notes: string[] = []): void {
+    if (mirror?.problem === "changedOnDisk") notes.push(t("doc.mirrorChangedOnDisk", { mirror: mirror.name }));
+    if (mirror?.problem === "structure") notes.push(t("doc.mirrorStructure", { mirror: mirror.name }));
+    if (mirror && mirror.leftOut > 0) notes.push(t("doc.mirrorLeftOut", { mirror: mirror.name, n: mirror.leftOut }));
     if (notes.length > 0) session.error = notes.join(" ");
   }
 
-  function reportMirror(name: string, mirror: MirrorSaved | null): void {
-    if (mirror) mirrorProblems(mirror);
+  /** The language of the translations, which paragraphs left by an early swap are still in. */
+  function otherLanguageName(): string {
+    return langName(session.direction === "zh-en" ? "en-zh" : "zh-en");
+  }
+
+  /** The sticky message of the last save, while it shows. */
+  let saveNote: string | null = null;
+
+  /**
+   * What a save did with the paired file, and (sticky) the paragraphs it
+   * wrote in the other language as they are (`otherLanguage`), then the
+   * `after` notes. The next save's notes replace that message.
+   */
+  function reportMirror(name: string, mirror: MirrorSaved | null, otherLanguage = 0, after: string[] = []): void {
+    if (saveNote !== null && session.error === saveNote) session.error = null;
+    const notes =
+      otherLanguage > 0
+        ? [count(otherLanguage, "doc.savedOtherLanguage.one", "doc.savedOtherLanguage.many", { name, lang: otherLanguageName() })]
+        : [];
+    const shown = session.error;
+    mirrorProblems(mirror, notes);
+    if (after.length > 0) session.error = [...(session.error !== shown ? [session.error] : []), ...after].join(" ");
+    saveNote = session.error !== shown ? session.error : null;
     if (!mirror) {
       session.flash(t("doc.saved", { name }));
     } else if (mirror.problem) {

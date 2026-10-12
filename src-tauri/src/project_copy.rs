@@ -88,12 +88,17 @@ pub async fn save_project_as(
     let _one_at_a_time = state.save_lock.lock().await;
     state.sync_text(document, &text)?;
     let own = home_text(&state, text)?;
+    // As the text was taken (fills may land during the dialog and the copy).
+    let other_language = state.left_in_other_language();
     let bundle = paper_bundle(&state).await?;
     let Some(dest) = files::pick_new_folder(&app, &window, &title, &suggested(&bundle.base)).await
     else {
         return Ok(None);
     };
-    let copy = save_into(&state, own, &bundle, dest).await?;
+    let mut copy = save_into(&state, own, &bundle, dest).await?;
+    if let Some(saved) = copy.saved.as_mut() {
+        saved.other_language = other_language;
+    }
     crate::commands::refresh_title(&window, &state);
     Ok(Some(copy))
 }

@@ -9,7 +9,7 @@ use biwrite_core::compose::fit;
 use biwrite_core::glossary::{self, Glossary};
 use biwrite_core::lang::moved_into;
 use biwrite_core::utf16::byte_to_utf16;
-use biwrite_core::{ContentHash, Direction, DocumentModel, Protector, SegmentId};
+use biwrite_core::{ContentHash, Direction, DocumentModel, Protector, Replacement, SegmentId};
 use tokio::task::AbortHandle;
 
 use crate::cache::CacheKey;
@@ -97,6 +97,15 @@ pub(crate) struct SegMeta {
     /// into the edited language and replaced in the editor, and its own
     /// translation stays the exact original.
     pub fill: Option<ContentHash>,
+    /// Left in the language of the translations by an early swap: while the
+    /// segment's hash is this one, its exact translation is its own text, a
+    /// stand-in rather than a translation. It stays one when its fill fails
+    /// or waits (translation paused). Swapped back, its counterpart is
+    /// translated afresh instead of taking it as its original.
+    pub standin: Option<ContentHash>,
+    /// The fill for this hash failed, or the offline translator answered
+    /// it: tried again when the translator or the keys change.
+    pub fill_failed: Option<ContentHash>,
 }
 
 impl SegMeta {
@@ -117,7 +126,15 @@ impl SegMeta {
             glossary_fp: 0,
             single: false,
             fill: None,
+            standin: None,
+            fill_failed: None,
         }
+    }
+
+    /// Whether the segment, with content hash `hash`, is a stand-in (see
+    /// [`Self::standin`]).
+    pub fn is_standin(&self, hash: ContentHash) -> bool {
+        self.standin == Some(hash)
     }
 
     pub fn view(&self, id: SegmentId) -> SegmentState {
@@ -203,6 +220,14 @@ pub(crate) struct State {
     pub notices: Vec<String>,
     /// Paragraphs for the editor to replace, sent after the lock is released.
     pub fills: Vec<Fill>,
+    /// Paragraphs sent to the editor in the other language (a [`Fill`]),
+    /// with the hash of their new text: when that text comes back, the
+    /// paragraph keeps its ID (a pair's link, for one).
+    pub filled: Vec<Replacement>,
+    /// Texts stand-ins have had (as swapped, or edited while still in the
+    /// other language): the same text back, also under a new ID, is a
+    /// stand-in again.
+    pub standin_texts: HashSet<ContentHash>,
 }
 
 impl State {
@@ -225,6 +250,8 @@ impl State {
             touched: Vec::new(),
             notices: Vec::new(),
             fills: Vec::new(),
+            filled: Vec::new(),
+            standin_texts: HashSet::new(),
         }
     }
 
@@ -294,8 +321,10 @@ impl State {
         let present = text[content.clone()].to_owned();
         let shaped = fit(translation.trim(), seg.kind(), self.doc.mode(), &present);
         let current = seg.hash;
+        // A stand-in's original is its own text, whatever it reads.
         let has_original = self.meta.get(&id).is_some_and(|m| {
             m.exact
+                && !m.is_standin(current)
                 && m.translated_hash == Some(current)
                 && m.translation.as_deref() != Some(present.as_str())
         });
@@ -314,6 +343,12 @@ impl State {
         });
         let hash = ContentHash::of(&shaped);
         if fill.is_some() {
+            self.filled.retain(|r| r.id != id);
+            self.filled.push(Replacement {
+                id,
+                hash,
+                text: shaped.clone(),
+            });
             // Also by content, in case the paragraph's ID changes on the way.
             self.seeds
                 .entry(hash)
@@ -339,14 +374,72 @@ impl State {
         self.fills.extend(fill);
     }
 
-    /// The paragraph `id` (with hash `current`) is in the edited language
-    /// after all: no fill. It keeps an up-to-date translation; without one it
-    /// is translated the usual way round.
-    fn refuse_fill(&mut self, id: SegmentId, current: ContentHash) {
+    /// The fill of `id` (with hash `hash`) could not be made (`why`): the
+    /// paragraph keeps its text, a stand-in still, and its translation the
+    /// original; "continue" tries again.
+    /// Without a translation of its own (a paragraph typed in the other
+    /// language), it is translated the usual way round instead.
+    pub fn fill_failed(&mut self, id: SegmentId, hash: ContentHash, why: &str) {
         let mut queue = false;
         let auto = self.settings.auto_translate;
         self.update(id, |m| {
+            if m.translated_hash == Some(hash) {
+                m.status = SegmentStatus::Translated;
+                m.forced = false;
+            } else {
+                // Asked for (Continue), it is translated even while paused.
+                m.status = SegmentStatus::Stale;
+                queue = m.forced || auto;
+            }
+            m.partial = None;
             m.fill = None;
+            m.fill_failed = Some(hash);
+        });
+        if queue {
+            self.enqueue_all(&[id], Priority::Normal);
+        }
+        self.notices.push(format!(
+            "a paragraph still in the other language could not be translated: {why}"
+        ));
+    }
+
+    /// Stand-ins whose fill failed (or met the offline translator) are to be
+    /// filled again, now that a real translator or new keys may manage.
+    /// Stand-ins the author edited wait for Continue, as before.
+    pub fn rearm_failed_fills(&mut self) {
+        if self.translator.is_placeholder() {
+            return;
+        }
+        let failed: Vec<(SegmentId, ContentHash)> = self
+            .doc
+            .segments()
+            .iter()
+            .filter(|s| {
+                self.meta
+                    .get(&s.id)
+                    .is_some_and(|m| m.fill_failed == Some(s.hash) && m.is_standin(s.hash))
+            })
+            .map(|s| (s.id, s.hash))
+            .collect();
+        for (id, hash) in failed {
+            self.update(id, |m| {
+                m.fill = Some(hash);
+                m.fill_failed = None;
+            });
+        }
+    }
+
+    /// The paragraph `id` (with hash `current`) is in the edited language
+    /// after all: no fill. It keeps an up-to-date translation; without one it
+    /// is translated the usual way round. Its own text as its translation is
+    /// then no stand-in (names and math read the same in both languages).
+    fn refuse_fill(&mut self, id: SegmentId, current: ContentHash) {
+        let mut queue = false;
+        let auto = self.settings.auto_translate;
+        self.standin_texts.remove(&current);
+        self.update(id, |m| {
+            m.fill = None;
+            m.standin = None;
             m.partial = None;
             m.error = None;
             if m.translated_hash == Some(current) {

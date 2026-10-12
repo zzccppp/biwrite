@@ -89,12 +89,27 @@ fn compose_keeping(st: &State) -> Result<(Composed, Vec<bool>), ComposeError> {
     }
 }
 
+/// Whether each translated slot of the document (each translatable
+/// segment with text, in order, as [`compose`] visits them) is a stand-in
+/// (see [`SegMeta::standin`]).
+fn standin_slots(st: &State) -> Vec<bool> {
+    let text = st.doc.text();
+    st.doc
+        .segments()
+        .iter()
+        .filter(|s| s.kind().is_translatable() && !s.segment.content(text).trim().is_empty())
+        .map(|s| st.meta.get(&s.id).is_some_and(|m| m.is_standin(s.hash)))
+        .collect()
+}
+
 /// Attach each original to the segment it was spliced into. `compose`
 /// verified that the k-th translated segment of the new document holds
 /// exactly the k-th inserted text, so this is positional, not by hash:
 /// paragraphs whose translations happen to coincide keep distinct originals.
-/// The k-th segment is to be filled in if `kept[k]`.
-fn install_seeds(st: &mut State, pairs: Vec<(String, String)>, kept: &[bool]) {
+/// The k-th segment is to be filled in if `kept[k]`. If `standin[k]`, the
+/// k-th original was a stand-in, the segment's own text: the segment is
+/// back in its language and is translated afresh, with no original.
+fn install_seeds(st: &mut State, pairs: Vec<(String, String)>, kept: &[bool], standin: &[bool]) {
     let text = st.doc.text();
     let targets: Vec<(SegmentId, ContentHash)> = st
         .doc
@@ -105,6 +120,11 @@ fn install_seeds(st: &mut State, pairs: Vec<(String, String)>, kept: &[bool]) {
         .collect();
     let mut by_hash: HashMap<ContentHash, Option<String>> = HashMap::new();
     for (k, ((id, hash), (_inserted, original))) in targets.into_iter().zip(pairs).enumerate() {
+        if standin.get(k).copied().unwrap_or(false) {
+            st.meta.insert(id, SegMeta::new());
+            st.touched.push(id);
+            continue;
+        }
         by_hash
             .entry(hash)
             .and_modify(|known| {
@@ -117,6 +137,8 @@ fn install_seeds(st: &mut State, pairs: Vec<(String, String)>, kept: &[bool]) {
         meta.seed = Some((hash, original));
         if kept.get(k).copied().unwrap_or(false) {
             meta.fill = Some(hash);
+            meta.standin = Some(hash);
+            st.standin_texts.insert(hash);
         }
         st.meta.insert(id, meta);
         st.touched.push(id);
@@ -161,14 +183,17 @@ impl Engine {
         };
 
         let mode = st.doc.mode();
+        let standin = standin_slots(&st);
         st.cancel_all();
         st.meta.clear();
         st.touched.clear();
+        st.filled.clear();
+        st.standin_texts.clear();
         st.document += 1;
         st.doc = DocumentModel::new(st.doc.next_id());
         st.doc.apply(composed.text.clone(), mode);
         st.direction = st.direction.flipped();
-        install_seeds(&mut st, composed.pairs, &kept);
+        install_seeds(&mut st, composed.pairs, &kept, &standin);
         self.inner.reconcile(&mut st, &Default::default());
         self.inner.pump(&mut st);
         st.revision += 1;

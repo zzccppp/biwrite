@@ -304,7 +304,11 @@ function snapshot(full = true): Snapshot {
 }
 
 function session(): SessionView {
-  const name = ZH_FILE ? "paper_zh.tex" : LATEX ? "paper.tex" : "notes.txt";
+  // A pair's swap opens the other file.
+  const swappedPair = state.paired && state.direction !== (ZH_FILE && !WRONG ? "zh-en" : "en-zh");
+  const own = ZH_FILE ? "paper_zh.tex" : LATEX ? "paper.tex" : "notes.txt";
+  const other = ZH_FILE ? "paper.tex" : "paper_zh.tex";
+  const name = swappedPair ? other : own;
   return {
     path: LATEX ? `/Users/me/papers/gnn-icl/${name}` : "/Users/me/paper/notes.txt",
     name,
@@ -313,10 +317,16 @@ function session(): SessionView {
     autoTranslate: true,
     lineEnding: "lf",
     bom: false,
-    pair: state.paired ? PAIR : null,
+    pair: state.paired ? { ...PAIR, ...(swappedPair ? { path: `/Users/me/papers/gnn-icl/${own}`, name: own } : {}) } : null,
     home: state.home,
+    otherLanguage: otherLanguage(),
     snapshot: snapshot(),
   };
+}
+
+/** Paragraphs kept in the other language that a save writes as they are (the file's own language edited). */
+function otherLanguage(): number {
+  return state.direction === state.home ? state.kept.size : 0;
 }
 
 const PAIR = { path: "/Users/me/papers/gnn-icl/paper_zh.tex", name: "paper_zh.tex", paired: 21, units: 21, dirty: false };
@@ -734,13 +744,13 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.saves++;
     state.text = String(a.text);
     const view = session();
-    return { path: view.path, name: view.name, suggestedMode: view.snapshot.mode, mirror: null };
+    return { path: view.path, name: view.name, suggestedMode: view.snapshot.mode, mirror: null, otherLanguage: view.otherLanguage };
   },
   save_file_as: (a) => {
     state.saves++;
     state.text = String(a.text);
     const view = session();
-    return { path: view.path, name: view.name, suggestedMode: view.snapshot.mode, mirror: null };
+    return { path: view.path, name: view.name, suggestedMode: view.snapshot.mode, mirror: null, otherLanguage: view.otherLanguage };
   },
   save_project_as: (a) => {
     state.saves++;
@@ -751,7 +761,13 @@ const handlers: Record<string, (args: Args) => unknown> = {
       folder: "/Users/me/papers/gnn-icl-copy",
       copied: 7,
       leftOut: [],
-      saved: { path: "/Users/me/papers/gnn-icl-copy/paper.tex", name: "paper.tex", suggestedMode: view.snapshot.mode, mirror: null },
+      saved: {
+        path: "/Users/me/papers/gnn-icl-copy/paper.tex",
+        name: "paper.tex",
+        suggestedMode: view.snapshot.mode,
+        mirror: null,
+        otherLanguage: view.otherLanguage,
+      },
       exported: null,
     };
   },

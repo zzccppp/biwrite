@@ -7,9 +7,13 @@
 //! 1. LCS diff over segment keys (kind + content hash). Equal runs keep IDs.
 //! 2. Moved segments: an inserted segment whose key matches a deleted one
 //!    takes over that ID.
-//! 3. Edited segments: inside each replaced hunk, old and new segments are
+//! 3. Expected replacements: a segment the caller replaced on purpose (a
+//!    paragraph put into the other language) keeps its ID when the new
+//!    text is there, however different it reads, and in step 4 it also
+//!    pairs by that text (the replacement edited at once).
+//! 4. Edited segments: inside each replaced hunk, old and new segments are
 //!    paired in order by text similarity, and a pair keeps the old ID.
-//! 4. Anything left gets a fresh ID.
+//! 5. Anything left gets a fresh ID.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -62,6 +66,16 @@ impl DocSegment {
     fn key(&self) -> (SegmentKind, ContentHash) {
         (self.segment.kind, self.hash)
     }
+}
+
+/// A segment replaced on purpose by `text` (content hash `hash`), such as a
+/// paragraph put into the other language: see
+/// [`DocumentModel::apply_expecting`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replacement {
+    pub id: SegmentId,
+    pub hash: ContentHash,
+    pub text: String,
 }
 
 /// What changed in the last [`DocumentModel::apply`].
@@ -121,6 +135,18 @@ impl DocumentModel {
 
     /// Replace the text (and optionally the mode), re-segment and align.
     pub fn apply(&mut self, text: String, mode: Mode) -> ApplyReport {
+        self.apply_expecting(text, mode, &[])
+    }
+
+    /// [`Self::apply`], where each of `expected` is a segment replaced on
+    /// purpose: the new segment with its text keeps the ID, though it shares
+    /// no words with the old one, and so does one edited from that text.
+    pub fn apply_expecting(
+        &mut self,
+        text: String,
+        mode: Mode,
+        expected: &[Replacement],
+    ) -> ApplyReport {
         let new: Vec<(Segment, ContentHash)> = segment(&text, mode)
             .into_iter()
             .map(|s| {
@@ -128,7 +154,7 @@ impl DocumentModel {
                 (s, hash)
             })
             .collect();
-        let ids = align(&self.segments, &self.text, &new, &text);
+        let ids = align(&self.segments, &self.text, &new, &text, expected);
 
         let mut report = ApplyReport::default();
         let old_by_id: HashMap<SegmentId, (SegmentKind, ContentHash)> =
@@ -192,9 +218,29 @@ fn align(
     old_text: &str,
     new: &[(Segment, ContentHash)],
     new_text: &str,
+    expected: &[Replacement],
 ) -> Vec<Option<SegmentId>> {
-    let old_keys: Vec<_> = old.iter().map(DocSegment::key).collect();
     let new_keys: Vec<_> = new.iter().map(|(s, h)| (s.kind, *h)).collect();
+    // A replacement that is in (its old text gone, one more copy of its new
+    // text than before): the segment is diffed as its new text, so it stays
+    // in place even next to a twin of that text. A twin that was there
+    // already keeps its own place when the segment is deleted instead.
+    let plain: Vec<_> = old.iter().map(DocSegment::key).collect();
+    let copies =
+        |keys: &[(SegmentKind, ContentHash)], key| keys.iter().filter(|k| **k == key).count();
+    let old_keys: Vec<_> = old
+        .iter()
+        .map(|s| match expected.iter().find(|r| r.id == s.id) {
+            Some(r)
+                if copies(&new_keys, s.key()) == 0
+                    && copies(&new_keys, (s.kind(), r.hash))
+                        > copies(&plain, (s.kind(), r.hash)) =>
+            {
+                (s.kind(), r.hash)
+            }
+            _ => s.key(),
+        })
+        .collect();
     let mut ids: Vec<Option<SegmentId>> = vec![None; new.len()];
     let mut old_used = vec![false; old.len()];
     let mut hunks: Vec<(Range<usize>, Range<usize>)> = Vec::new();
@@ -234,7 +280,34 @@ fn align(
         }
     }
 
-    // 3. Edits: pair remaining segments inside each replaced hunk.
+    // 3. Expected replacements: the nearest new segment of the same kind
+    //    with the expected text.
+    for r in expected {
+        let Some(i) = old
+            .iter()
+            .position(|s| s.id == r.id)
+            .filter(|&i| !old_used[i])
+        else {
+            continue;
+        };
+        let nearest = (0..new.len())
+            .filter(|&j| ids[j].is_none() && new[j].1 == r.hash && new[j].0.kind == old[i].kind())
+            .min_by_key(|&j| j.abs_diff(i));
+        if let Some(j) = nearest {
+            ids[j] = Some(r.id);
+            old_used[i] = true;
+        }
+    }
+    // The text a replaced segment was to get: it pairs by that text too,
+    // when the replacement came edited already.
+    let replacement = |i: usize| {
+        expected
+            .iter()
+            .find(|r| r.id == old[i].id)
+            .map(|r| r.text.as_str())
+    };
+
+    // 4. Edits: pair remaining segments inside each replaced hunk.
     for (old_range, new_range) in hunks {
         let olds: Vec<usize> = old_range.filter(|&i| !old_used[i]).collect();
         let news: Vec<usize> = new_range.filter(|&j| ids[j].is_none()).collect();
@@ -247,7 +320,15 @@ fn align(
             continue;
         }
         for (i, j) in pair_by_similarity(&olds, &news, |i, j| {
-            pair_score(&old[i].segment, old_text, &new[j].0, new_text)
+            let score = pair_score(&old[i].segment, old_text, &new[j].0, new_text);
+            match replacement(i) {
+                Some(text)
+                    if old[i].kind().is_translatable() && new[j].0.kind.is_translatable() =>
+                {
+                    score.max(similarity(text, new[j].0.content(new_text)))
+                }
+                _ => score,
+            }
         }) {
             ids[j] = Some(old[i].id);
             old_used[i] = true;

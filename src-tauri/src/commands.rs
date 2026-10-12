@@ -85,6 +85,7 @@ pub async fn save_file(
     let _one_at_a_time = state.save_lock.lock().await;
     state.sync_text(document, &text)?;
     let own = home_text(&state, text)?;
+    let other_language = state.left_in_other_language();
     let current = state.file().path.clone();
     let path = match current {
         Some(path) => path,
@@ -93,7 +94,9 @@ pub async fn save_file(
             None => return Ok(None),
         },
     };
-    save_to(&window, &state, path, own, None).await.map(Some)
+    save_to(&window, &state, path, own, None, other_language)
+        .await
+        .map(Some)
 }
 
 /// Save under a new name.
@@ -108,6 +111,7 @@ pub async fn save_file_as(
     let _one_at_a_time = state.save_lock.lock().await;
     state.sync_text(document, &text)?;
     let own = home_text(&state, text)?;
+    let other_language = state.left_in_other_language();
     let current = state.file().path.clone();
     let Some(path) = files::pick_save(&app, &window, current.as_deref()).await else {
         return Ok(None);
@@ -122,7 +126,7 @@ pub async fn save_file_as(
             _ => None,
         }
     };
-    save_to(&window, &state, path, own, mirror_to)
+    save_to(&window, &state, path, own, mirror_to, other_language)
         .await
         .map(Some)
 }
@@ -134,27 +138,29 @@ pub async fn save_file_as(
 ///
 /// The engine holds `editor_text` already ([`AppState::sync_text`]).
 pub(crate) fn home_text(state: &AppState, editor_text: String) -> CommandResult<String> {
-    let own = {
-        let fs = state.file();
-        fs.pair.is_some() || state.engine.direction() == fs.home
-    };
-    if own {
+    if state.editing_own_language() {
         Ok(editor_text)
     } else {
         Ok(state.engine.compose_target()?)
     }
 }
 
+/// [`write_document`], with `other_language` as counted when `text` was
+/// taken from the editor (fills may land during the dialog and the write).
 async fn save_to(
     window: &WebviewWindow,
     state: &AppState,
     path: PathBuf,
     text: String,
     mirror_to: Option<PathBuf>,
+    other_language: usize,
 ) -> CommandResult<SavedView> {
     let saved = write_document(state, path, text, mirror_to).await;
     refresh_title(window, state);
-    saved
+    saved.map(|saved| SavedView {
+        other_language,
+        ..saved
+    })
 }
 
 /// Write the document's own `text` to `path` (and the paired file to
@@ -167,6 +173,7 @@ pub(crate) async fn write_document(
     mirror_to: Option<PathBuf>,
 ) -> CommandResult<SavedView> {
     let note = state.doc_note();
+    let other_language = state.left_in_other_language();
     // Only the English source is written; unedited text yields the original bytes.
     let bytes = state.file().file.encode(&text);
     files::write_file_atomic(path.clone(), bytes.clone()).await?;
@@ -193,6 +200,7 @@ pub(crate) async fn write_document(
         suggested_mode: Mode::from_path(&path),
         path: path.display().to_string(),
         mirror,
+        other_language,
     })
 }
 
@@ -223,7 +231,8 @@ pub(crate) fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<
     // With `keep` the swap happens now. Untranslated paragraphs keep their
     // text and are put in the newly edited language once translated. Saved
     // before then, they go into the file as they are, a document of both
-    // languages, which builds like any other.
+    // languages, which builds like any other; the window says so on the
+    // swap and on the save (`other_language`).
     let swapped = if keep {
         state.engine.swap_keeping_untranslated(text.clone())?
     } else {
@@ -289,7 +298,10 @@ pub(crate) fn retarget(
     let mode = state.engine.mode();
     if only_if_needed {
         let editing_own = state.engine.direction() == home;
-        if !editing_own || written_in(&text, mode) != Some(home.flipped()) {
+        // Paragraphs an early swap left in the other language would tip
+        // the scale: not while there are any.
+        let left = !state.engine.standins().is_empty();
+        if !editing_own || left || written_in(&text, mode) != Some(home.flipped()) {
             return Ok(None);
         }
     }
@@ -316,12 +328,15 @@ pub async fn continue_translation(
     text: String,
     document: u64,
 ) -> CommandResult<usize> {
+    continue_left(&state, text, document)
+}
+
+/// [`continue_translation`] without Tauri.
+pub(crate) fn continue_left(state: &AppState, text: String, document: u64) -> CommandResult<usize> {
     state.sync_text(document, &text)?;
-    let other_language = {
-        let fs = state.file();
-        fs.pair.is_none() && state.engine.direction() != fs.home
-    };
-    Ok(state.engine.continue_translation(other_language))
+    Ok(state
+        .engine
+        .continue_translation(!state.editing_own_language()))
 }
 
 /// New editor text after the debounce: re-segment, align, schedule work.

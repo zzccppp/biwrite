@@ -9,7 +9,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use biwrite_core::{Direction, Mode};
+use biwrite_core::{Direction, Mode, SegmentId};
 use biwrite_engine::{
     BatchOutput, BatchPartialFn, BoxFuture, EngineSettings, Fill, PartialFn, SegmentStatus,
     TokenUsage, TranslateError, TranslationOutput, TranslationRequest, Translator,
@@ -166,7 +166,8 @@ async fn a_paragraph_edited_before_its_fill_keeps_the_edit() {
     let fills = fills(&h);
     assert_eq!(fills.len(), 1, "only the untouched paragraph is filled");
     assert_eq!(fills[0].old, paras[3]);
-    // The edited paragraph is translated like any edit of the Chinese side.
+    // Rewritten from scratch, the paragraph is a new one, translated like
+    // any edit of the Chinese side.
     let filled = apply(&edited, &fills);
     assert!(filled.contains("My own words here."));
     h.engine.update(filled.clone());
@@ -188,6 +189,431 @@ async fn swapping_back_before_the_fills_restores_the_original() {
         "fills of the old document are dropped"
     );
     assert_eq!(h.engine.direction(), Direction::EnZh);
+}
+
+/// The paragraphs a fill is on its way for went over in English and have
+/// themselves as their translation, a stand-in. Swapped straight back, they
+/// are no translations of themselves: they are translated afresh, and the
+/// Chinese has no English left in it.
+#[tokio::test(start_paused = true)]
+async fn swapped_back_before_their_fills_paragraphs_are_translated_afresh() {
+    let (h, paras) = half_translated().await;
+    let english = join(&paras);
+    let swapped = h.engine.swap_keeping_untranslated(english.clone()).unwrap();
+    assert_eq!(h.engine.standins().len(), 2);
+    let back = h.engine.swap(swapped.text).unwrap();
+    assert_eq!(back.text, english);
+    assert!(h.engine.standins().is_empty());
+    settle(&h.engine).await;
+    let chinese = join(&paras.iter().map(|p| toy(p)).collect::<Vec<_>>());
+    assert_eq!(h.engine.compose_target().unwrap(), chinese);
+}
+
+/// A fill that fails leaves its paragraph in English, still a stand-in:
+/// swapped back, it is translated afresh too.
+#[tokio::test(start_paused = true)]
+async fn a_failed_fill_leaves_a_stand_in() {
+    let (h, paras) = half_translated().await;
+    let english = join(&paras);
+    let rejected = || TranslateError::Rejected {
+        status: 400,
+        message: "bad request".into(),
+    };
+    h.translator.fail_next([rejected(), rejected()]);
+    let swapped = h.engine.swap_keeping_untranslated(english.clone()).unwrap();
+    settle(&h.engine).await;
+    assert!(fills(&h).is_empty(), "both fills failed");
+    assert_eq!(h.engine.standins().len(), 2);
+    h.engine.swap(swapped.text).unwrap();
+    settle(&h.engine).await;
+    let chinese = join(&paras.iter().map(|p| toy(p)).collect::<Vec<_>>());
+    assert_eq!(h.engine.compose_target().unwrap(), chinese);
+}
+
+/// Paused, the stand-ins wait for their fills; swapped back, their
+/// counterparts wait for a translation instead of taking them for one.
+#[tokio::test(start_paused = true)]
+async fn a_paused_swap_back_waits_for_translations() {
+    let (h, paras) = half_translated().await;
+    h.engine.set_auto_translate(false);
+    let swapped = h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    h.engine.swap(swapped.text).unwrap();
+    settle(&h.engine).await;
+    assert!(
+        h.engine.compose_target().is_err(),
+        "two paragraphs wait for their translations"
+    );
+    assert_eq!(h.engine.continue_translation(false), 2);
+    settle(&h.engine).await;
+    let chinese = join(&paras.iter().map(|p| toy(p)).collect::<Vec<_>>());
+    assert_eq!(h.engine.compose_target().unwrap(), chinese);
+}
+
+/// Continue takes up stand-ins whatever side is edited (it is told
+/// `other_language: false` with a pair or back home), a failed fill too.
+#[tokio::test(start_paused = true)]
+async fn continue_takes_up_a_stand_in_whose_fill_failed() {
+    let (h, paras) = half_translated().await;
+    let rejected = || TranslateError::Rejected {
+        status: 400,
+        message: "bad request".into(),
+    };
+    h.translator.fail_next([rejected(), rejected()]);
+    let swapped = h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    settle(&h.engine).await;
+    assert!(fills(&h).is_empty());
+    assert_eq!(h.engine.continue_translation(false), 2);
+    settle(&h.engine).await;
+    let fills = fills(&h);
+    assert_eq!(fills.len(), 2);
+    h.engine.update(apply(&swapped.text, &fills));
+    assert!(h.engine.standins().is_empty());
+}
+
+/// A stand-in edited before its fill, still in English, stays one: its
+/// edited English is its translation exactly, nothing is sent for it, and
+/// swapped back it is translated afresh.
+#[tokio::test(start_paused = true)]
+async fn an_edited_stand_in_stays_one() {
+    let (h, paras) = half_translated().await;
+    h.engine.set_auto_translate(false);
+    let swapped = h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    let edited = swapped
+        .text
+        .replace("finding number 2", "finding number two");
+    h.engine.update(edited.clone());
+    assert_eq!(h.engine.standins().len(), 2);
+    h.engine.set_auto_translate(true);
+    settle(&h.engine).await;
+    let english = h.engine.compose_target().unwrap();
+    assert!(english.contains("finding number two"), "{english}");
+    let back = h.engine.swap(edited).unwrap();
+    assert_eq!(back.text, english);
+    settle(&h.engine).await;
+    // Both in Chinese (the untouched one from its fill's cached answer).
+    assert_eq!(h.engine.compose_target().unwrap(), toy(&english));
+}
+
+/// Continue sends the fill, then the author edits the paragraph, still in
+/// English, before it lands: it stays a stand-in, its edit its translation.
+#[tokio::test(start_paused = true)]
+async fn a_stand_in_edited_after_continue_stays_one() {
+    let (h, paras) = half_translated().await;
+    h.engine.set_auto_translate(false);
+    let swapped = h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    assert_eq!(h.engine.continue_translation(false), 2);
+    let edited = swapped
+        .text
+        .replace("finding number 2", "finding number two");
+    h.engine.update(edited);
+    assert_eq!(h.engine.standins().len(), 2);
+    settle(&h.engine).await;
+    assert_eq!(fills(&h).len(), 1, "only the untouched one is filled");
+    assert!(
+        h.engine.standins().len() == 2,
+        "the filled one until the editor puts it in"
+    );
+    let english = h.engine.compose_target().unwrap();
+    assert!(english.contains("finding number two"), "{english}");
+}
+
+/// The offline translator's answer to a fill is no translation: the
+/// paragraph stays as it is, a stand-in, for a real translator to fill.
+#[tokio::test(start_paused = true)]
+async fn the_offline_translator_leaves_stand_ins_as_they_are() {
+    let (h, paras) = half_translated().await;
+    h.translator.set_stand_in(true);
+    let swapped = h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    settle(&h.engine).await;
+    assert!(fills(&h).is_empty(), "{:?}", fills(&h));
+    assert_eq!(h.engine.standins().len(), 2);
+    h.engine.swap(swapped.text).unwrap();
+    assert!(h.engine.standins().is_empty());
+}
+
+/// Retranslating a stand-in whose fill failed puts it into the edited
+/// language: its translation stays its own text.
+#[tokio::test(start_paused = true)]
+async fn retranslating_a_stand_in_fills_it() {
+    let (h, paras) = half_translated().await;
+    let rejected = || TranslateError::Rejected {
+        status: 400,
+        message: "bad request".into(),
+    };
+    h.translator.fail_next([rejected(), rejected()]);
+    h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    settle(&h.engine).await;
+    assert!(fills(&h).is_empty(), "both fills failed");
+    let id = *h.engine.standins().iter().next().unwrap();
+    h.engine.retranslate(id).unwrap();
+    settle(&h.engine).await;
+    let fills = fills(&h);
+    assert_eq!(fills.len(), 1, "{fills:?}");
+    assert_eq!(fills[0].id, id);
+    assert!(h.engine.has_exact_translation(id));
+}
+
+/// Chinese only partly put into English: the first half of its Han
+/// characters, the rest as they are. English is put into Chinese whole.
+fn partly(s: &str) -> String {
+    if !s.chars().any(|c| HAN.contains(&c)) {
+        return toy(s);
+    }
+    let mut left = s.chars().filter(|c| HAN.contains(c)).count() / 2;
+    s.chars()
+        .map(|c| match HAN.iter().position(|&h| h == c) {
+            Some(i) if left > 0 => {
+                left -= 1;
+                (b'a' + i as u8) as char
+            }
+            _ => c,
+        })
+        .collect()
+}
+
+/// A fill that comes back only partly in English is put in, and the
+/// paragraph's translation is the author's Chinese, its original: the
+/// half-translated text, still mostly Chinese, is no stand-in.
+#[tokio::test(start_paused = true)]
+async fn a_partly_translated_fill_keeps_the_original() {
+    let mut h = harness(EngineSettings::default());
+    let translator = Scripted::mapping(Duration::from_millis(700), partly);
+    h.engine.set_translator(translator.clone());
+    h.translator = translator;
+    let paras = paragraphs(2);
+    h.engine.load(join(&paras), Mode::Plain);
+    settle(&h.engine).await;
+    let swapped = h.engine.swap(join(&paras)).unwrap();
+    h.engine.set_auto_translate(false);
+    let zh = toy(&paras[1]);
+    let zh_edited = format!("{zh}{}", toy(" and some more words"));
+    let edited = swapped.text.replace(&zh, &zh_edited);
+    h.engine.update(edited.clone());
+    let back = h.engine.swap_keeping_untranslated(edited).unwrap();
+    assert_eq!(h.engine.standins().len(), 1);
+    h.engine.set_auto_translate(true);
+    settle(&h.engine).await;
+    let fills = fills(&h);
+    assert_eq!(fills.len(), 1, "{fills:?}");
+    h.engine.update(apply(&back.text, &fills));
+    settle(&h.engine).await;
+    assert!(h.engine.standins().is_empty());
+    let chinese = h.engine.compose_target().unwrap();
+    assert!(chinese.contains(&zh_edited), "{chinese}");
+}
+
+/// A stand-in edited and then undone (or typed back as it was) is still a
+/// stand-in: swapped back, it is translated afresh.
+#[tokio::test(start_paused = true)]
+async fn a_stand_in_edited_and_undone_stays_one() {
+    let (h, paras) = half_translated().await;
+    h.engine.set_auto_translate(false);
+    let swapped = h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    let edited = swapped
+        .text
+        .replace("finding number 2", "finding number two");
+    h.engine.update(edited);
+    h.engine.update(swapped.text.clone());
+    assert_eq!(h.engine.standins().len(), 2);
+    h.engine.set_auto_translate(true);
+    h.engine.swap(swapped.text).unwrap();
+    settle(&h.engine).await;
+    let chinese = join(&paras.iter().map(|p| toy(p)).collect::<Vec<_>>());
+    assert_eq!(h.engine.compose_target().unwrap(), chinese);
+}
+
+/// The stand-in is deleted before its fill lands, and the fill's text is
+/// the paragraph after it: that paragraph keeps its own original.
+#[tokio::test(start_paused = true)]
+async fn a_deleted_stand_in_leaves_its_twin_alone() {
+    let mut h = harness(EngineSettings::default());
+    // "The abc def." and "abc def." both come out as the Chinese of "abc def.".
+    let translator = Scripted::mapping(Duration::from_millis(700), |s: &str| {
+        toy(&s.replace("The ", ""))
+    });
+    h.engine.set_translator(translator.clone());
+    h.translator = translator;
+    let english = "abc def.\n\nxyz.".to_owned();
+    h.engine.load(english.clone(), Mode::Plain);
+    settle(&h.engine).await;
+    let swapped = h.engine.swap(english.clone()).unwrap();
+    let twin = toy("abc def.");
+    let typed = swapped
+        .text
+        .replacen(&twin, &format!("The abc def.\n\n{twin}"), 1);
+    h.engine.update(typed.clone());
+    settle(&h.engine).await;
+    assert_eq!(h.engine.continue_translation(true), 1);
+    settle(&h.engine).await;
+    let fills = fills(&h);
+    assert_eq!(fills.len(), 1);
+    assert_eq!(fills[0].new.trim(), twin, "the fill is its twin's text");
+    h.engine.update(typed.replacen("The abc def.\n\n", "", 1));
+    settle(&h.engine).await;
+    assert_eq!(h.engine.compose_target().unwrap(), english);
+}
+
+/// Stand-ins the offline translator could not fill are filled once a real
+/// translator is set (a key was added), and so are those whose fill
+/// failed once keys are tried again.
+#[tokio::test(start_paused = true)]
+async fn stand_ins_are_filled_once_a_real_translator_can() {
+    let (h, paras) = half_translated().await;
+    h.translator.set_stand_in(true);
+    h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    settle(&h.engine).await;
+    assert!(fills(&h).is_empty());
+    h.translator.set_stand_in(false);
+    h.engine.set_translator(h.translator.clone());
+    settle(&h.engine).await;
+    assert_eq!(fills(&h).len(), 2);
+
+    let (h, paras) = half_translated().await;
+    let rejected = || TranslateError::Rejected {
+        status: 401,
+        message: "no key".into(),
+    };
+    h.translator.fail_next([rejected(), rejected()]);
+    h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    settle(&h.engine).await;
+    assert!(fills(&h).is_empty());
+    h.engine.retry_failed();
+    settle(&h.engine).await;
+    assert_eq!(fills(&h).len(), 2);
+}
+
+/// A paragraph typed in the other language whose fill fails has no
+/// translation at all: it is translated the usual way round.
+#[tokio::test(start_paused = true)]
+async fn a_failed_fill_of_a_typed_paragraph_is_translated_the_usual_way() {
+    let h = toy_harness(EngineSettings::default());
+    let english = "abc def.".to_owned();
+    h.engine.load(english.clone(), Mode::Plain);
+    settle(&h.engine).await;
+    let swapped = h.engine.swap(english).unwrap();
+    let rejected = || TranslateError::Rejected {
+        status: 400,
+        message: "bad request".into(),
+    };
+    // Its translation fails, then its fill.
+    h.translator.fail_next([rejected(), rejected()]);
+    h.engine.update(format!("{}\n\nxyz uvw.", swapped.text));
+    settle(&h.engine).await;
+    assert_eq!(h.engine.continue_translation(true), 1);
+    settle(&h.engine).await;
+    assert!(fills(&h).is_empty());
+    assert!(h.engine.compose_target().is_ok(), "translated after all");
+}
+
+/// A stand-in put into Chinese by hand and then undone, or deleted and
+/// put back (a new ID), is a stand-in again: swapped back, it is
+/// translated afresh.
+#[tokio::test(start_paused = true)]
+async fn a_stand_in_back_after_an_undo_is_one_again() {
+    for undo in ["hand-translated", "deleted"] {
+        let (h, paras) = half_translated().await;
+        h.engine.set_auto_translate(false);
+        let swapped = h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+        let meanwhile = match undo {
+            "hand-translated" => swapped.text.replace(&paras[2], &toy(&paras[2])),
+            _ => swapped.text.replace(&format!("{}\n\n", paras[2]), ""),
+        };
+        h.engine.update(meanwhile);
+        assert_eq!(h.engine.standins().len(), 1, "{undo}");
+        h.engine.update(swapped.text.clone());
+        assert_eq!(h.engine.standins().len(), 2, "{undo}");
+        h.engine.set_auto_translate(true);
+        h.engine.swap(swapped.text).unwrap();
+        settle(&h.engine).await;
+        let chinese = join(&paras.iter().map(|p| toy(p)).collect::<Vec<_>>());
+        assert_eq!(h.engine.compose_target().unwrap(), chinese, "{undo}");
+    }
+}
+
+/// Paused, a paragraph typed in the other language whose fill fails on
+/// Continue is translated the usual way round at once: it was asked for.
+#[tokio::test(start_paused = true)]
+async fn a_failed_fill_asked_for_while_paused_is_translated_the_usual_way() {
+    let h = toy_harness(EngineSettings::default());
+    let english = "abc def.".to_owned();
+    h.engine.load(english.clone(), Mode::Plain);
+    settle(&h.engine).await;
+    let swapped = h.engine.swap(english).unwrap();
+    h.engine.set_auto_translate(false);
+    h.engine.update(format!("{}\n\nxyz uvw.", swapped.text));
+    h.translator.fail_next([TranslateError::Rejected {
+        status: 400,
+        message: "bad request".into(),
+    }]);
+    assert_eq!(h.engine.continue_translation(true), 1);
+    settle(&h.engine).await;
+    assert!(fills(&h).is_empty());
+    assert!(h.engine.compose_target().is_ok(), "translated after all");
+}
+
+/// Back home, a Chinese stand-in the author starts putting into English by
+/// hand is no stand-in any more, though still more Chinese than English: it
+/// is translated the usual way, not taken as the exact Chinese. A small
+/// edit keeps it one.
+#[tokio::test(start_paused = true)]
+async fn a_stand_in_being_translated_by_hand_is_none() {
+    let h = toy_harness(EngineSettings::default());
+    let english = "abc def.".to_owned();
+    h.engine.load(english.clone(), Mode::Plain);
+    settle(&h.engine).await;
+    let swapped = h.engine.swap(english).unwrap();
+    h.engine.set_auto_translate(false);
+    let zh = toy("a new paragraph about the results of the study here");
+    let added = format!("{}\n\n{zh}", swapped.text);
+    h.engine.update(added.clone());
+    let back = h.engine.swap_keeping_untranslated(added).unwrap();
+    assert_eq!(h.engine.standins().len(), 1);
+    let typo = back.text.replace(&zh, &format!("{zh}{}", toy("s")));
+    h.engine.update(typo);
+    assert_eq!(h.engine.standins().len(), 1, "a small edit keeps it one");
+    let half = back.text.replace(&zh, &partly(&zh));
+    h.engine.update(half);
+    assert!(h.engine.standins().is_empty());
+}
+
+/// A paragraph put in Chinese by its fill keeps its ID, so what is tied to
+/// it (a paired file's paragraph) stays tied, and it is a stand-in no more.
+#[tokio::test(start_paused = true)]
+async fn a_filled_paragraph_keeps_its_id() {
+    let (h, paras) = half_translated().await;
+    let swapped = h.engine.swap_keeping_untranslated(join(&paras)).unwrap();
+    settle(&h.engine).await;
+    let fills = fills(&h);
+    assert_eq!(fills.len(), 2);
+    let ids = |h: &Harness| -> Vec<SegmentId> {
+        h.engine.snapshot().layout.iter().map(|s| s.id).collect()
+    };
+    let before = ids(&h);
+    h.engine.update(apply(&swapped.text, &fills));
+    assert_eq!(ids(&h), before);
+    assert!(fills.iter().all(|f| before.contains(&f.id)));
+    assert!(h.engine.standins().is_empty());
+}
+
+/// A kept paragraph that reads the same in both languages (its fill is
+/// refused) is its own translation rightly, no stand-in.
+#[tokio::test(start_paused = true)]
+async fn a_kept_paragraph_the_same_in_both_languages_is_no_stand_in() {
+    let h = toy_harness(EngineSettings::default());
+    h.engine.set_auto_translate(false);
+    let english = "Paragraph one.\n\nICLR 2026.".to_owned();
+    h.engine.load(english.clone(), Mode::Plain);
+    h.engine.swap_keeping_untranslated(english).unwrap();
+    assert_eq!(h.engine.standins().len(), 2);
+    h.engine.set_auto_translate(true);
+    settle(&h.engine).await;
+    let fills = fills(&h);
+    assert_eq!(fills.len(), 1, "{fills:?}");
+    assert_eq!(
+        h.engine.standins().into_iter().collect::<Vec<_>>(),
+        vec![fills[0].id],
+        "the other one until the editor puts its fill in"
+    );
 }
 
 #[tokio::test(start_paused = true)]

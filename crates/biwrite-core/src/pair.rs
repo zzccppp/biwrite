@@ -301,22 +301,43 @@ pub fn align(a: &str, b: &str, mode: Mode) -> Pairing {
     }
 }
 
-/// A change to the mirror, by unit index of the mirror as it is now.
+/// A change to the mirror, by unit index of the mirror as it is now. Text
+/// is shaped to fit its place ([`fit`], as for machine output), or goes in
+/// as it is when `exact` (text the user wrote).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Edit {
     /// New content for a unit.
-    Replace { unit: usize, text: String },
+    Replace {
+        unit: usize,
+        text: String,
+        exact: bool,
+    },
     /// A new paragraph after a unit (`None`: before the first unit). `tag`
     /// names it in the result's origins.
     InsertAfter {
         unit: Option<usize>,
         text: String,
         tag: u64,
+        exact: bool,
     },
     /// A new paragraph before a unit.
-    InsertBefore { unit: usize, text: String, tag: u64 },
+    InsertBefore {
+        unit: usize,
+        text: String,
+        tag: u64,
+        exact: bool,
+    },
     /// The unit is gone, with the blank line that separated it.
     Delete { unit: usize },
+}
+
+/// `text` as an edit puts it in a unit of `kind` that reads `source`.
+fn shaped(text: &str, exact: bool, kind: SegmentKind, mode: Mode, source: &str) -> String {
+    if exact {
+        text.to_owned()
+    } else {
+        fit(text, kind, mode, source)
+    }
 }
 
 /// New paragraphs after one anchor unit, in order: `(tag, text)`.
@@ -403,13 +424,13 @@ pub fn patch(b: &str, mode: Mode, edits: &[Edit]) -> (String, Vec<Origin>) {
     let mut before: Vec<(usize, Vec<(u64, String)>)> = Vec::new();
     for e in edits {
         match e {
-            Edit::Replace { unit, text } => {
+            Edit::Replace { unit, text, exact } => {
                 if let Some(u) = ub.get(*unit) {
                     let source = &b[u.content.clone()];
                     changes.push((
                         u.content.start,
                         u.content.end,
-                        fit(text, u.kind, mode, source),
+                        shaped(text, *exact, u.kind, mode, source),
                     ));
                 }
             }
@@ -419,11 +440,15 @@ pub fn patch(b: &str, mode: Mode, edits: &[Edit]) -> (String, Vec<Origin>) {
                 unit: None,
                 text,
                 tag,
+                exact,
             }
-            | Edit::InsertBefore { unit: 0, text, tag }
-                if !ub.is_empty() =>
-            {
-                let body = fit(text, SegmentKind::Paragraph, mode, "");
+            | Edit::InsertBefore {
+                unit: 0,
+                text,
+                tag,
+                exact,
+            } if !ub.is_empty() => {
+                let body = shaped(text, *exact, SegmentKind::Paragraph, mode, "");
                 match before.iter_mut().find(|(at, _)| *at == 0) {
                     Some((_, list)) => list.push((*tag, body)),
                     None => before.push((0, vec![(*tag, body)])),
@@ -431,17 +456,27 @@ pub fn patch(b: &str, mode: Mode, edits: &[Edit]) -> (String, Vec<Origin>) {
             }
             // An anchor that isn't there: nothing sensible to do.
             Edit::InsertAfter { unit: Some(u), .. } if *u >= ub.len() => {}
-            Edit::InsertAfter { unit, text, tag } => {
+            Edit::InsertAfter {
+                unit,
+                text,
+                tag,
+                exact,
+            } => {
                 let unit = *unit;
-                let body = fit(text, SegmentKind::Paragraph, mode, "");
+                let body = shaped(text, *exact, SegmentKind::Paragraph, mode, "");
                 match inserts.iter_mut().find(|(at, _)| *at == unit) {
                     Some((_, list)) => list.push((*tag, body)),
                     None => inserts.push((unit, vec![(*tag, body)])),
                 }
             }
-            Edit::InsertBefore { unit, text, tag } => {
+            Edit::InsertBefore {
+                unit,
+                text,
+                tag,
+                exact,
+            } => {
                 if *unit < ub.len() {
-                    let body = fit(text, SegmentKind::Paragraph, mode, "");
+                    let body = shaped(text, *exact, SegmentKind::Paragraph, mode, "");
                     match before.iter_mut().find(|(at, _)| at == unit) {
                         Some((_, list)) => list.push((*tag, body)),
                         None => before.push((*unit, vec![(*tag, body)])),
@@ -563,13 +598,20 @@ pub fn patch_checked(b: &str, mode: Mode, edits: &[Edit]) -> Option<(String, Vec
     let mut inserted: HashMap<u64, String> = HashMap::new();
     for e in edits {
         match e {
-            Edit::Replace { unit, text } => {
+            Edit::Replace { unit, text, exact } => {
                 if let Some(u) = before.get(*unit) {
-                    replaced.insert(*unit, fit(text, u.kind, mode, &b[u.content.clone()]));
+                    let source = &b[u.content.clone()];
+                    replaced.insert(*unit, shaped(text, *exact, u.kind, mode, source));
                 }
             }
-            Edit::InsertAfter { text, tag, .. } | Edit::InsertBefore { text, tag, .. } => {
-                inserted.insert(*tag, fit(text, SegmentKind::Paragraph, mode, ""));
+            Edit::InsertAfter {
+                text, tag, exact, ..
+            }
+            | Edit::InsertBefore {
+                text, tag, exact, ..
+            } => {
+                let body = shaped(text, *exact, SegmentKind::Paragraph, mode, "");
+                inserted.insert(*tag, body);
             }
             Edit::Delete { .. } => {}
         }
@@ -636,16 +678,19 @@ TabPFN \\cite{hollmann2025} 等表格基础模型可以在上下文中学习。\
     fn patching_replaces_inserts_and_deletes_in_place() {
         let edits = vec![
             Edit::Replace {
+                exact: false,
                 unit: 1,
                 text: "TabPFN 等模型能在上下文中学习。".into(),
             },
             Edit::Delete { unit: 3 },
             Edit::InsertAfter {
+                exact: false,
                 unit: Some(4),
                 text: "新增的结尾补充。\n\n多余空行被去掉。".into(),
                 tag: 7,
             },
             Edit::InsertAfter {
+                exact: false,
                 unit: Some(4),
                 text: "再补一段。".into(),
                 tag: 8,
@@ -686,6 +731,7 @@ TabPFN \\cite{hollmann2025} 等表格基础模型可以在上下文中学习。\
     fn an_insert_never_runs_into_the_next_paragraph() {
         let zh = "\\section{方法}\\label{sec:method}\n第一段。\n\n第二段。\n";
         let edits = vec![Edit::InsertAfter {
+            exact: false,
             unit: Some(0),
             text: "新的一段。".into(),
             tag: 1,
@@ -706,6 +752,7 @@ TabPFN \\cite{hollmann2025} 等表格基础模型可以在上下文中学习。\
         );
         // At the end of the file, nothing is added after it.
         let edits = vec![Edit::InsertAfter {
+            exact: false,
             unit: Some(2),
             text: "结尾。".into(),
             tag: 2,
@@ -718,6 +765,7 @@ TabPFN \\cite{hollmann2025} 等表格基础模型可以在上下文中学习。\
     fn a_patch_that_changes_the_structure_is_refused() {
         let zh = "第一段。\n\n第二段。\n";
         let edits = vec![Edit::Replace {
+            exact: false,
             unit: 0,
             text: "第一段。\n\\section{注入}\n更多。".into(),
         }];
@@ -741,6 +789,7 @@ TabPFN \\cite{hollmann2025} 等表格基础模型可以在上下文中学习。\
         let zh = "\\begin{itemize}\n\\item 一项。\n\\end{itemize}\n\n正文。\n";
         // After the list, before the first paragraph of its own.
         let edits = vec![Edit::InsertBefore {
+            exact: false,
             unit: 1,
             text: "新段。".into(),
             tag: 9,
@@ -774,6 +823,7 @@ TabPFN \\cite{hollmann2025} 等表格基础模型可以在上下文中学习。\
         let edits = vec![
             Edit::Delete { unit: 0 },
             Edit::InsertBefore {
+                exact: false,
                 unit: 1,
                 text: "丙。".into(),
                 tag: 3,
@@ -799,6 +849,7 @@ TabPFN \\cite{hollmann2025} 等表格基础模型可以在上下文中学习。\
         let spaced = "甲。\n\n乙。  \n\n丙。\n";
         let edits = vec![
             Edit::Replace {
+                exact: false,
                 unit: 1,
                 text: "新乙。".into(),
             },
@@ -809,6 +860,7 @@ TabPFN \\cite{hollmann2025} 等表格基础模型可以在上下文中学习。\
         // And an insert after it too.
         let edits = vec![
             Edit::InsertAfter {
+                exact: false,
                 unit: Some(1),
                 text: "丁。".into(),
                 tag: 4,

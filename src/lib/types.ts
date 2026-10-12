@@ -73,6 +73,8 @@ export interface SessionView {
   pair: PairView | null;
   /** The direction in which the editor holds the file's own language. */
   home: Direction;
+  /** Paragraphs still in the other language since an early swap, which a save writes into the file as they are. */
+  otherLanguage: number;
   snapshot: Snapshot;
 }
 
@@ -93,6 +95,8 @@ export interface SavedView {
   suggestedMode: Mode;
   /** What happened to the paired file. */
   mirror: MirrorSaved | null;
+  /** Paragraphs written in the other language as they are, their translations not there yet. */
+  otherLanguage: number;
 }
 
 /** A paper saved, or its translation exported, into a new folder with its files. */

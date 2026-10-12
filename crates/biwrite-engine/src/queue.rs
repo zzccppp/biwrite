@@ -251,7 +251,11 @@ impl Inner {
                 if let Err(e) = self.cache.put(&job.key, &text) {
                     st.notices.push(e.to_string());
                 }
-                if current && job.fill {
+                if current && job.fill && job.translator.is_placeholder() {
+                    // Stand-in text, no translation: the paragraph stays as
+                    // it is, still to be put in the edited language.
+                    st.fill_failed(job.id, job.hash, "the offline translator only stands in");
+                } else if current && job.fill {
                     st.fill(job.id, &text);
                 } else if current {
                     let placeholder = job.translator.is_placeholder();
@@ -273,22 +277,7 @@ impl Inner {
             }
             Err(e) => {
                 if current && job.fill {
-                    // The paragraph keeps its text, and its translation the
-                    // original; "continue" tries again.
-                    let hash = job.hash;
-                    st.update(job.id, |m| {
-                        if m.translated_hash == Some(hash) {
-                            m.status = SegmentStatus::Translated;
-                        } else {
-                            m.status = SegmentStatus::Stale;
-                        }
-                        m.partial = None;
-                        m.forced = false;
-                        m.fill = None;
-                    });
-                    st.notices.push(format!(
-                        "a paragraph still in the other language could not be translated: {e}"
-                    ));
+                    st.fill_failed(job.id, job.hash, &e.to_string());
                 } else if current {
                     st.update(job.id, |m| {
                         m.status = SegmentStatus::Error;

@@ -85,7 +85,10 @@ CodeMirror edit ──(800 ms debounce, single-flight)──▶ update_document(
   ≤50k tokens compared, 20 ms per diff). Equal runs keep their IDs. Inserted segments that match a
   deleted key take over that ID (moves). Within replaced hunks, segments are
   paired by word-level similarity (order-preserving DP, threshold 0.3), so an
-  edited paragraph keeps its block. Everything else gets a fresh ID.
+  edited paragraph keeps its block. A paragraph the engine itself replaced
+  in the editor (a fill, `State::filled`) keeps its ID when its new text
+  comes back (`DocumentModel::apply_expecting`), though the two share no
+  words. Everything else gets a fresh ID.
 * **Translation state** lives in the engine per ID: last translation, the hash
   and source it belongs to, status, generation, and the error (tied to a
   hash). A segment is up to date iff `translated_hash == hash`. This makes
@@ -265,9 +268,13 @@ The toolbar's `EN ⇄ 中` button swaps which language is edited.
    too, for paragraphs whose translation is exact). The editor is read-only
    during a swap, and save, export, compile, continue and mode changes wait
    for it. Opening a file always returns to editing English.
-5. Swapping back to the file's own language never keeps untranslated
-   paragraphs (`keep` is ignored that way round): they would be saved into
-   the file in the other language. The swap waits for every translation.
+5. The first press of swap waits for every translation; the second swaps at
+   once, also back to the file's own language (and always with a pair,
+   whose two sides are files). Untranslated paragraphs then go over in the
+   other language as stand-ins (see Fills, 0.2.2), and a save before their
+   fills arrive writes them into the file as they are. The window says so
+   when swapping and when saving (`SessionView::other_language`,
+   `SavedView::other_language`).
 
 Known segmenter limits (not translated, or translated as a whole):
 `\item[label]` labels, `\subfloat[caption]`, a second `\caption` on the same
@@ -627,7 +634,30 @@ resolve to their target and permissions are preserved.
   round (from the cache when it can, its own batches otherwise, never
   streamed to the right pane) and sent to the editor, which replaces the
   paragraph if it still reads as before. Its translation stays the exact
-  original through a seed on the new text's hash.
+  original through a seed on the new text's hash, and it keeps its ID (a
+  pair's link stays).
+  Until then the paragraph's translation is its own text, a stand-in
+  (`SegMeta::standin`, `Engine::standins`), also when its fill waits
+  (paused) or failed, and after the author edits it while it is still
+  plainly in the other language and not towards the edited one
+  (`lang::moved_into`; its edited text is then its translation; no fill is
+  sent until Continue). Its text coming back (an undo, a
+  paragraph deleted and put back under a new ID) makes it one again
+  (`State::standin_texts`). Swapped back, a stand-in is nobody's
+  original: its counterpart starts without a translation and is translated
+  afresh, and a pair's other file counts as behind until then, instead of
+  taking the other language for its translation. A refused fill (names and
+  math read the same either way) is no stand-in, nor is a fill whose answer
+  carries the author's original as seed (put in half translated). Continue
+  and Retranslate put stand-ins into the edited language whichever side is
+  edited; the offline translator's answer fills nothing (the stand-in
+  stays), and stand-ins whose fill failed are filled again once a real
+  translator is set or keys are retried (`SegMeta::fill_failed`). While any are left, the swap button never re-reads the file as
+  the other language (`retarget`). A pair puts a kept paragraph and a
+  stand-in's text into the other file as typed (`pair::Edit` `exact`, no
+  `fit`). A fill that changes the file's own text (a pair, or back home)
+  marks the document unsaved; the replaced paragraph keeps its ID also
+  when edited in the same update (`Replacement::text`).
   `Engine::continue_translation` takes up failed and paused paragraphs and,
   swapped, paragraphs still in the other language: plainly so
   (`lang::plainly_written_in`; English must be nearly free of Chinese,

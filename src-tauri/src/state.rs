@@ -184,8 +184,28 @@ impl AppState {
         Ok(())
     }
 
+    /// The editor holds the open file's own language, what saving writes
+    /// as it is: always with a pair, else unless swapped.
+    pub fn editing_own_language(&self) -> bool {
+        let fs = self.file();
+        fs.pair.is_some() || self.engine.direction() == fs.home
+    }
+
+    /// Paragraphs of the editor still in the other language since an early
+    /// swap (their translations not there yet), which a save writes into the
+    /// file as they are. None while the other language is edited: saving
+    /// composes the file from the translations then.
+    pub fn left_in_other_language(&self) -> usize {
+        if self.editing_own_language() {
+            self.engine.standins().len()
+        } else {
+            0
+        }
+    }
+
     pub fn session_view(&self, snapshot: Snapshot) -> SessionView {
         let units = self.engine.translations().len();
+        let other_language = self.left_in_other_language();
         let fs = self.file();
         let settings = self.engine.settings();
         SessionView {
@@ -198,6 +218,7 @@ impl AppState {
             bom: fs.file.has_bom(),
             pair: fs.pair.as_ref().map(|p| crate::pairing::view(p, units)),
             home: fs.home,
+            other_language,
             snapshot,
         }
     }
@@ -218,6 +239,9 @@ pub struct SessionView {
     pub pair: Option<PairView>,
     /// The direction in which the editor holds the file's own language.
     pub home: Direction,
+    /// Paragraphs a save would write in the other language as they are
+    /// ([`AppState::left_in_other_language`]).
+    pub other_language: usize,
     pub snapshot: Snapshot,
 }
 
@@ -231,4 +255,7 @@ pub struct SavedView {
     pub suggested_mode: Mode,
     /// What happened to the paired file.
     pub mirror: Option<crate::pairing::MirrorSaved>,
+    /// Paragraphs written in the other language as they are, their
+    /// translations not there yet ([`AppState::left_in_other_language`]).
+    pub other_language: usize,
 }
