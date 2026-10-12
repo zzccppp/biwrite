@@ -376,6 +376,39 @@ pub async fn retranslate_segment(state: State<'_, AppState>, id: u64) -> Command
     Ok(())
 }
 
+/// A paragraph and its sentences, as UTF-16 offsets in the editor's text.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentencesView {
+    pub paragraph: crate::latex_commands::Range16,
+    pub sentences: Vec<crate::latex_commands::Range16>,
+}
+
+/// The paragraph of `text` at `pos` (UTF-16) and its sentences, found as a
+/// click in the PDF finds one: a sentence of the translation is matched to
+/// the source sentence in the same place.
+#[tauri::command]
+pub async fn source_sentences(
+    state: State<'_, AppState>,
+    text: String,
+    pos: usize,
+) -> CommandResult<Option<SentencesView>> {
+    Ok(sentences_view(&text, state.engine.mode(), pos))
+}
+
+pub(crate) fn sentences_view(text: &str, mode: Mode, pos: usize) -> Option<SentencesView> {
+    use crate::latex_commands::range16;
+    let at = biwrite_core::utf16::utf16_to_byte(text, pos);
+    let (paragraph, sentences) = biwrite_core::assist::sentences_at(text, mode, at)?;
+    Some(SentencesView {
+        paragraph: range16(text, paragraph.start, paragraph.end),
+        sentences: sentences
+            .into_iter()
+            .map(|r| range16(text, r.start, r.end))
+            .collect(),
+    })
+}
+
 /// Translate the edited paragraphs still waiting out the translation delay
 /// now (a swap needs them). Returns how many there were.
 #[tauri::command]
@@ -428,5 +461,25 @@ pub async fn open_link(name: String) -> CommandResult<()> {
     match files::known_link(&name) {
         Some(url) => files::open_url(url),
         None => Err(CommandError::Settings(format!("unknown link {name}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Offsets are UTF-16, as the editor counts them, past Chinese text.
+    #[test]
+    fn sentences_come_in_editor_offsets() {
+        let text = "中文标题\n\nFirst one. Second one.\n";
+        let pos = text.encode_utf16().count() - 5;
+        let view = sentences_view(text, Mode::Plain, pos).unwrap();
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let read =
+            |r: &crate::latex_commands::Range16| String::from_utf16(&units[r.from..r.to]).unwrap();
+        assert_eq!(read(&view.paragraph), "First one. Second one.");
+        let found: Vec<String> = view.sentences.iter().map(read).collect();
+        assert_eq!(found, ["First one.", "Second one."]);
+        assert!(sentences_view(text, Mode::Plain, 0).is_some_and(|v| v.sentences.len() == 1));
     }
 }

@@ -140,7 +140,10 @@ elsewhere can be chosen in Settings, under *LaTeX*.
   in the file it comes from (BiWrite opens that file if needed), and a small
   menu offers *Polish*, *Polish…* and *Ask…* on it (*Polish…* opens the
   writing assistant to write a request first).
-* `⌘⌥J` (Ctrl+Alt+J) highlights the cursor's paragraph in the PDF.
+* `⌘⌥J` (Ctrl+Alt+J) highlights the cursor's paragraph in the PDF, or marks
+  its sentence in the translation when the right pane shows the translation.
+  A click on a sentence of the translation selects the same sentence of the
+  source.
 * **English and Chinese PDFs.** The *Chinese* switch builds the Chinese PDF
   from the translation with XeLaTeX and `ctex` (paragraphs not translated
   yet stay English). *Save PDF as…* and *Export Chinese .tex…* save copies.

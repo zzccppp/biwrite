@@ -179,6 +179,18 @@ export class SourceEditor {
     return true;
   }
 
+  /** Select `from`..`to`, scrolling only as far as it takes to show it. */
+  selectNear(from: number, to: number): void {
+    const length = this.view.state.doc.length;
+    const a = Math.min(Math.max(0, from), length);
+    const b = Math.min(Math.max(a, to), length);
+    this.view.dispatch({
+      selection: { anchor: a, head: b },
+      effects: EditorView.scrollIntoView(a, { y: "nearest" }),
+    });
+    this.view.focus();
+  }
+
   /** Select `from`..`to` and scroll it to the middle of the view. */
   select(from: number, to: number, focus = true): void {
     const length = this.view.state.doc.length;

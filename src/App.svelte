@@ -35,18 +35,19 @@
     Direction,
     Fill,
     IssueView,
+    MirrorSaved,
     Mode,
     PdfBox,
     PdfLang,
-    MirrorSaved,
     PdfMenu,
     PdfPick,
     ProjectCopy,
     SavedView,
+    SentencePick,
     SessionView,
     SettingsView,
-    SqueezeEvent,
     SkillInfo,
+    SqueezeEvent,
   } from "./lib/types";
 
   /** Idle time after the last keystroke before the engine re-segments. */
@@ -738,13 +739,46 @@
     applyTheme(theme);
   }
 
-  /** Click on a right block: cursor to the segment start, keeping the block where it is. */
-  function activate(id: number, offsetY: number): void {
+  /** Click on a right block: cursor to the segment start, keeping the block
+   * where it is, then the source sentence in the place of the clicked one of
+   * the translation selected (when both have as many). */
+  function activate(id: number, offsetY: number, sentence: SentencePick | null = null): void {
     const range = session.index.range(id);
     if (!editor || !range) return;
     sync.driver = "right";
     session.activeId = id;
     editor.focusAt(range.from, offsetY);
+    if (sentence) void selectSourceSentence(id, range.from, sentence);
+  }
+
+  async function selectSourceSentence(id: number, from: number, sentence: SentencePick): Promise<void> {
+    if (!editor) return;
+    const text = editor.text();
+    const found = await ipc.sourceSentences(text, from).catch(() => null);
+    // Another click or an edit came first: it stands.
+    if (!editor || editor.text() !== text || session.activeId !== id) return;
+    if (!found || found.sentences.length !== sentence.count) return;
+    const s = found.sentences[sentence.index];
+    if (s) editor.selectNear(s.from, s.to);
+  }
+
+  /** The sentence ⌘⌥J shows in the translation. */
+  let translationMark = $state<{ id: number; index: number; count: number; tick: number } | null>(null);
+
+  /** Show the cursor's sentence in the translation. */
+  async function locateInTranslation(): Promise<void> {
+    if (!editor) return;
+    const head = editor.view.state.selection.main.head;
+    const id = session.index.idContaining(head);
+    const segment = id === null ? undefined : session.layout.find((s) => s.id === id);
+    if (id === null || !segment || segment.kind.type === "skipped") {
+      session.flash(t("pane.noTranslation"));
+      return;
+    }
+    const found = await ipc.sourceSentences(editor.text(), head).catch(() => null);
+    const sentences = found?.sentences ?? [];
+    const index = Math.max(0, sentences.filter((s) => s.from <= head).length - 1);
+    translationMark = { id, index, count: sentences.length, tick: (translationMark?.tick ?? 0) + 1 };
   }
 
   function preview(from: number, to: number): string {
@@ -1133,7 +1167,8 @@
     const primary = isMac ? e.metaKey : e.ctrlKey;
     if (primary && e.altKey && e.code === "KeyJ") {
       e.preventDefault();
-      if (!e.repeat) void locateInPdf();
+      // In the pane on show: the PDF, else the translation.
+      if (!e.repeat) void (showPdf ? locateInPdf() : locateInTranslation());
       return;
     }
     if (!primary || e.altKey) return;
@@ -1606,6 +1641,7 @@
           {slice}
           bind:pane={rightPane}
           onactivate={activate}
+          mark={translationMark}
           onretry={(id) => ipc.retranslateSegment(id).catch(fail)}
           onedit={editTranslation}
           onscroll={() => sync.onScroll("right")}

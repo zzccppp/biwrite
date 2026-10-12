@@ -919,7 +919,7 @@ pub struct Range16 {
     pub to: usize,
 }
 
-fn range16(text: &str, from: usize, to: usize) -> Range16 {
+pub(crate) fn range16(text: &str, from: usize, to: usize) -> Range16 {
     let r = byte_to_utf16(text, [from, to]);
     Range16 {
         from: r[0],

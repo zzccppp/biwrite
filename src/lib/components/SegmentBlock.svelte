@@ -2,7 +2,8 @@
   import "katex/dist/katex.min.css";
   import { type MessageKey, t } from "../i18n.svelte";
   import { type Macros, renderToHtml } from "../math";
-  import type { Mode, SegmentLayout, SegmentState, SkipReason } from "../types";
+  import { caretAt, sentenceBounds, sentenceIndexAt } from "../sentences";
+  import type { Mode, SegmentLayout, SegmentState, SentencePick, SkipReason } from "../types";
 
   interface Props {
     segment: SegmentLayout;
@@ -20,7 +21,8 @@
     expanded: boolean;
     source: string;
     register: (node: HTMLElement, id: number) => { update(id: number): void; destroy(): void };
-    onactivate: (id: number, el: HTMLElement) => void;
+    /** A click on the block, and the sentence of the translation it hit. */
+    onactivate: (id: number, el: HTMLElement, sentence: SentencePick | null) => void;
     onretry: (id: number) => void;
     ontoggle: (id: number) => void;
     /** Rewrite this translation and let the source paragraph follow. */
@@ -82,11 +84,25 @@
     markup: "skip.markup",
   };
 
-  function onclick(): void {
+  function onclick(e: MouseEvent): void {
     // Let users select and copy Chinese text without moving the cursor.
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed && el.contains(selection.anchorNode)) return;
-    onactivate(segment.id, el);
+    onactivate(segment.id, el, sentenceOf(e));
+  }
+
+  /** Which sentence of the translation a click hit, and how many it has. */
+  function sentenceOf(e: MouseEvent): SentencePick | null {
+    const box = el.querySelector<HTMLElement>(".zh");
+    if (!box || !(e.target instanceof Node) || !box.contains(e.target)) return null;
+    const caret = caretAt(e.clientX, e.clientY);
+    if (!caret || !box.contains(caret.node)) return null;
+    const before = document.createRange();
+    before.setStart(box, 0);
+    before.setEnd(caret.node, caret.offset);
+    const bounds = sentenceBounds(box.textContent ?? "");
+    if (bounds.length === 0) return null;
+    return { index: sentenceIndexAt(bounds, before.toString().length), count: bounds.length };
   }
 
   function onkeydown(e: KeyboardEvent): void {
@@ -94,7 +110,7 @@
     if (e.target !== el) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      onactivate(segment.id, el);
+      onactivate(segment.id, el, null);
     }
   }
 </script>

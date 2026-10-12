@@ -308,3 +308,14 @@ select {
   align-items: center;
   gap: 8px;
 }
+
+/* The cursor's sentence in the translation (⌘⌥J), for a moment. */
+::highlight(bw-locate) {
+  background-color: var(--accent-wash);
+  text-decoration: underline 2px var(--accent);
+  text-underline-offset: 4px;
+}
+.located {
+  background-color: var(--accent-wash);
+  box-shadow: inset 3px 0 0 var(--accent);
+}

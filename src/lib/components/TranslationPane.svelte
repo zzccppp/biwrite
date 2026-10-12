@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import { language, parts, t } from "../i18n.svelte";
   import type { Session } from "../session.svelte";
+  import { sentenceBounds, textRange } from "../sentences";
+  import type { SentencePick } from "../types";
   import SegmentBlock from "./SegmentBlock.svelte";
 
   interface Props {
@@ -10,7 +12,10 @@
     preview: (from: number, to: number) => string;
     /** Full source text of a range (for typesetting a collapsed equation). */
     slice: (from: number, to: number) => string;
-    onactivate: (id: number, offsetY: number) => void;
+    /** A click on block `id`, `offsetY` px below the pane's top, on `sentence` of its translation. */
+    onactivate: (id: number, offsetY: number, sentence: SentencePick | null) => void;
+    /** Show where the cursor is: sentence `index` of `count` in block `id` (`tick` repeats it). */
+    mark?: { id: number; index: number; count: number; tick: number } | null;
     onretry: (id: number) => void;
     onedit: (id: number) => void;
     onscroll: () => void;
@@ -18,8 +23,19 @@
     pane?: HTMLElement;
   }
 
-  let { session, blocks, preview, slice, onactivate, onretry, onedit, onscroll, onresize, pane = $bindable() }: Props =
-    $props();
+  let {
+    session,
+    blocks,
+    preview,
+    slice,
+    onactivate,
+    onretry,
+    onedit,
+    onscroll,
+    onresize,
+    mark = null,
+    pane = $bindable(),
+  }: Props = $props();
 
   let list: HTMLElement;
 
@@ -40,10 +56,44 @@
     };
   }
 
-  function activate(id: number, el: HTMLElement): void {
+  function activate(id: number, el: HTMLElement, sentence: SentencePick | null): void {
     if (!pane) return;
-    onactivate(id, el.getBoundingClientRect().top - pane.getBoundingClientRect().top);
+    onactivate(id, el.getBoundingClientRect().top - pane.getBoundingClientRect().top, sentence);
   }
+
+  // The cursor's sentence, marked for a moment: the same sentence of the
+  // translation when both have as many, else the whole block.
+  let unmark: (() => void) | null = null;
+  $effect(() => {
+    const m = mark;
+    if (!m || !pane) return;
+    const block = blocks.get(m.id);
+    if (!block) return;
+    unmark?.();
+    const view = pane.getBoundingClientRect();
+    const at = block.getBoundingClientRect();
+    if (at.bottom < view.top || at.top > view.bottom) block.scrollIntoView({ block: "center" });
+    const box = block.querySelector<HTMLElement>(".zh");
+    const bounds = box ? sentenceBounds(box.textContent ?? "") : [];
+    const sentence = box && bounds.length === m.count ? bounds[m.index] : undefined;
+    const range = box && sentence ? textRange(box, sentence.start, sentence.end) : null;
+    if (range && "highlights" in CSS) {
+      CSS.highlights.set("bw-locate", new Highlight(range));
+      unmark = () => CSS.highlights.delete("bw-locate");
+    } else {
+      block.classList.add("located");
+      unmark = () => block.classList.remove("located");
+    }
+    const timer = setTimeout(() => {
+      unmark?.();
+      unmark = null;
+    }, 2500);
+    return () => {
+      clearTimeout(timer);
+      unmark?.();
+      unmark = null;
+    };
+  });
 
   onMount(() => {
     // Content height (reflow, expanded equations) and viewport size (window

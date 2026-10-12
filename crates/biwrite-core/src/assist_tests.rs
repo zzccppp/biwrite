@@ -291,6 +291,32 @@ fn sentences_skip_abbreviations_and_math() {
 }
 
 #[test]
+fn a_paragraph_lists_its_sentences_where_sentence_at_ends_them() {
+    let text = "Intro.\n\nSee Fig. 2 for $x = 1.5$. The model, e.g. a GNN, wins!  Next one?\n";
+    let pos = text.find("model").unwrap();
+    let (para, sentences) = sentences_at(text, Mode::Latex, pos).unwrap();
+    assert!(text[para].starts_with("See Fig. 2"));
+    let found: Vec<&str> = sentences.iter().map(|r| &text[r.clone()]).collect();
+    assert_eq!(
+        found,
+        [
+            "See Fig. 2 for $x = 1.5$.",
+            "The model, e.g. a GNN, wins!",
+            "Next one?"
+        ]
+    );
+    // Each is the one sentence_at finds there.
+    for r in &sentences {
+        assert_eq!(sentence_at(text, Mode::Latex, r.start), Some(r.clone()));
+    }
+    let zh = "第一句。第二句很短！第三句";
+    let (_, sentences) = sentences_at(zh, Mode::Plain, 0).unwrap();
+    assert_eq!(sentences.len(), 3);
+    assert_eq!(&zh[sentences[2].clone()], "第三句");
+    assert!(sentences_at("a\n\n\n\nb", Mode::Plain, 2).is_none());
+}
+
+#[test]
 fn mirror_requests_carry_the_new_translation_and_ask_for_a_revision_only() {
     let skill = Skill::default();
     let req = Request {

@@ -812,6 +812,51 @@ const ABBREVIATIONS: &[&str] = &[
 pub fn sentence_at(text: &str, mode: Mode, pos: usize) -> Option<Range<usize>> {
     let para = paragraph_at(text, mode, pos)?;
     let body = &text[para.clone()];
+    let ends = sentence_ends(body, mode);
+    let rel = pos.saturating_sub(para.start).min(body.len());
+    let mut start = 0;
+    for end in ends.iter().copied().chain(std::iter::once(body.len())) {
+        if rel < end || end == body.len() {
+            let slice = &body[start..end];
+            let lead = slice.len() - slice.trim_start().len();
+            let trail = slice.len() - slice.trim_end().len();
+            return Some(para.start + start + lead..para.start + end - trail);
+        }
+        start = end;
+    }
+    None
+}
+
+/// The paragraph containing `pos` and the byte ranges of its sentences, in
+/// order, where [`sentence_at`] ends them. Stretches of blank text are not
+/// sentences. Outside any paragraph, `None`.
+pub fn sentences_at(
+    text: &str,
+    mode: Mode,
+    pos: usize,
+) -> Option<(Range<usize>, Vec<Range<usize>>)> {
+    let para = paragraph_at(text, mode, pos)?;
+    let body = &text[para.clone()];
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    for end in sentence_ends(body, mode)
+        .into_iter()
+        .chain(std::iter::once(body.len()))
+    {
+        let slice = &body[start..end];
+        if !slice.trim().is_empty() {
+            let lead = slice.len() - slice.trim_start().len();
+            let trail = slice.len() - slice.trim_end().len();
+            sentences.push(para.start + start + lead..para.start + end - trail);
+        }
+        start = end;
+    }
+    Some((para, sentences))
+}
+
+/// Where the sentences of paragraph `body` end (byte offsets after their
+/// closing mark).
+fn sentence_ends(body: &str, mode: Mode) -> Vec<usize> {
     let shielded: Vec<Range<usize>> = spans(body, mode)
         .into_iter()
         .filter(|s| s.kind != SpanKind::Comment)
@@ -838,18 +883,7 @@ pub fn sentence_at(text: &str, mode: Mode, pos: usize) -> Option<Range<usize>> {
             ends.push(end);
         }
     }
-    let rel = pos.saturating_sub(para.start).min(body.len());
-    let mut start = 0;
-    for end in ends.iter().copied().chain(std::iter::once(body.len())) {
-        if rel < end || end == body.len() {
-            let slice = &body[start..end];
-            let lead = slice.len() - slice.trim_start().len();
-            let trail = slice.len() - slice.trim_end().len();
-            return Some(para.start + start + lead..para.start + end - trail);
-        }
-        start = end;
-    }
-    None
+    ends
 }
 
 #[cfg(test)]

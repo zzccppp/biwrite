@@ -177,6 +177,7 @@ pub fn run() {
             commands::retranslate_segment,
             commands::retranslate_all,
             commands::translate_held,
+            commands::source_sentences,
             commands::set_auto_translate,
             commands::set_dirty,
             commands::swap_languages,

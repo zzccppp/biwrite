@@ -279,6 +279,18 @@ export interface SqueezeKey {
   lastError: string | null;
 }
 
+/** A paragraph and its sentences (offsets in the editor's text). */
+export interface SentencesView {
+  paragraph: { from: number; to: number };
+  sentences: { from: number; to: number }[];
+}
+
+/** A sentence of the translation, by its place: sentence `index` of `count`. */
+export interface SentencePick {
+  index: number;
+  count: number;
+}
+
 export interface SqueezeView {
   running: boolean;
   /** The relay turned keys away lately, so keys that got through go first. */

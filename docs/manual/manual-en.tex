@@ -135,7 +135,7 @@ Put the exported Chinese \texttt{.tex} next to the English main file as \texttt{
 \label{sec:write}
 
 \subsection{Open and edit}
-\ui{Open} in the toolbar (\fig{w-open} \n{1}, \cmdkey O) opens a \texttt{.tex}, \texttt{.md} or \texttt{.txt} file. A LaTeX project of several files lists its files in the title bar \n{2}, to move between them. Each block on the right is one paragraph, heading or caption of the source. Click a block and the cursor moves to its paragraph, which is highlighted on both sides \n{3}.
+\ui{Open} in the toolbar (\fig{w-open} \n{1}, \cmdkey O) opens a \texttt{.tex}, \texttt{.md} or \texttt{.txt} file. A LaTeX project of several files lists its files in the title bar \n{2}, to move between them. Each block on the right is one paragraph, heading or caption of the source. Click a block and the cursor moves to its paragraph, which is highlighted on both sides \n{3}. A click on a sentence of the translation selects the same sentence of the source, or only moves the cursor to the paragraph when the two have different numbers of sentences. With the cursor in the source, \cmdkey\optkey J (Ctrl+Alt+J) marks its sentence in the translation for a few seconds. When the right pane shows the PDF, the same keys find the cursor in the PDF.
 
 Only the paragraphs you changed are translated again. Each is sent once it has stayed unchanged for the wait set in Settings (5 seconds by default), and its translation streams in as it arrives. A language swap, the PDF of the other language, an export and saving a paired file send the waiting paragraphs at once. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back exactly as they were.
 
@@ -444,7 +444,7 @@ macOS (Ctrl for \cmdkey and Alt for \optkey on Windows) & Action \\
 \cmdkey O & Open a file \\
 \cmdkey S / \cmdkey\shiftkey S & Save / Save As \\
 \cmdkey B & Compile the PDF on show \\
-\cmdkey\optkey J & Find the cursor in the PDF \\
+\cmdkey\optkey J & Find the cursor in the translation or the PDF \\
 \cmdkey J & Open or close the writing assistant \\
 \cmdkey\shiftkey P & Polish the paragraph at the cursor \\
 \cmdkey K & Focus the assistant's input \\

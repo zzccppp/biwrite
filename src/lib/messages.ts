@@ -337,6 +337,7 @@ export const messages = {
   "pdf.polish": { en: "Polish", zh: "润色" },
   "pdf.edit": { en: "Polish…", zh: "润色…" },
   "pdf.ask": { en: "Ask…", zh: "提问…" },
+  "pane.noTranslation": { en: "This line has no translation.", zh: "这里没有对应的译文。" },
   "pdf.noSource": { en: "No source line here.", zh: "这里没有对应的源码。" },
 
   // ── Templates ─────────────────────────────────────────────────────

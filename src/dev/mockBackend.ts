@@ -7,6 +7,7 @@ import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import PAPER from "../../samples/paper.tex?raw";
 import PAPER_ZH from "../../dev/sample-zh.json";
+import { sentenceBounds } from "../lib/sentences";
 import type {
   BuildView,
   KeyEntry,
@@ -942,6 +943,18 @@ const handlers: Record<string, (args: Args) => unknown> = {
   set_auto_translate: () => null,
   retranslate_segment: () => null,
   retranslate_all: () => null,
+  // The paragraph (block) at `pos` and its sentences, by the rules the backend uses.
+  source_sentences: (a) => {
+    const text = String(a.text);
+    const pos = Number(a.pos);
+    const block = layout(text).find((s) => s.from <= pos && pos <= s.to);
+    if (!block || block.kind.type === "skipped") return null;
+    const body = text.slice(block.from, block.to);
+    return {
+      paragraph: { from: block.from, to: block.to },
+      sentences: sentenceBounds(body).map((b) => ({ from: block.from + b.start, to: block.from + b.end })),
+    };
+  },
   translate_held: () => {
     state.heldCalls++;
     const n = state.held.size;
