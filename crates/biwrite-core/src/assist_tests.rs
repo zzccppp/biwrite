@@ -11,6 +11,7 @@ fn skill() -> Skill {
             ("knowledge/paper-anatomy.md".into(), "ANATOMY".into()),
             ("figure-style/README.md".into(), "FIGURE RULES".into()),
         ],
+        icons: Vec::new(),
     }
 }
 
@@ -53,7 +54,7 @@ fn scope_and_references_shape_the_message() {
         instruction: "Make it more precise.",
         document: Some("Whole paper."),
         references: &refs,
-        images: 2,
+        images: &[ImageUse::Trace, ImageUse::Style],
         ..Default::default()
     };
     let p = build(&doc, &skill());
@@ -454,6 +455,10 @@ fn figures_are_told_which_packages_the_document_loads() {
             .contains("<loaded_packages>\nbooktabs, graphicx\n</loaded_packages>")
     );
     assert!(p.user.contains("never \\usepackage"));
+    assert!(
+        p.user
+            .contains("never colours of the document class or its style files")
+    );
     // Unknown packages: the old wording.
     let p = build(
         &Request {
@@ -473,20 +478,22 @@ fn a_figure_with_a_reference_image_imitates_its_style() {
         mode: Mode::Latex,
         target: "We compare the methods.",
         instruction: "Accuracy on four benchmarks, like the attached chart.",
-        images: 1,
+        images: &[ImageUse::Style],
         ..Default::default()
     };
     let p = build(&req, &skill());
-    assert!(p.user.contains("show the figure to imitate"));
+    assert!(
+        p.user.contains(
+            "The attached image is from another paper and is attached for its look alone."
+        )
+    );
+    assert!(p.user.contains("colour scheme, line weights, arrow styles, the marks, line styles and legend placement of a chart"));
     assert!(
         p.user
-            .contains("layout, colour scheme, marks, line styles, fonts and legend placement")
+            .contains("take no text, numbers, formulas or content from it.")
     );
-    assert!(p.user.contains("in TikZ or pgfplots"));
-    assert!(
-        p.user
-            .contains("Never take numbers or labels from the image")
-    );
+    assert!(!p.user.contains("draft"));
+    assert!(p.user.contains("describing the figure"));
     // Other tasks keep the general wording.
     let edit = build(
         &Request {
@@ -496,7 +503,7 @@ fn a_figure_with_a_reference_image_imitates_its_style() {
         &skill(),
     );
     assert!(edit.user.contains("follow their layout and style"));
-    assert!(!edit.user.contains("figure to imitate"));
+    assert!(!edit.user.contains("look alone"));
 }
 
 #[test]
@@ -550,4 +557,288 @@ fn a_repeated_opening_tag_ends_the_block() {
     let reply = "<answer>\nWrap it in a <revision> tag.\n</answer>";
     let a = parse(Action::Ask, reply, &protector).unwrap();
     assert_eq!(a.answer.as_deref(), Some("Wrap it in a <revision> tag."));
+}
+
+#[test]
+fn a_figure_as_a_file_asks_for_its_parts_at_print_size() {
+    let req = Request {
+        action: Action::Figure,
+        mode: Mode::Latex,
+        target: "We compare the methods.",
+        instruction: "The pipeline as boxes.",
+        figure: FigureFormat::Pptx,
+        ..Default::default()
+    };
+    let p = build(&req, &skill());
+    assert!(p.user.contains("as a diagram for PowerPoint"));
+    assert!(p.user.contains("8.5 cm wide for one column"));
+    assert!(p.user.contains("<scene>\n{\"wide\": false,"));
+    assert!(p.user.contains("<name>\na short file name"));
+    assert!(
+        p.user
+            .contains("<caption>\nthe caption in English\n</caption>")
+    );
+    assert!(
+        p.user
+            .contains("<translation>\nthe caption in Chinese (Simplified)")
+    );
+    assert!(!p.user.contains("<revision>"));
+    let pdf = build(
+        &Request {
+            figure: FigureFormat::Pdf,
+            ..req.clone()
+        },
+        &skill(),
+    );
+    assert!(pdf.user.contains("built with the standalone class"));
+    assert!(
+        pdf.user
+            .contains("<revision>\nthe picture alone, from \\begin{tikzpicture} to \\end{tikzpicture}\n</revision>")
+    );
+    assert!(
+        pdf.user
+            .contains("<preamble>\nthe \\usepackage and \\usetikzlibrary lines")
+    );
+    // In Markdown a figure stays text.
+    let md = build(
+        &Request {
+            mode: Mode::Markdown,
+            ..req
+        },
+        &skill(),
+    );
+    assert!(md.user.contains("<revision>") && !md.user.contains("<scene>"));
+}
+
+#[test]
+fn a_figure_as_a_file_is_read_with_its_name_and_caption() {
+    let reply = "<name>\npaired-runs\n</name>\n<scene>\n```json\n{\"nodes\": []}\n```\n</scene>\n<caption>\nA faulty run and its paired run.\n</caption>\n<translation>\n故障运行与配对运行。\n</translation>\n<changes_zh>\n两个方框\n</changes_zh>";
+    let a = parse_figure(FigureFormat::Pptx, reply).unwrap();
+    assert_eq!(a.name, "paired-runs");
+    assert_eq!(a.body, "{\"nodes\": []}");
+    assert_eq!(a.caption, "A faulty run and its paired run.");
+    assert_eq!(a.translation.as_deref(), Some("故障运行与配对运行。"));
+    assert_eq!(a.changes_zh, ["两个方框"]);
+    let pdf = "<revision>\n\\begin{tikzpicture}\\draw (0,0) -- (1,1);\\end{tikzpicture}\n</revision>\n<preamble>\n\\usetikzlibrary{arrows.meta}\n</preamble>\n<caption>\nA line.\n</caption>";
+    let a = parse_figure(FigureFormat::Pdf, pdf).unwrap();
+    assert!(a.body.starts_with("\\begin{tikzpicture}"));
+    assert_eq!(a.preamble, "\\usetikzlibrary{arrows.meta}");
+    assert_eq!(a.name, "");
+    assert_eq!(
+        parse_figure(FigureFormat::Pptx, "<caption>x</caption>"),
+        Err(AssistError::NoRevision)
+    );
+}
+
+#[test]
+fn a_powerpoint_figure_follows_the_skill_for_system_figures() {
+    let mut skill = skill();
+    skill.files.extend([
+        (
+            "paper-figure-pptx/SKILL.md".into(),
+            "ARROWS AND BOXES".into(),
+        ),
+        (
+            "paper-figure-pptx/references/layout-and-type.md".into(),
+            "TYPE SIZES".into(),
+        ),
+        ("knowledge/figure-archetypes.md".into(), "ARCHETYPES".into()),
+    ]);
+    let req = Request {
+        action: Action::Figure,
+        mode: Mode::Latex,
+        target: "We compare the methods.",
+        instruction: "The pipeline.",
+        figure: FigureFormat::Pptx,
+        ..Default::default()
+    };
+    let p = build(&req, &skill);
+    assert!(
+        p.system
+            .contains("<skill_file path=\"paper-figure-pptx/SKILL.md\">\nARROWS AND BOXES")
+    );
+    assert!(p.system.contains("TYPE SIZES") && p.system.contains("ARCHETYPES"));
+    assert!(
+        p.system
+            .contains("They govern the figures and the wording you produce.")
+    );
+    assert!(
+        !p.system.contains("FIGURE RULES"),
+        "the data-figure rules are not this figure's"
+    );
+    assert!(
+        p.user
+            .contains("Follow the skill's rules for system and motivation figures")
+    );
+    // A figure in LaTeX code or a PDF picture keeps the data-figure rules.
+    for figure in [FigureFormat::Latex, FigureFormat::Pdf] {
+        let p = build(
+            &Request {
+                figure,
+                ..req.clone()
+            },
+            &skill,
+        );
+        assert!(p.system.contains("FIGURE RULES"));
+        assert!(!p.system.contains("ARROWS AND BOXES"));
+    }
+    // Other tasks are about wording.
+    let polish = build(
+        &Request {
+            action: Action::Polish,
+            ..req
+        },
+        &skill,
+    );
+    assert!(
+        polish
+            .system
+            .contains("They govern the wording you produce.")
+    );
+}
+
+#[test]
+fn an_image_to_trace_becomes_a_powerpoint_scene() {
+    let req = Request {
+        action: Action::Figure,
+        mode: Mode::Latex,
+        target: "We compare the methods.",
+        instruction: "临摹这张系统图",
+        images: &[ImageUse::Trace],
+        figure: FigureFormat::Pptx,
+        ..Default::default()
+    };
+    let p = build(&req, &skill());
+    assert!(p.user.contains("The attached image is a draft of this figure from the author's own paper. Redraw it as the scene in native shapes"));
+    assert!(
+        p.user
+            .contains("Unicode symbols, subscripts and superscripts")
+    );
+    // Corrected against the text, and the notes say what changed.
+    assert!(
+        p.user.contains(
+            "Check every label, symbol, formula, number and step against the author's text"
+        )
+    );
+    assert!(
+        p.user
+            .contains("naming each correction made to the traced draft")
+    );
+    assert!(!p.user.contains("describing the figure"));
+    assert!(!p.user.contains("in TikZ or pgfplots"));
+    // As a PDF picture it is TikZ, as before.
+    let pdf = build(
+        &Request {
+            figure: FigureFormat::Pdf,
+            ..req
+        },
+        &skill(),
+    );
+    assert!(pdf.user.contains("in TikZ or pgfplots"));
+    assert!(
+        pdf.user
+            .contains("Redraw it in TikZ, or in pgfplots for a chart")
+    );
+}
+
+#[test]
+fn a_draft_to_trace_and_figures_to_take_the_look_of() {
+    let req = Request {
+        action: Action::Figure,
+        mode: Mode::Latex,
+        target: "We compare the methods.",
+        instruction: "Draw the pipeline.",
+        images: &[ImageUse::Style, ImageUse::Trace, ImageUse::Style],
+        figure: FigureFormat::Pptx,
+        ..Default::default()
+    };
+    let p = build(&req, &skill());
+    assert!(
+        p.user
+            .contains(" Attached image 2 is a draft of this figure")
+    );
+    assert!(p.user.contains(" Attached images 1 and 3 are from another paper and are attached for their look alone. Take their layout"));
+    assert!(
+        p.user
+            .contains("take no text, numbers, formulas or content from them.")
+    );
+    assert!(
+        p.user
+            .contains("The draft decides what the figure shows and where")
+    );
+    // Two drafts and a figure in LaTeX.
+    let p = build(
+        &Request {
+            images: &[ImageUse::Trace, ImageUse::Trace],
+            figure: FigureFormat::Latex,
+            ..req
+        },
+        &skill(),
+    );
+    assert!(p.user.contains(" Attached images 1 and 2 are drafts of this figure from the author's own paper. Redraw them in LaTeX"));
+    assert!(!p.user.contains("look alone"));
+    // Outside LaTeX an image is a reference, as for any task.
+    let md = build(
+        &Request {
+            mode: Mode::Markdown,
+            ..req
+        },
+        &skill(),
+    );
+    assert!(md.user.contains("follow their layout and style"));
+    assert!(!md.user.contains("draft"));
+}
+
+#[test]
+fn the_authors_papers_give_the_voice_of_what_is_written() {
+    let voice = vec![
+        "We study how a table is cleaned.".to_owned(),
+        "Each row is checked once.".to_owned(),
+    ];
+    let req = Request {
+        action: Action::Polish,
+        mode: Mode::Latex,
+        target: "The method is good.",
+        voice: &voice,
+        ..Default::default()
+    };
+    let p = build(&req, &skill());
+    assert!(
+        p.user
+            .contains("<voice_sample n=\"1\">\nWe study how a table is cleaned.\n</voice_sample>")
+    );
+    assert!(p.user.contains("<voice_sample n=\"2\">"));
+    assert!(p.user.contains("write in the voice they show"));
+    for action in [Action::Edit, Action::Mirror, Action::Write] {
+        let p = build(
+            &Request {
+                action,
+                instruction: "x",
+                ..req.clone()
+            },
+            &skill(),
+        );
+        assert!(p.user.contains("<voice_sample n=\"1\">"), "{action:?}");
+    }
+    // Questions and figures are not the author's prose.
+    for action in [Action::Ask, Action::Figure] {
+        let p = build(
+            &Request {
+                action,
+                instruction: "x",
+                ..req.clone()
+            },
+            &skill(),
+        );
+        assert!(!p.user.contains("voice_sample"), "{action:?}");
+    }
+    // Without papers nothing changes.
+    let plain = build(
+        &Request {
+            voice: &[],
+            ..req.clone()
+        },
+        &skill(),
+    );
+    assert!(!plain.user.contains("voice"));
 }

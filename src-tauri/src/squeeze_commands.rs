@@ -548,14 +548,63 @@ pub async fn squeeze_stop(state: State<'_, AppState>, id: String) -> CommandResu
 }
 
 /// Keep the keys that got through alive, every [`KEEP_ALIVE_TICK`], while
-/// the setting is on.
+/// the setting is on, and note when each key got through.
 pub fn spawn_keeper(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(KEEP_ALIVE_TICK).await;
+            record_through(&app.state::<AppState>());
             keep_alive(&app).await;
         }
     });
+}
+
+/// Least time between two notes of the same key's getting through, so
+/// the settings file is not written each round.
+const THROUGH_NOTE_EVERY: u64 = 60 * 60 * 1000;
+
+/// Note in the settings when each key of a relay that turns keys away was
+/// last answered, so the pool shows the keys that never got through, after
+/// a restart too.
+pub(crate) fn record_through(state: &AppState) {
+    let through: Vec<(String, Vec<(String, u64)>)> = state
+        .squeeze
+        .boards()
+        .iter()
+        .map(|(id, (_, board))| {
+            let keys = board
+                .through()
+                .into_iter()
+                .map(|t| (t.fingerprint, t.last_ok_ms))
+                .collect::<Vec<_>>();
+            (id.clone(), keys)
+        })
+        .filter(|(_, t)| !t.is_empty())
+        .collect();
+    if through.is_empty() {
+        return;
+    }
+    let mut s = state.settings();
+    let mut changed = false;
+    for (id, keys) in through {
+        let Some(entry) = s.provider_mut(&id) else {
+            continue;
+        };
+        for (fingerprint, last_ok) in keys {
+            let noted = entry.key_through.get(&fingerprint).copied();
+            if noted.is_none_or(|n| last_ok >= n + THROUGH_NOTE_EVERY) {
+                entry.key_through.insert(fingerprint, last_ok);
+                changed = true;
+            }
+        }
+    }
+    // Settings that could not be read are not written over.
+    if changed
+        && !s.keep_file
+        && let Err(e) = state.persist(&s)
+    {
+        log::warn!("could not note the keys that got through: {e}");
+    }
 }
 
 /// The keys of provider `entry`, as read since they last changed. `None` if
@@ -754,6 +803,7 @@ mod tests {
             has_key: keys > 0,
             key_count: keys,
             key_names: BTreeMap::new(),
+            key_through: Default::default(),
             key_parts: 0,
         }
     }

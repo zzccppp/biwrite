@@ -162,6 +162,57 @@ pub fn loaded(dir: &Path, root_text: &str) -> BTreeSet<String> {
     out
 }
 
+/// Names in the `\usetikzlibrary{a,b}` of `text` (comments ignored).
+fn named_libraries(text: &str) -> Vec<String> {
+    let code = uncommented(text);
+    let mut out = Vec::new();
+    for (i, _) in code.match_indices("\\usetikzlibrary") {
+        let rest = code[i + "\\usetikzlibrary".len()..].trim_start();
+        let Some(rest) = rest.strip_prefix('{') else {
+            continue;
+        };
+        let Some(end) = rest.find('}') else { continue };
+        out.extend(
+            rest[..end]
+                .split(',')
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    out
+}
+
+/// The TikZ libraries the preamble of `root_text` loads.
+pub fn loaded_libraries(root_text: &str) -> BTreeSet<String> {
+    named_libraries(preamble(root_text)).into_iter().collect()
+}
+
+/// The TikZ libraries the `\usetikzlibrary` lines of `snippet` load (each
+/// such line alone on its line), and the snippet without those lines. A
+/// library loaded inside a figure is gone after it, while TikZ takes it
+/// for loaded, so a later figure would miss it: the preamble loads it.
+pub fn hoist_libraries(snippet: &str) -> (Vec<String>, String) {
+    let mut libraries = Vec::new();
+    let mut rest = String::with_capacity(snippet.len());
+    for line in snippet.split_inclusive('\n') {
+        let code = uncommented(line);
+        let t = code.trim();
+        let alone =
+            t.starts_with("\\usetikzlibrary") && t.ends_with('}') && t.matches('{').count() == 1;
+        if alone {
+            for l in named_libraries(t) {
+                if !libraries.contains(&l) {
+                    libraries.push(l);
+                }
+            }
+        } else {
+            rest.push_str(line);
+        }
+    }
+    (libraries, rest)
+}
+
 /// The packages `snippet` needs, in a sensible loading order, without
 /// duplicates.
 pub fn required(snippet: &str) -> Vec<&'static str> {
@@ -219,6 +270,23 @@ mod tests {
         assert!(!got.contains("multirow"), "commented out");
         assert!(!got.contains("late"), "after \\begin{{document}}");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tikz_libraries_of_a_figure_go_to_the_preamble() {
+        let figure = "\\begin{figure}\n\\usetikzlibrary{arrows.meta, positioning}\n  \\usetikzlibrary{fit}\n\\begin{tikzpicture}\\draw[-{Stealth}] (0,0) -- (1,0);\\end{tikzpicture}\n\\end{figure}";
+        let (libraries, rest) = hoist_libraries(figure);
+        assert_eq!(libraries, ["arrows.meta", "positioning", "fit"]);
+        assert_eq!(
+            rest,
+            "\\begin{figure}\n\\begin{tikzpicture}\\draw[-{Stealth}] (0,0) -- (1,0);\\end{tikzpicture}\n\\end{figure}"
+        );
+        // Mid-line, it stays where it is.
+        let inline = "\\begin{tikzpicture}\\usetikzlibrary{calc}\\end{tikzpicture}";
+        assert_eq!(hoist_libraries(inline), (Vec::new(), inline.to_owned()));
+        let root = "\\documentclass{article}\n\\usepackage{tikz}\n\\usetikzlibrary{calc,fit}\n% \\usetikzlibrary{backgrounds}\n\\begin{document}\n\\usetikzlibrary{late}\n\\end{document}";
+        let have = loaded_libraries(root);
+        assert_eq!(have.into_iter().collect::<Vec<_>>(), ["calc", "fit"]);
     }
 
     #[test]

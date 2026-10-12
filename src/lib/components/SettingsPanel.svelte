@@ -6,6 +6,7 @@
   import type { Preset, ProviderView, SettingsView, SkillInfo } from "../types";
   import { KIND_LABELS } from "../types";
   import LatexSection from "./LatexSection.svelte";
+  import MaterialsSection from "./MaterialsSection.svelte";
   import PromptEditor from "./PromptEditor.svelte";
   import ProviderForm from "./ProviderForm.svelte";
   import SkillSection from "./SkillSection.svelte";
@@ -255,6 +256,8 @@
     </section>
 
     <SkillSection onchange={onskill} />
+
+    <MaterialsSection />
 
     <LatexSection {latex} {settings} {onchange} />
 

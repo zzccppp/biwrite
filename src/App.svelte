@@ -8,7 +8,7 @@
     askedAbout,
     asParagraph,
     insertionAt,
-    notLoaded,
+    newPreambleLines,
     reapplyInstruction,
     revertChange,
     uniqueIndex,
@@ -41,7 +41,7 @@
   import { LatexStore } from "./lib/latex.svelte";
   import { RequestLogStore } from "./lib/requestLog.svelte";
   import { ScrollSync, type Side } from "./lib/scrollSync";
-  import { anchorsAgree, type Bounds, placeOf, samePlace, sentenceAtCursor } from "./lib/sentences";
+  import { anchorsAgree, type Bounds, placeOf as sentencePlace, samePlace, sentenceAtCursor } from "./lib/sentences";
   import { differingStretches } from "./lib/stretch";
   import { Session } from "./lib/session.svelte";
   import { applyTheme, loadTheme, nextTheme, type ThemePref } from "./lib/theme";
@@ -49,6 +49,7 @@
     AssistAction,
     AssistRequest,
     AssistScope,
+    CheckResult,
     Direction,
     Fill,
     IssueView,
@@ -983,7 +984,7 @@
     if (!editor || editor.text() !== text || session.activeId !== id) return;
     if (!found || found.sentences.length !== sentence.count) return;
     // As many sentences, split elsewhere: the paragraph is as far as it goes.
-    if (!samePlace(placeOf(bounds(found), sentence.index), sentence.place)) return;
+    if (!samePlace(sentencePlace(bounds(found), sentence.index), sentence.place)) return;
     const s = found.sentences[sentence.index];
     if (s && anchorsAgree(sentence.text, text.slice(s.from, s.to))) editor.selectNear(s.from, s.to);
   }
@@ -1010,7 +1011,7 @@
     const found = await ipc.sourceSentences(text, head).catch(() => null);
     const sentences = found ? bounds(found) : [];
     const index = sentenceAtCursor(sentences, head);
-    const place = placeOf(sentences, index);
+    const place = sentencePlace(sentences, index);
     const s = sentences[index];
     translationMark = {
       id,
@@ -1218,20 +1219,18 @@
   // ── LaTeX: building, the PDF and SyncTeX ─────────────────────────
 
   /**
-   * Build a PDF. Nothing is saved, since only Save writes the files. A PDF built
-   * from the files (the file's own language, either one of a pair) shows
-   * them as saved, so unsaved edits are not in it, and the flash says so.
+   * Build a PDF. Nothing is saved, since only Save writes the files: edits not
+   * saved yet are built from copies in the project's .biwrite folder. When
+   * they cannot be (a part its main file includes through a macro), the PDF
+   * shows the files as saved, and the flash says so.
    */
   async function compile(lang: PdfLang = latex.lang): Promise<void> {
     if (!editor || compiling || !compilable || swapping) return;
     compiling = true;
     try {
-      const fileLang: PdfLang = session.home === "zh-en" ? "zh" : "en";
-      if (session.dirty && (session.pair !== null || lang === fileLang)) {
-        session.flash(t("pdf.unsavedNotBuilt"));
-      }
       await settleEdits();
-      await latex.compile(lang, editor.text(), session.document);
+      const build = await latex.compile(lang, editor.text(), session.document);
+      if (build?.unsavedLeftOut) session.flash(t("pdf.unsavedNotBuilt"));
     } finally {
       compiling = false;
     }
@@ -1543,7 +1542,9 @@
       instruction: o.instruction ?? assist.instruction.trim(),
       references: assist.samples.map((s) => s.text),
       images: assist.attachments.map((a) => a.id),
+      imageUses: assist.attachments.map((a) => a.use),
       history: o.history ?? [],
+      figure: isLatex ? assist.figureFormat : "latex",
     };
     try {
       await assist.start(request, o.reapplies ?? null);
@@ -1557,31 +1558,88 @@
     }
   }
 
-  /** Apply an approved revision where its target is now. Translations are
-   * handed over first; the edit is then worked out from the document as it
-   * is at that moment and made in one go. A target that moved (its place is
-   * gone) is found again if it occurs once; one that was edited is a
-   * conflict, which the model can re-apply. */
-  async function acceptJob(job: AssistJob): Promise<void> {
+  /** Where an approved answer goes in the document as it is now: what it
+   * replaces (an empty range where it is inserted), the text put there (the
+   * blank lines around a new paragraph included) and those lines. A target
+   * that moved (its place is gone) is found again if it occurs once; `null`
+   * when it was edited, a conflict the model can re-apply. */
+  function placeOf(
+    job: AssistJob,
+    revision: string,
+  ): { from: number; to: number; insert: string; lead: string; trail: string } | null {
+    if (!editor) return null;
+    const doc = editor.doc;
+    const whole = doc.toString();
+    let from = Math.min(job.from, doc.length);
+    let to = Math.min(job.to, doc.length);
+    if (job.target.insert) {
+      from = to = insertionAt(whole, from);
+      const core = revision.trim();
+      const insert = asParagraph(whole.slice(0, from), whole.slice(from), core);
+      const k = insert.indexOf(core);
+      return { from, to, insert, lead: insert.slice(0, k), trail: insert.slice(k + core.length) };
+    }
+    if (doc.sliceString(from, to) !== job.target.text) {
+      // Moved (its place is gone): found again if it occurs once, and is a
+      // paragraph or long enough not to be a common phrase.
+      const findable = job.target.wholeParagraph || job.target.text.trim().length >= 24;
+      const at = to === from && findable ? uniqueIndex(whole, job.target.text) : -1;
+      if (at < 0) {
+        job.conflict = true;
+        return null;
+      }
+      from = at;
+      to = at + job.target.text.length;
+    }
+    return { from, to, insert: revision, lead: "", trail: "" };
+  }
+
+  /** The lines a figure needs before \begin{document}: the packages and the
+   * TikZ libraries the document does not load, when its preamble is here. */
+  function figureLines(job: AssistJob): string {
     const r = job.result;
-    if (!editor || !r?.revision || job.state !== "done" || job.applying || job.restarting) return;
+    if (job.action !== "figure" || !r?.preambleHere) return "";
+    const packages = r.missingPackages.map((p) => `\\usepackage{${p}}\n`).join("");
+    const libraries = r.libraries.length ? `\\usetikzlibrary{${r.libraries.join(",")}}\n` : "";
+    return packages + libraries;
+  }
+
+  /** Where lines go before \begin{document}: at its line, when that comes
+   * before `from`. */
+  function preambleAt(whole: string, from: number): number | null {
+    const at = whole.search(/^[ \t]*\\begin\{document\}/m);
+    return at >= 0 && at < from ? at : null;
+  }
+
+  /** Apply an approved revision where its target is now (for a fix, its
+   * changes; after Smart apply, the checked answer and its lines).
+   * Translations are handed over first; the edit is then worked out from
+   * the document as it is at that moment and made in one go. */
+  async function acceptJob(job: AssistJob, checked: CheckResult | null = null): Promise<void> {
+    if (job.action === "fix") {
+      applyFix(job);
+      return;
+    }
+    const r = job.result;
+    if (!editor || !r?.revision || job.state !== "done" || job.applying || job.restarting || job.checking) return;
     if (job.epoch !== assist.epoch) return;
     // The editor is about to be replaced by the other language.
     if (swapping) {
       session.flash(t("doc.busySwapping"));
       return;
     }
+    const revision = checked?.revision ?? r.revision;
     job.applying = true;
     try {
       await settleEdits();
-      if (!job.target.insert && job.target.wholeParagraph && r.translation && r.translationMatches) {
+      if (!job.target.insert && job.target.wholeParagraph && r.translation && r.translationMatches && !checked) {
         // Else the paragraph is translated again.
-        await assistIpc.offer(r.revision, r.translation).catch(() => {});
+        await assistIpc.offer(revision, r.translation).catch(() => {});
       }
       // New paragraphs come with their translation, paragraph for paragraph.
-      if (job.action === "write" && r.translation) {
+      if (job.action === "write" && r.translation && !checked) {
         const paragraphs = (s: string) => s.trim().split(/\n\s*\n/).map((p) => p.trim());
-        const [en, zh] = [paragraphs(r.revision), paragraphs(r.translation)];
+        const [en, zh] = [paragraphs(revision), paragraphs(r.translation)];
         if (en.length === zh.length) {
           await Promise.all(en.map((p, i) => assistIpc.offer(p, zh[i]).catch(() => {})));
         }
@@ -1592,38 +1650,24 @@
         session.flash(t("doc.busySwapping"));
         return;
       }
-      const doc = editor.doc;
-      const whole = doc.toString();
-      let from = Math.min(job.from, doc.length);
-      let to = Math.min(job.to, doc.length);
-      let insert = r.revision;
-      if (job.target.insert) {
-        from = to = insertionAt(whole, from);
-        insert = asParagraph(whole.slice(0, from), whole.slice(from), r.revision.trim());
-      } else if (doc.sliceString(from, to) !== job.target.text) {
-        // Moved (its place is gone): found again if it occurs once, and is a
-        // paragraph or long enough not to be a common phrase.
-        const findable = job.target.wholeParagraph || job.target.text.trim().length >= 24;
-        const at = to === from && findable ? uniqueIndex(whole, job.target.text) : -1;
-        if (at < 0) {
-          job.conflict = true;
-          return;
-        }
-        from = at;
-        to = at + job.target.text.length;
-      }
+      const place = placeOf(job, revision);
+      if (!place) return;
+      const { from, to, insert } = place;
+      const whole = editor.doc.toString();
       const changes = [{ from, to, insert }];
-      // A figure's missing packages go into the preamble, when it is here
-      // (those a Revert left there are loaded already).
+      // The lines the answer needs go before \begin{document}, when it is
+      // here (those a Revert left there are loaded already).
       let shift = 0;
-      if (job.action === "figure" && r.preambleHere && r.missingPackages.length) {
-        const at = whole.search(/^[ \t]*\\begin\{document\}/m);
-        const wanted = at >= 0 ? notLoaded(whole.slice(0, at), r.missingPackages) : r.missingPackages;
-        const lines = wanted.map((p) => `\\usepackage{${p}}\n`).join("");
-        if (lines && at >= 0 && at < from) {
+      let packages: { from: number; to: number; text: string } | null = null;
+      const at = preambleAt(whole, from);
+      const needed = checked ? checked.preamble : figureLines(job);
+      const lines = at === null ? needed : newPreambleLines(whole.slice(0, at), needed);
+      if (lines) {
+        if (at !== null) {
           changes.unshift({ from: at, to: at, insert: lines });
           shift = lines.length;
-        } else if (lines) {
+          packages = { from: at, to: at + lines.length, text: lines };
+        } else {
           session.flash(t("assist.packagesNotAdded", { packages: lines.trim().split("\n").join(" ") }));
         }
       }
@@ -1637,7 +1681,7 @@
       // card selects that text, and a follow-up asks about it.
       job.from = from + shift;
       job.to = from + shift + insert.length;
-      job.applied = { text: insert };
+      job.applied = { text: insert, packages };
       job.state = "applied";
       editor.focus();
       void flush();
@@ -1646,10 +1690,103 @@
     }
   }
 
+  /** Smart apply: the document is built with the answer put in (in the
+   * project's .biwrite folder, nothing saved), and when that brings errors
+   * the model repairs the answer and the lines it needs before
+   * \begin{document}. What compiles is applied once the check is back. */
+  async function smartApplyJob(job: AssistJob): Promise<void> {
+    const r = job.result;
+    if (!editor || !r?.revision || job.state !== "done" || job.applying || job.restarting || job.checking) return;
+    if (job.epoch !== assist.epoch) return;
+    if (swapping) {
+      session.flash(t("doc.busySwapping"));
+      return;
+    }
+    await settleEdits();
+    if (!editor || job.state !== "done" || job.epoch !== assist.epoch) return;
+    const revision = job.check?.revision ?? r.revision;
+    const place = placeOf(job, revision);
+    if (!place) return;
+    const whole = editor.doc.toString();
+    job.check = null;
+    job.checkError = null;
+    job.checking = { fixing: false, round: 0 };
+    try {
+      await assistIpc.check({
+        id: job.id,
+        text: whole,
+        from: place.from,
+        to: place.to,
+        lead: place.lead,
+        trail: place.trail,
+        revision: job.target.insert ? revision.trim() : revision,
+        preambleAt: preambleAt(whole, place.from),
+        preamble: figureLines(job),
+      });
+    } catch (err) {
+      job.checking = null;
+      fail(err);
+    }
+  }
+
+  /** A check came back: what compiles is applied. */
+  function onChecked(id: number): void {
+    const job = assist.find(id);
+    if (job?.check?.passed && job.state === "done") void acceptJob(job, job.check);
+  }
+
+  /** Make a fix's changes, each found by the lines around it in the document
+   * as it is now, all in one go. One whose place is gone is a conflict. */
+  function applyFix(job: AssistJob): void {
+    const r = job.result;
+    if (!editor || !r?.hunks.length || job.state !== "done" || job.applying) return;
+    if (job.epoch !== assist.epoch) return;
+    if (swapping) {
+      session.flash(t("doc.busySwapping"));
+      return;
+    }
+    const whole = editor.doc.toString();
+    const changes: { from: number; to: number; insert: string; old: string }[] = [];
+    for (const h of r.hunks) {
+      const around = uniqueIndex(whole, h.before + h.old + h.after);
+      let at = around >= 0 ? around + h.before.length : -1;
+      if (at < 0 && h.old) at = uniqueIndex(whole, h.old);
+      if (at < 0) {
+        job.conflict = true;
+        return;
+      }
+      changes.push({ from: at, to: at + h.old.length, insert: h.new, old: h.old });
+    }
+    changes.sort((a, b) => a.from - b.from);
+    if (changes.some((c, i) => i > 0 && c.from < changes[i - 1].to)) {
+      job.conflict = true;
+      return;
+    }
+    editor.view.dispatch({
+      changes: changes.map(({ from, to, insert }) => ({ from, to, insert })),
+      selection: { anchor: changes[0].from },
+      scrollIntoView: true,
+      userEvent: "input.assist",
+    });
+    // Where each change is now, for Revert.
+    let shift = 0;
+    const hunks = changes.map((c) => {
+      const from = c.from + shift;
+      shift += c.insert.length - (c.to - c.from);
+      return { from, to: from + c.insert.length, text: c.insert, old: c.old };
+    });
+    job.from = hunks[0].from;
+    job.to = hunks[0].to;
+    job.applied = { text: "", packages: null, hunks };
+    job.state = "applied";
+    editor.focus();
+    void flush();
+  }
+
   /** Put back the text an applied job replaced (or take out what it
-   * inserted), when what it put in is still as it was. The package lines a
-   * figure added stay: other text may have come to need them. The card can
-   * then be accepted again. */
+   * inserted; for a fix, the lines it changed), when what it put in is
+   * still as it was. The package lines it added stay: other text may have
+   * come to need them. The card can then be accepted again. */
   function revertJob(job: AssistJob): void {
     const applied = job.applied;
     if (!editor || job.state !== "applied" || !applied) return;
@@ -1661,8 +1798,29 @@
       session.flash(t("doc.busySwapping"));
       return;
     }
+    const doc = editor.doc;
+    if (applied.hunks) {
+      if (applied.hunks.some((h) => h.to > doc.length || doc.sliceString(h.from, h.to) !== h.text)) {
+        job.revertBlocked = true;
+        session.flash(t("assist.revertEdited"));
+        return;
+      }
+      editor.view.dispatch({
+        changes: applied.hunks.map((h) => ({ from: h.from, to: h.to, insert: h.old })),
+        selection: { anchor: applied.hunks[0].from },
+        scrollIntoView: true,
+        userEvent: "input.assist",
+      });
+      job.applied = null;
+      job.revertBlocked = false;
+      job.conflict = false;
+      job.state = "done";
+      editor.focus();
+      void flush();
+      return;
+    }
     const original = job.target.insert ? "" : job.target.text;
-    const change = revertChange(editor.doc, job, applied.text, original);
+    const change = revertChange(doc, job, applied.text, original);
     if (!change) {
       // Not overwritten: the card lists the text from before instead.
       job.revertBlocked = true;
@@ -1755,6 +1913,8 @@
   /** Show a job's target in the editor. */
   function focusJob(job: AssistJob): void {
     if (!editor || job.epoch !== assist.epoch) return;
+    // A fix stands for the whole document until its changes are made.
+    if (job.action === "fix" && job.state !== "applied") return;
     const doc = editor.doc;
     const from = Math.min(job.from, doc.length);
     const to = Math.min(job.to, doc.length);
@@ -1806,7 +1966,10 @@
           },
           onNotice: (message) => session.flash(message),
           onRequest: (record) => requestLog.apply(record),
-          onAssist: (event) => assist.onEvent(event),
+          onAssist: (event) => {
+            assist.onEvent(event);
+            if (event.kind === "checked") onChecked(event.id);
+          },
           onFills: (fills) => applyFills(fills),
           onSqueeze: (event) => onSqueeze(event),
         });
@@ -1963,8 +2126,11 @@
         ready={settings?.assistantReady ?? false}
         model={settings?.assistantLabel ?? ""}
         skill={skill ? `${skill.name} ${skill.version}` : "research-builder"}
+        latex={isLatex && compilable}
+        latexDoc={isLatex}
         onrun={() => runAssist()}
-        onaccept={acceptJob}
+        onaccept={(job) => acceptJob(job, job.check)}
+        onsmartapply={smartApplyJob}
         onrevert={revertJob}
         onagain={againJob}
         onreapply={reapplyJob}

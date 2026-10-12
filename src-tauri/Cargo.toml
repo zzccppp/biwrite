@@ -37,6 +37,8 @@ time = { version = "0.3.45", features = ["local-offset"] }
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 # Skill and template archives; deflate only.
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Icons a figure draws for itself get a PNG for programs without SVG.
+resvg = { version = "0.48", default-features = false }
 
 # Windows and Linux: a second launch shows the running BiWrite (it may be
 # hidden in the tray). macOS keeps one instance by itself.
@@ -48,6 +50,8 @@ tauri-plugin-single-instance = "2.4.5"
 tauri = { version = "2.12.2", features = ["tray-icon", "test"] }
 time = { version = "0.3.45", features = ["macros"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# Checks that the PowerPoint files written are well-formed XML.
+quick-xml = "0.38"
 
 [lints]
 workspace = true

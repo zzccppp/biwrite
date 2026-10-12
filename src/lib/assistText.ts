@@ -112,3 +112,24 @@ export function notLoaded(preamble: string, wanted: string[]): string[] {
   }
   return wanted.filter((p) => !loaded.has(p));
 }
+
+/** The lines of `lines` (to go before \begin{document}) that `preamble`
+ * lacks: a \usepackage keeps only the packages not loaded, another line goes
+ * unless the preamble has it already (as a Revert leaves them). */
+export function newPreambleLines(preamble: string, lines: string): string {
+  const code = (line: string) => line.replace(/(?<!\\)(?:\\\\)*%.*$/, "").trim();
+  const have = new Set(preamble.split("\n").map(code).filter(Boolean));
+  const out: string[] = [];
+  for (const line of lines.split("\n")) {
+    const c = code(line);
+    if (!c) continue;
+    const use = /^\\usepackage\s*(\[[^\]]*\])?\s*\{([^}]*)\}$/.exec(c);
+    if (use) {
+      const wanted = notLoaded(preamble, use[2].split(",").map((p) => p.trim()).filter(Boolean));
+      if (wanted.length > 0) out.push(`\\usepackage${use[1] ?? ""}{${wanted.join(",")}}`);
+    } else if (!have.has(c)) {
+      out.push(line);
+    }
+  }
+  return out.length > 0 ? out.join("\n") + "\n" : "";
+}

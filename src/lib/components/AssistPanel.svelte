@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { type AssistJob, type AssistStore, ACTION_LABEL, PLACEHOLDER, SCOPE_LABEL } from "../assist.svelte";
+  import { type AssistJob, type AssistStore, ACTION_LABEL, FIGURE_LABEL, PLACEHOLDER, SCOPE_LABEL } from "../assist.svelte";
   import { t } from "../i18n.svelte";
-  import { ipc } from "../ipc";
-  import type { AssistAction, AssistScope } from "../types";
+  import { onMount } from "svelte";
+  import { assistIpc, errorMessage, ipc } from "../ipc";
+  import type { AssistAction, AssistScope, FigureFormat, ImageUse, MaterialEntry } from "../types";
   import AssistJobCard from "./AssistJobCard.svelte";
 
   interface Props {
@@ -20,8 +21,13 @@
     ready: boolean;
     model: string;
     skill: string;
+    /** A LaTeX file that compiles: fixes and Smart apply build it. */
+    latex: boolean;
+    /** A LaTeX document: a figure can be a file of its own. */
+    latexDoc: boolean;
     onrun: () => void;
     onaccept: (job: AssistJob) => void;
+    onsmartapply: (job: AssistJob) => void;
     onrevert: (job: AssistJob) => void;
     onagain: (job: AssistJob) => void;
     onreapply: (job: AssistJob) => void;
@@ -30,8 +36,24 @@
     onclose: () => void;
   }
 
-  let { store, target, ready, model, skill, onrun, onaccept, onrevert, onagain, onreapply, onfollowup, onfocus, onclose }: Props =
-    $props();
+  let {
+    store,
+    target,
+    ready,
+    model,
+    skill,
+    latex,
+    latexDoc,
+    onrun,
+    onaccept,
+    onsmartapply,
+    onrevert,
+    onagain,
+    onreapply,
+    onfollowup,
+    onfocus,
+    onclose,
+  }: Props = $props();
 
   let instructionBox = $state<HTMLTextAreaElement>();
   let sampleDraft = $state("");
@@ -43,7 +65,13 @@
   let addingSample = $state(false);
 
   // Polishing takes an optional instruction, so it also does what "edit" did.
-  const actions: AssistAction[] = ["polish", "ask", "write", "figure", "mirror"];
+  // Fixing builds the document, so only a LaTeX file has it.
+  const actions = $derived<AssistAction[]>(
+    latex ? ["polish", "ask", "write", "figure", "mirror", "fix"] : ["polish", "ask", "write", "figure", "mirror"],
+  );
+  $effect(() => {
+    if (!latex && store.action === "fix") store.action = "polish";
+  });
   /** The paragraph whose translation the box was last filled with. */
   let prefilled: string | null = null;
 
@@ -56,13 +84,60 @@
     }
   });
   const scopes: AssistScope[] = ["target", "neighbors", "document"];
-  const needsInstruction = $derived(store.action !== "polish");
+  const formats: FigureFormat[] = ["latex", "pdf", "pptx"];
+  const USES: ImageUse[] = ["trace", "style"];
+
+  /** The papers and figures of the materials folder, read again whenever
+   * the window comes back (files may have been put in meanwhile). */
+  let materials = $state<MaterialEntry[] | null>(null);
+  let materialError = $state<string | null>(null);
+  async function loadMaterials(): Promise<void> {
+    try {
+      materials = await assistIpc.listMaterials();
+    } catch {
+      materials = [];
+    }
+  }
+  onMount(() => {
+    void loadMaterials();
+    const onFocus = () => void loadMaterials();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  });
+  /** The materials by folder: figures first for a figure, texts first otherwise. */
+  const materialGroups = $derived.by(() => {
+    const order =
+      store.action === "figure"
+        ? ["figures", "domain", "general", "writing-samples"]
+        : ["writing-samples", "domain", "general", "figures"];
+    return order
+      .map((name) => ({ name, items: (materials ?? []).filter((m) => m.folder === name) }))
+      .filter((g) => g.items.length > 0);
+  });
+  /** Not a path of the list: those start with a folder name. */
+  const OPEN_FOLDER = "#open";
+  async function pickMaterial(path: string): Promise<void> {
+    materialError = null;
+    if (path === OPEN_FOLDER) {
+      await assistIpc.revealMaterials().catch((err) => (materialError = errorMessage(err)));
+      return;
+    }
+    const entry = materials?.find((m) => m.path === path);
+    if (!entry) return;
+    try {
+      await store.addMaterial(entry);
+    } catch (err) {
+      materialError = errorMessage(err);
+    }
+  }
+  const fixing = $derived(store.action === "fix");
+  const needsInstruction = $derived(store.action !== "polish" && !fixing);
   const mirrorReady = $derived(
     store.action !== "mirror" ||
       (!!target?.translation && store.instruction.trim().length > 0 && store.instruction.trim() !== target.translation.trim()),
   );
   const canRun = $derived(
-    ready && !!target && (!needsInstruction || store.instruction.trim().length > 0) && mirrorReady,
+    ready && (fixing || !!target) && (!needsInstruction || store.instruction.trim().length > 0) && mirrorReady,
   );
 
   function addSample(): void {
@@ -106,10 +181,16 @@
       {/each}
     </div>
 
-    <div class="target" class:none={!target}>
-      <span class="label smallcaps">{target ? target.label : t("assist.target")}</span>
-      <span class="text">{target ? target.text : t("assist.target.none")}</span>
-    </div>
+    {#if fixing}
+      <div class="target">
+        <span class="label smallcaps">{t("assist.target.document")}</span>
+      </div>
+    {:else}
+      <div class="target" class:none={!target}>
+        <span class="label smallcaps">{target ? target.label : t("assist.target")}</span>
+        <span class="text">{target ? target.text : t("assist.target.none")}</span>
+      </div>
+    {/if}
 
     <textarea
       class="textarea"
@@ -124,6 +205,20 @@
       <p class="hint">{t("assist.mirrorNeedsParagraph")}</p>
     {/if}
 
+    {#if store.action === "figure" && latexDoc}
+      <div class="row options">
+        <span class="label smallcaps">{t("assist.figure.format")}</span>
+        <select
+          class="select"
+          value={store.figureFormat}
+          onchange={(e) => store.setFigureFormat(e.currentTarget.value as FigureFormat)}
+        >
+          {#each formats as f (f)}<option value={f}>{t(FIGURE_LABEL[f])}</option>{/each}
+        </select>
+      </div>
+    {/if}
+
+    {#if !fixing}
     <div class="row options">
       <span class="label smallcaps">{t("assist.scope")}</span>
       <select class="select" value={store.scope} onchange={(e) => store.setScope(e.currentTarget.value as AssistScope)}>
@@ -132,13 +227,37 @@
     </div>
 
     <div class="refs">
-      <div class="row">
+      <div class="row adds-row">
         <span class="label smallcaps">{t("assist.references")}</span>
         <span class="spacer"></span>
-        <button class="link" onclick={() => (addingSample = !addingSample)}>{t("assist.addText")}</button>
-        <button class="link" onclick={() => store.addFile()} title={t("assist.addFileTitle")}>{t("assist.addFile")}</button>
-        <button class="link" onclick={() => store.attach()}>{t("assist.addImage")}</button>
+        <span class="adds">
+          <button class="link" onclick={() => (addingSample = !addingSample)}>{t("assist.addText")}</button>
+          <button class="link" onclick={() => store.addFile()} title={t("assist.addFileTitle")}>{t("assist.addFile")}</button>
+          <button class="link" onclick={() => store.attach()}>{t("assist.addImage")}</button>
+          <span class="pick-wrap">
+            <span class="link" aria-hidden="true">{t("assist.addMaterial")}</span>
+            <select
+              class="pick"
+              aria-label={t("assist.addMaterial")}
+              onchange={(e) => {
+                const path = e.currentTarget.value;
+                e.currentTarget.value = "";
+                void pickMaterial(path);
+              }}
+            >
+              <option value="" disabled selected hidden>{t("assist.addMaterial")}</option>
+              {#each materialGroups as g (g.name)}
+                <optgroup label={`${g.name}/`}>
+                  {#each g.items as m (m.path)}<option value={m.path}>{m.path.slice(g.name.length + 1)}</option>{/each}
+                </optgroup>
+              {/each}
+              {#if materials && materialGroups.length === 0}<option value="" disabled>{t("assist.materialsEmpty")}</option>{/if}
+              <option value={OPEN_FOLDER}>{t("assist.materialsOpen")}</option>
+            </select>
+          </span>
+        </span>
       </div>
+      {#if materialError}<p class="material-error">{materialError}</p>{/if}
       {#if addingSample}
         <textarea class="textarea" rows="3" bind:value={sampleDraft} placeholder={t("assist.samplePlaceholder")}
         ></textarea>
@@ -166,12 +285,25 @@
             <li>
               <img src={a.dataUrl} alt={a.name} />
               <span class="chip-text">{a.name}</span>
+              {#if store.action === "figure" && latex}
+                <span class="use" role="group">
+                  {#each USES as u (u)}
+                    <button
+                      class:on={a.use === u}
+                      aria-pressed={a.use === u}
+                      title={t(`assist.image.${u}Title`)}
+                      onclick={() => store.setImageUse(a.id, u)}>{t(`assist.image.${u}`)}</button
+                    >
+                  {/each}
+                </span>
+              {/if}
               <button class="x" aria-label={t("common.remove")} onclick={() => store.detach(a.id)}>✕</button>
             </li>
           {/each}
         </ul>
       {/if}
     </div>
+    {/if}
 
     <div class="row run">
       <button class="skill" onclick={() => ipc.openLink("skill")} title="github.com/qzkinhit/research-builder"
@@ -187,7 +319,10 @@
       <AssistJobCard
         {job}
         stale={job.epoch !== store.epoch}
+        {latex}
         {onaccept}
+        {onsmartapply}
+        oncancelcheck={(j) => store.cancelCheck(j)}
         {onrevert}
         ondiscard={(j) => store.discard(j)}
         onremove={(j) => store.remove(j)}
@@ -257,16 +392,17 @@
   }
   .actions {
     display: flex;
+    flex-wrap: wrap;
     padding: 2px;
     border: 1px solid var(--rule);
     border-radius: 5px;
     background: var(--paper-2);
   }
   .mode {
-    flex: 1;
+    flex: 1 0 auto;
     border: 0;
     background: transparent;
-    padding: 2px 6px 4px;
+    padding: 2px 4px 4px;
     border-radius: 3px;
     font-size: 13.5px;
     color: var(--muted);
@@ -310,6 +446,18 @@
     display: grid;
     gap: 6px;
   }
+  /* The links stay together: in a narrow dock they go under the label. */
+  .adds-row {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+  .adds {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    white-space: nowrap;
+  }
   .link {
     border: 0;
     background: transparent;
@@ -318,6 +466,25 @@
     font-size: 13px;
     cursor: pointer;
     padding: 0 2px;
+  }
+  /* The menu of materials opens from its label: the select lies over it,
+     transparent. */
+  .pick-wrap {
+    position: relative;
+    display: inline-block;
+  }
+  .pick {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    opacity: 0;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .material-error {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--error);
   }
   .chips {
     list-style: none;
@@ -349,6 +516,27 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 260px;
+  }
+  .use {
+    display: inline-flex;
+    flex: none;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .use button {
+    border: 0;
+    background: transparent;
+    padding: 0 5px;
+    font-size: 11.5px;
+    line-height: 18px;
+    color: var(--muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .use button.on {
+    background: var(--ink);
+    color: var(--paper);
   }
   .chip-text .file {
     font-family: var(--font-mono);

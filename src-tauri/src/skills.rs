@@ -14,7 +14,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use biwrite_core::assist::Skill;
+use biwrite_core::assist::{Skill, SkillIcon};
 use serde::{Deserialize, Serialize};
 
 /// The files loaded from a skill, relative to its root.
@@ -33,9 +33,20 @@ pub const SKILL_FILES: &[&str] = &[
     "figure-style/figstyle.py",
     "figure-style/tables/README.md",
     "figure-style/tables/table_macros.tex",
+    "paper-figure-pptx/SKILL.md",
+    "paper-figure-pptx/references/layout-and-type.md",
+    "paper-figure-pptx/references/pptx-native.md",
+    "paper-figure-pptx/references/paper-styles.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
 ];
+
+/// Where a skill keeps its icon libraries: a folder each, listed by its
+/// `manifest.json`.
+pub const ICON_DIR: &str = "paper-figure-pptx/assets/icon-library";
+/// Most icons loaded, and the largest icon file.
+const MAX_ICONS: usize = 300;
+const MAX_ICON_BYTES: u64 = 400_000;
 
 /// Files without which the assistant cannot follow the skill.
 const REQUIRED: &[&str] = &["writing-deai.md", "writing-playbook.md"];
@@ -85,7 +96,125 @@ fn read_manifest(dir: &Path) -> Manifest {
         .unwrap_or_default()
 }
 
-/// Load the skill's files from `dir`.
+/// A small file of `dir` (at most `limit` bytes), by its path relative to it.
+fn read_small(dir: &Path, rel: &str, limit: u64) -> Option<Vec<u8>> {
+    let path = dir.join(rel);
+    // Paths come from manifests: never out of the library.
+    if rel.contains("..") || Path::new(rel).is_absolute() {
+        return None;
+    }
+    std::fs::metadata(&path)
+        .is_ok_and(|m| m.is_file() && m.len() <= limit)
+        .then(|| std::fs::read(&path).ok())
+        .flatten()
+}
+
+/// The icons of the icon libraries under `dir`'s [`ICON_DIR`], as their
+/// manifests list them: the skill's starter library (`id`, `meaning`,
+/// `svg`, `png`) and libraries taken from the author's slides (`path`,
+/// `metadata.name_zh`, `png_fallbacks`). Icons of another library than the
+/// starter one are named `library/id`; icons without a meaning are left
+/// out, since nothing tells what they show.
+pub(crate) fn load_icons(dir: &Path) -> Vec<SkillIcon> {
+    let root = dir.join(ICON_DIR);
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut libraries: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.join("manifest.json").is_file())
+        .collect();
+    // The starter library first, then the others by name.
+    libraries.sort_by_key(|p| (p.file_name().is_none_or(|n| n != "starter"), p.clone()));
+    let mut out: Vec<SkillIcon> = Vec::new();
+    for lib in libraries {
+        let library = lib
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        load_library(&lib, &library, &mut out);
+    }
+    out
+}
+
+/// The icons of the library in `lib` (named `library`), added to `out`.
+pub(crate) fn load_library(lib: &Path, library: &str, out: &mut Vec<SkillIcon>) {
+    let Some(json) = read_small(lib, "manifest.json", 4_000_000)
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    else {
+        return;
+    };
+    for icon in json["icons"].as_array().into_iter().flatten() {
+        if out.len() >= MAX_ICONS {
+            return;
+        }
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or("").trim().to_owned();
+        let tags = |v: &serde_json::Value| {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let raw_id = text(&icon["id"]);
+        let id = raw_id.trim_end_matches(".svg").to_owned();
+        let (meaning, svg_rel, png_rel) = if icon["svg"].is_string() {
+            let tags = tags(&icon["tags"]);
+            let meaning = text(&icon["meaning"]);
+            (
+                if tags.is_empty() {
+                    meaning
+                } else {
+                    format!("{meaning} ({tags})")
+                },
+                text(&icon["svg"]),
+                text(&icon["png"]),
+            )
+        } else {
+            let name = text(&icon["metadata"]["name_zh"]);
+            let tags = tags(&icon["metadata"]["purpose_tags"]);
+            (
+                if name.is_empty() || tags.is_empty() {
+                    name
+                } else {
+                    format!("{name} ({tags})")
+                },
+                text(&icon["path"]),
+                text(&icon["png_fallbacks"][0]["path"]),
+            )
+        };
+        if id.is_empty() || meaning.is_empty() || svg_rel.is_empty() {
+            continue;
+        }
+        let Some(svg) = read_small(lib, &svg_rel, MAX_ICON_BYTES)
+            .and_then(|b| String::from_utf8(b).ok())
+            .filter(|t| t.contains("<svg"))
+        else {
+            continue;
+        };
+        let id = if library == "starter" {
+            id
+        } else {
+            format!("{library}/{id}")
+        };
+        if out.iter().any(|i| i.id == id) {
+            continue;
+        }
+        out.push(SkillIcon {
+            id,
+            meaning,
+            library: library.to_owned(),
+            svg,
+            png: (!png_rel.is_empty())
+                .then(|| read_small(lib, &png_rel, MAX_ICON_BYTES))
+                .flatten(),
+        });
+    }
+}
+
+/// Load the skill's files and icons from `dir`.
 fn load(dir: &Path, origin: &'static str) -> (Skill, SkillInfo) {
     let manifest = read_manifest(dir);
     let mut files = Vec::new();
@@ -135,6 +264,7 @@ fn load(dir: &Path, origin: &'static str) -> (Skill, SkillInfo) {
             source,
             version,
             files,
+            icons: load_icons(dir),
         },
         info,
     )
@@ -260,7 +390,13 @@ fn extract(archive: &[u8], target: &Path, manifest: &Manifest) -> Result<(), Str
         let Some(rel_str) = rel.to_str().map(|s| s.replace('\\', "/")) else {
             continue;
         };
-        if !SKILL_FILES.contains(&rel_str.as_str()) || entry.size() > MAX_FILE_BYTES {
+        // The text files the assistant reads, and the icon libraries.
+        let icon = rel_str.starts_with(&format!("{ICON_DIR}/"))
+            && (rel_str.ends_with(".svg")
+                || rel_str.ends_with(".png")
+                || rel_str.ends_with("/manifest.json"))
+            && !rel_str.contains("/../");
+        if !(SKILL_FILES.contains(&rel_str.as_str()) || icon) || entry.size() > MAX_FILE_BYTES {
             continue;
         }
         let out = staging.join(&rel);
@@ -364,6 +500,78 @@ mod tests {
         assert!(!root.join("escape.md").exists());
         let (_, info) = load(&target, "downloaded");
         assert_eq!(info.version, "abc1234");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn icons_come_from_every_library_with_a_manifest() {
+        let dir = temp("icons");
+        write_skill(&dir, "x");
+        let starter = dir.join(ICON_DIR).join("starter");
+        std::fs::create_dir_all(starter.join("svg")).unwrap();
+        std::fs::create_dir_all(starter.join("fallback")).unwrap();
+        std::fs::write(
+            starter.join("svg/database.svg"),
+            "<svg viewBox=\"0 0 64 64\"/>",
+        )
+        .unwrap();
+        std::fs::write(starter.join("fallback/database.png"), b"\x89PNG").unwrap();
+        std::fs::write(
+            starter.join("manifest.json"),
+            r#"{"library":"starter","icons":[{"id":"database","meaning":"数据集","tags":["data","pool"],"svg":"svg/database.svg","png":"fallback/database.png"},{"id":"gone","meaning":"x","svg":"svg/gone.svg"}]}"#,
+        )
+        .unwrap();
+        let mine = dir.join(ICON_DIR).join("user-pptx");
+        std::fs::create_dir_all(mine.join("svg")).unwrap();
+        std::fs::write(mine.join("svg/image53.svg"), "<svg/>").unwrap();
+        std::fs::write(mine.join("svg/image60.svg"), "<svg/>").unwrap();
+        std::fs::write(
+            mine.join("manifest.json"),
+            r#"{"icons":[{"id":"image53.svg","path":"svg/image53.svg","metadata":{"name_zh":"机械臂","purpose_tags":["工业设备"]},"png_fallbacks":[{"path":"fallback/none.png"}]},{"id":"image60.svg","path":"svg/image60.svg"},{"id":"x.svg","path":"../../escape.svg","metadata":{"name_zh":"逃逸"}}]}"#,
+        )
+        .unwrap();
+        let icons = load_icons(&dir);
+        let ids: Vec<&str> = icons.iter().map(|i| i.id.as_str()).collect();
+        // The starter library first; another library's ids carry its name;
+        // icons without a file or a meaning, or outside the library, go.
+        assert_eq!(ids, ["database", "user-pptx/image53"]);
+        assert_eq!(icons[0].meaning, "数据集 (data, pool)");
+        assert_eq!(icons[0].png.as_deref(), Some(&b"\x89PNG"[..]));
+        assert_eq!(icons[1].meaning, "机械臂 (工业设备)");
+        assert_eq!(icons[1].png, None);
+        let (skill, _) = load(&dir, "folder");
+        assert_eq!(skill.icons.len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The skill on GitHub as the update downloads it: `BIWRITE_SKILL_ZIP`
+    /// names a copy of the archive.
+    #[test]
+    #[ignore = "needs BIWRITE_SKILL_ZIP"]
+    fn the_published_skill_updates_with_its_figure_rules_and_icons() {
+        let archive = std::fs::read(std::env::var("BIWRITE_SKILL_ZIP").unwrap()).unwrap();
+        assert!(archive.len() < MAX_ARCHIVE_BYTES);
+        let root = temp("published");
+        let target = root.join("research-builder");
+        let manifest = Manifest {
+            name: "research-builder".into(),
+            source: "https://github.com/qzkinhit/research-builder".into(),
+            version: "main".into(),
+            date: String::new(),
+        };
+        extract(&archive, &target, &manifest).unwrap();
+        let (skill, info) = load(&target, "downloaded");
+        assert!(info.missing.is_empty(), "{:?}", info.missing);
+        for file in [
+            "paper-figure-pptx/SKILL.md",
+            "paper-figure-pptx/references/pptx-native.md",
+            "knowledge/figure-archetypes.md",
+            "writing-deai.md",
+        ] {
+            assert!(skill.file(file).is_some(), "{file}");
+        }
+        assert!(skill.icons.len() >= 16, "{}", skill.icons.len());
+        assert!(skill.icons.iter().all(|i| i.png.is_some()));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -103,6 +103,10 @@ pub struct AppState {
     pub updates: UpdateState,
     /// Keys that got through to crowded relays, and squeezes running.
     pub squeeze: SqueezeState,
+    /// Figures that are files, waiting for the document's save.
+    pub figures: crate::figures::FigureStore,
+    /// The author's own papers and icons for the skill.
+    pub materials: crate::materials::Materials,
 }
 
 impl AppState {
@@ -117,6 +121,12 @@ impl AppState {
         skills: SkillStore,
         latex: LatexState,
     ) -> Self {
+        // The author's own materials, next to the settings.
+        let materials = paths
+            .settings
+            .parent()
+            .map(|d| d.join("materials"))
+            .unwrap_or_default();
         Self {
             engine,
             cache,
@@ -140,6 +150,8 @@ impl AppState {
             latex,
             updates: UpdateState::default(),
             squeeze: SqueezeState::default(),
+            figures: crate::figures::FigureStore::default(),
+            materials: crate::materials::Materials::new(materials),
         }
     }
 
@@ -263,4 +275,9 @@ pub struct SavedView {
     /// Paragraphs written in the other language as they are, their
     /// translations not there yet ([`AppState::left_in_other_language`]).
     pub other_language: usize,
+    /// Figure files the save wrote (the document includes them), relative
+    /// to the folder TeX runs in.
+    pub figures: Vec<String>,
+    /// Figure files it left, because a file of that name is there.
+    pub figures_kept: Vec<String>,
 }

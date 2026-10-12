@@ -2,9 +2,11 @@
 //! English PDF, or the Chinese mirror PDF), SyncTeX between the PDF and the
 //! editor, the project's files, and paper templates.
 //!
-//! The English PDF is built from the files on disk (the frontend saves
-//! first). The Chinese PDF is built from the composed translation, written
-//! to `.biwrite/zh/` inside the project with Chinese font support added.
+//! The English PDF is built from the files on disk while the document is
+//! saved, and from a copy of the editor's text in `.biwrite/en/` inside the
+//! project while it is not, so the files change only when the author saves.
+//! The Chinese PDF is built from the composed translation, written to
+//! `.biwrite/zh/` with Chinese font support added.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -14,11 +16,12 @@ use std::time::Duration;
 
 use biwrite_core::assist::{paragraph_at, sentence_at};
 use biwrite_core::pair::units;
+use biwrite_core::repair::TexError;
 use biwrite_core::utf16::{byte_to_utf16, utf16_to_byte};
 use biwrite_core::{Direction, Mode, SegmentId};
 use biwrite_latex::{
-    self as latex, EN_MIRROR_DIR, Engine, Issue, Job, MIRROR_DIR, Outcome, PdfBox, Severity,
-    Template, Toolchain, templates,
+    self as latex, CHECK_DIR, EN_MIRROR_DIR, Engine, Issue, Job, MIRROR_DIR, Outcome, PdfBox,
+    Severity, Template, Toolchain, templates,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State, WebviewWindow};
@@ -58,6 +61,18 @@ struct Build {
     source: Source,
     /// The editing direction when the build started.
     direction: Direction,
+    /// The paired file, built from a copy with translations not saved yet.
+    mirror: Option<MirrorCopy>,
+}
+
+/// A copy of the paired file in the `.biwrite` folder, with the current
+/// translations: the copy TeX read, its text, and segment of the open
+/// document → unit of the text.
+#[derive(Clone)]
+struct MirrorCopy {
+    file: PathBuf,
+    text: String,
+    links: HashMap<SegmentId, usize>,
 }
 
 /// What a PDF is built from.
@@ -138,7 +153,7 @@ async fn toolchain(state: &AppState, refresh: bool) -> Option<Toolchain> {
     cache.found.clone()
 }
 
-async fn require_toolchain(state: &AppState) -> CommandResult<Toolchain> {
+pub(crate) async fn require_toolchain(state: &AppState) -> CommandResult<Toolchain> {
     toolchain(state, false).await.ok_or_else(|| {
         fail("No TeX distribution was found. Install TeX Live or MiKTeX (MacTeX on macOS), or choose its folder in Settings.")
     })
@@ -235,9 +250,9 @@ pub(crate) struct Project {
     /// Its text on disk.
     saved: String,
     pub(crate) root: PathBuf,
-    root_text: String,
+    pub(crate) root_text: String,
     /// Folder of the root (canonical).
-    dir: PathBuf,
+    pub(crate) dir: PathBuf,
 }
 
 /// The text of the file at `path` as it is on disk, else (unreadable)
@@ -433,13 +448,17 @@ pub struct BuildView {
     pub output: String,
     /// The project's own `latexmkrc`, which ran with the build (a warning).
     pub project_rc: Option<String>,
+    /// Edits not saved yet are not in the PDF: it was built from the files
+    /// (a part its root does not include directly, a paired file the
+    /// translations do not fit).
+    pub unsaved_left_out: bool,
 }
 
 /// A file named in the log (relative to the folder TeX ran in), as the
 /// original file: the mirror's copies map back to what they mirror.
 fn original(name: &str) -> String {
     let name = name.trim_start_matches("./");
-    [MIRROR_DIR, EN_MIRROR_DIR]
+    [MIRROR_DIR, EN_MIRROR_DIR, CHECK_DIR]
         .iter()
         .find_map(|dir| name.strip_prefix(dir))
         .map(|rest| rest.trim_start_matches('/'))
@@ -475,10 +494,120 @@ fn write_file(path: &Path, text: &str) -> CommandResult<()> {
     std::fs::write(path, text).map_err(|e| CommandError::io(path, e))
 }
 
-/// Build the PDF of the file's own language (from the files on disk) or of
-/// the other language (the Chinese PDF of an English paper, the English one
-/// of a Chinese paper: from the translation). `text` is the editor's
-/// current text. A new build of the same language replaces a running one.
+/// The folder of the project where the PDF of `lang` is built from copies.
+fn copies_dir(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Zh => MIRROR_DIR,
+        Lang::En => EN_MIRROR_DIR,
+    }
+}
+
+/// A copy of the open document holding `text` in `folder` of the project,
+/// and of its root pointed at the copy when the document is a part, so TeX
+/// builds `text` with the project's other files while the document's file
+/// stays as it is. The root to build (relative to the project folder) and
+/// the copy of the document; `None` when the root does not `\input` or
+/// `\include` the document directly.
+fn stage(
+    state: &AppState,
+    p: &Project,
+    folder: &str,
+    text: &str,
+    prepare: fn(&str) -> String,
+) -> CommandResult<Option<(PathBuf, PathBuf)>> {
+    let doc_rel = relative(&p.path, &p.dir)
+        .ok_or_else(|| fail("The document is outside its project folder."))?;
+    let root_rel = relative(&p.root, &p.dir).unwrap_or_default();
+    let out = p.dir.join(folder);
+    let doc_out = out.join(&doc_rel);
+    // Figures waiting for a save are read from copies in `.biwrite`.
+    let text = &state.figures.staged(&p.dir, text);
+    if p.path == p.root {
+        write_file(&doc_out, &prepare(text))?;
+    } else {
+        let from = doc_rel.trim_end_matches(".tex");
+        let to = format!("{folder}/{from}");
+        let Some(root) = latex::redirect_include(&p.root_text, from, &to) else {
+            return Ok(None);
+        };
+        let root = state.figures.staged(&p.dir, &root);
+        write_file(&doc_out, text)?;
+        write_file(&out.join(&root_rel), &prepare(&root))?;
+    }
+    stage_bibliographies(p, folder, &[text, &p.root_text]);
+    Ok(Some((
+        Path::new(folder).join(root_rel),
+        canonical(&doc_out),
+    )))
+}
+
+/// The `.bib` files a `\bibliography` of `texts` names with `./` or `../`,
+/// copied to where that name leads from `folder`: latexmk runs BibTeX in
+/// the folder it builds in, and BibTeX takes such a name from there. Only
+/// a place inside `.biwrite` gets a copy.
+fn stage_bibliographies(p: &Project, folder: &str, texts: &[&str]) {
+    let cache = p.dir.join(".biwrite");
+    let mut done = Vec::new();
+    for name in texts.iter().flat_map(|t| latex::bibliographies(t)) {
+        if !(name.starts_with("./") || name.starts_with("../")) || done.contains(&name) {
+            continue;
+        }
+        let file = if name.ends_with(".bib") {
+            name.clone()
+        } else {
+            format!("{name}.bib")
+        };
+        let source = latex::clean(&p.dir.join(&file));
+        let target = latex::clean(&p.dir.join(folder).join(&file));
+        if target.starts_with(&cache) && source.is_file() {
+            let copied = target
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::copy(&source, &target).map(|_| ()));
+            if let Err(e) = copied {
+                log::warn!("could not copy {} for BibTeX: {e}", source.display());
+            }
+        }
+        done.push(name);
+    }
+}
+
+/// What the file of `lang` holds as edited now, as a save would write it:
+/// the editor's text when it is in that language; else the paired file
+/// with the current translations (paragraphs still being translated as
+/// they are) and its links, or `None` when they would not fit its
+/// structure; else, without a pair, the document composed from the
+/// translations.
+fn text_now(
+    state: &AppState,
+    lang: Lang,
+    direction: Direction,
+    text: &str,
+) -> Option<(String, Option<HashMap<SegmentId, usize>>)> {
+    if lang == source_lang(direction) {
+        return Some((text.to_owned(), None));
+    }
+    // Paragraphs waiting out the translation delay go now.
+    state.engine.translate_held();
+    {
+        let fs = state.file();
+        if let Some(pair) = fs.pair.as_ref() {
+            return match crate::pairing::patched(state, pair, None, true) {
+                crate::pairing::Patched::Ready { text, links, .. } => Some((text, Some(links))),
+                _ => None,
+            };
+        }
+    }
+    Some((state.engine.compose_mirror().text, None))
+}
+
+/// Build the PDF of the file's own language (as edited) or of the other
+/// language (the Chinese PDF of an English paper, the English one of a
+/// Chinese paper: from the translation). `text` is the editor's current
+/// text. What is not saved is built from copies in the project's
+/// `.biwrite` folder, so the PDF shows the document as edited and its
+/// files stay as they are until the author saves. A new build of the same
+/// language replaces a running one.
 #[tauri::command]
 pub async fn latex_compile(
     state: State<'_, AppState>,
@@ -492,7 +621,7 @@ pub async fn latex_compile(
     // The language of the file on disk.
     let file_lang = source_lang(state.file().home);
     // A pair keeps each language in its own files: build the file of this
-    // language as it is on disk.
+    // language.
     let mirror = {
         let fs = state.file();
         fs.pair
@@ -509,31 +638,77 @@ pub async fn latex_compile(
         .ok_or_else(|| fail("The document is outside its project folder."))?;
     let root_rel = relative(&p.root, &p.dir).unwrap_or_default();
     let doc_is_root = p.path == p.root;
+    let same_language = lang == source_lang(direction);
     let mut untranslated = 0;
+    let mut unsaved_left_out = false;
+    let mut unsaved_built = false;
+    let mut mirror_copy = None;
     let (job, doc_file, basis, source) = match lang {
-        _ if paired || lang == file_lang => (
-            Job {
-                dir: p.dir.clone(),
-                root: PathBuf::from(&root_rel),
-                engine: latex::project_engine(&p.root, &p.root_text),
-                out_dir: None,
-                timeout: BUILD_TIMEOUT,
-            },
-            p.path.clone(),
-            Basis {
-                // What TeX reads: the file as it is on disk now, changed
-                // elsewhere perhaps since the app read or wrote it.
-                compiled: as_on_disk(&p.path, &p.saved),
-                editor: text,
-                same_language: lang == source_lang(direction),
-                mode: Mode::Latex,
-            },
-            Source::Files,
-        ),
+        _ if paired || lang == file_lang => {
+            let now = text_now(&state, lang, direction, &text);
+            let unsaved = now.as_ref().is_none_or(|(now, _)| *now != p.saved);
+            let staged = match &now {
+                Some((now, _)) if unsaved => {
+                    stage(&state, &p, copies_dir(lang), now, str::to_owned)?
+                }
+                _ => None,
+            };
+            unsaved_left_out = unsaved && staged.is_none();
+            match (staged, now) {
+                (Some((root, copy)), Some((now, links))) => {
+                    // A changed `% !TEX program` counts as it is now.
+                    let root_text = if doc_is_root { &now } else { &p.root_text };
+                    let engine = latex::project_engine(&p.root, root_text);
+                    unsaved_built = true;
+                    mirror_copy = links.map(|links| MirrorCopy {
+                        file: copy.clone(),
+                        text: now.clone(),
+                        links,
+                    });
+                    (
+                        Job {
+                            dir: p.dir.clone(),
+                            root,
+                            engine,
+                            out_dir: Some(PathBuf::from(copies_dir(lang))),
+                            timeout: BUILD_TIMEOUT,
+                        },
+                        copy,
+                        Basis {
+                            compiled: now,
+                            editor: text,
+                            same_language,
+                            mode: Mode::Latex,
+                        },
+                        Source::Files,
+                    )
+                }
+                _ => (
+                    Job {
+                        dir: p.dir.clone(),
+                        root: PathBuf::from(&root_rel),
+                        engine: latex::project_engine(&p.root, &p.root_text),
+                        out_dir: None,
+                        timeout: BUILD_TIMEOUT,
+                    },
+                    p.path.clone(),
+                    Basis {
+                        // What TeX reads: the file as it is on disk now,
+                        // changed elsewhere perhaps since the app read or
+                        // wrote it.
+                        compiled: as_on_disk(&p.path, &p.saved),
+                        editor: text,
+                        same_language,
+                        mode: Mode::Latex,
+                    },
+                    Source::Files,
+                ),
+            }
+        }
         _ => {
             // The editor's text if it is in this language, else composed
             // from the translations.
-            let other = if lang == source_lang(direction) {
+            let other = if same_language {
                 text.clone()
             } else {
                 // Paragraphs waiting out the translation delay go now.
@@ -544,25 +719,16 @@ pub async fn latex_compile(
             };
             // Chinese needs font support; an English mirror keeps the
             // Chinese file's preamble, which has it.
-            let (folder, prepare): (&str, fn(&str) -> String) = match lang {
-                Lang::Zh => (MIRROR_DIR, latex::with_chinese),
-                Lang::En => (EN_MIRROR_DIR, str::to_owned),
+            let prepare: fn(&str) -> String = match lang {
+                Lang::Zh => latex::with_chinese,
+                Lang::En => str::to_owned,
             };
-            let out = p.dir.join(folder);
-            let doc_out = out.join(&doc_rel);
-            if doc_is_root {
-                write_file(&doc_out, &prepare(&other))?;
-            } else {
-                write_file(&doc_out, &other)?;
-                let from = doc_rel.trim_end_matches(".tex");
-                let to = format!("{folder}/{from}");
-                let root = latex::redirect_include(&p.root_text, from, &to).ok_or_else(|| {
-                    fail(format!(
-                        "The translated PDF needs {root_rel} to \\input or \\include {doc_rel} directly."
-                    ))
-                })?;
-                write_file(&out.join(&root_rel), &prepare(&root))?;
-            }
+            let folder = copies_dir(lang);
+            let (root, copy) = stage(&state, &p, folder, &other, prepare)?.ok_or_else(|| {
+                fail(format!(
+                    "The translated PDF needs {root_rel} to \\input or \\include {doc_rel} directly."
+                ))
+            })?;
             let engine = match (lang, latex::engine_for(&p.root_text)) {
                 (Lang::Zh, Engine::Lualatex) => Engine::Lualatex,
                 (Lang::Zh, _) => Engine::Xelatex,
@@ -571,16 +737,16 @@ pub async fn latex_compile(
             (
                 Job {
                     dir: p.dir.clone(),
-                    root: Path::new(folder).join(&root_rel),
+                    root,
                     engine,
                     out_dir: Some(PathBuf::from(folder)),
                     timeout: BUILD_TIMEOUT,
                 },
-                canonical(&doc_out),
+                copy,
                 Basis {
                     compiled: other,
                     editor: text,
-                    same_language: lang == source_lang(direction),
+                    same_language,
                     mode: Mode::Latex,
                 },
                 Source::Translation,
@@ -610,7 +776,8 @@ pub async fn latex_compile(
         Err(_) => return Err(CommandError::Cancelled),
     };
     log::info!(
-        "built {lang:?} PDF of {root_rel}: {:?} in {} ms",
+        "built {lang:?} PDF of {root_rel}{}: {:?} in {} ms",
+        if unsaved_built { " as edited" } else { "" },
         built.outcome,
         built.duration_ms
     );
@@ -628,6 +795,7 @@ pub async fn latex_compile(
         untranslated,
         output: built.output,
         project_rc: built.project_rc,
+        unsaved_left_out,
     };
     if let Some(rc) = &view.project_rc {
         log::warn!("the build ran the project's own {rc}");
@@ -647,9 +815,154 @@ pub async fn latex_compile(
             basis,
             source,
             direction,
+            mirror: mirror_copy,
         },
     );
     Ok(view)
+}
+
+/// Longest check build before it is stopped.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(180);
+/// Most errors read from a check build's log.
+const CHECK_ERRORS: usize = 40;
+
+/// What TeX said about the open document built as some text.
+pub(crate) struct Checked {
+    /// Its errors; the line is that of the text when TeX found the error
+    /// in it.
+    pub(crate) errors: Vec<TexError>,
+}
+
+/// Build the open document as `text` in `folder` of its project (a folder
+/// of `.biwrite` apart from the PDFs shown) and read TeX's errors, to see
+/// whether it compiles. The project's files stay as they are. `text` is in
+/// the editor's language, built as the file is when that is the file's own
+/// and as the translated PDF is otherwise.
+pub(crate) async fn check_build(
+    state: &AppState,
+    text: &str,
+    folder: &str,
+) -> CommandResult<Checked> {
+    let tc = require_toolchain(state).await?;
+    let lang = source_lang(state.engine.direction());
+    let own = {
+        let fs = state.file();
+        fs.pair.is_some() || lang == source_lang(fs.home)
+    };
+    let p = project(state)?;
+    let doc_rel = relative(&p.path, &p.dir)
+        .ok_or_else(|| fail("The document is outside its project folder."))?;
+    let root_rel = relative(&p.root, &p.dir).unwrap_or_default();
+    let prepare: fn(&str) -> String = if !own && lang == Lang::Zh {
+        latex::with_chinese
+    } else {
+        str::to_owned
+    };
+    let (root, _) = stage(state, &p, folder, text, prepare)?.ok_or_else(|| {
+        fail(format!(
+            "{root_rel} includes {doc_rel} through a macro, so it cannot be built on its own."
+        ))
+    })?;
+    let engine = if own {
+        latex::project_engine(&p.root, if p.path == p.root { text } else { &p.root_text })
+    } else {
+        match (lang, latex::engine_for(&p.root_text)) {
+            (Lang::Zh, Engine::Lualatex) => Engine::Lualatex,
+            (Lang::Zh, _) => Engine::Xelatex,
+            (Lang::En, _) => latex::project_engine(&p.root, &p.root_text),
+        }
+    };
+    let out = p.dir.join(folder);
+    let stem = root
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // A build an error stopped may have left its auxiliary file cut short,
+    // which would read as an error of the next one.
+    let _ = std::fs::remove_file(out.join(format!("{stem}.aux")));
+    let job = Job {
+        dir: p.dir.clone(),
+        root,
+        engine,
+        out_dir: Some(PathBuf::from(folder)),
+        timeout: CHECK_TIMEOUT,
+    };
+    let built = latex::compile(&tc, &job)
+        .await
+        .map_err(|e| fail(e.to_string()))?;
+    let log = std::fs::read(out.join(format!("{stem}.log")))
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    // A file of the build as the project names it.
+    let named = |file: &str| {
+        let file = file.trim_start_matches("./");
+        file.strip_prefix(folder)
+            .map(|rest| rest.trim_start_matches('/'))
+            .unwrap_or(file)
+            .to_owned()
+    };
+    let one_file = p.path == p.root;
+    let errors = tex_errors(&built, &log, named, |f| match f {
+        Some(f) => f == doc_rel,
+        None => one_file,
+    });
+    log::info!(
+        "checked {doc_rel}: {:?}, {} errors in {} ms",
+        built.outcome,
+        errors.len(),
+        built.duration_ms
+    );
+    Ok(Checked { errors })
+}
+
+/// The errors of a build to repair, from its log: each with what TeX
+/// printed after it, its file as `named` gives it, and its line when
+/// `here` (of that file) says it is in the text built. A tool's failure
+/// (BibTeX with a database it cannot open) or a PDF left unfinished is no
+/// line of the source; a build that stopped without an error in its log
+/// says so.
+pub(crate) fn tex_errors(
+    built: &latex::Compiled,
+    log: &str,
+    named: impl Fn(&str) -> String,
+    here: impl Fn(Option<&str>) -> bool,
+) -> Vec<TexError> {
+    let contexts = latex::log::error_contexts(log, CHECK_ERRORS);
+    let mut errors: Vec<TexError> = built
+        .issues
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .filter(|i| {
+            i.file.is_some() || i.line.is_some() || contexts.iter().any(|c| c.message == i.message)
+        })
+        .map(|i| {
+            let file = i.file.as_deref().map(&named);
+            let context = contexts
+                .iter()
+                .find(|c| c.message == i.message && c.line == i.line)
+                .map(|c| c.context.clone())
+                .unwrap_or_default();
+            TexError {
+                line: i.line.filter(|_| here(file.as_deref())).map(|l| l as usize),
+                file,
+                message: i.message.clone(),
+                context,
+            }
+        })
+        .collect();
+    if errors.is_empty() && matches!(built.outcome, Outcome::Failed | Outcome::TimedOut) {
+        let lines: Vec<&str> = built.output.lines().collect();
+        errors.push(TexError {
+            line: None,
+            file: None,
+            message: match built.outcome {
+                Outcome::TimedOut => "The build did not finish in time.".to_owned(),
+                _ => "No PDF was produced.".to_owned(),
+            },
+            context: lines[lines.len().saturating_sub(20)..].join("\n"),
+        });
+    }
+    errors
 }
 
 /// What a build of `lang` is made from now (as [`latex_compile`] decides).
@@ -716,25 +1029,45 @@ fn source_lang(direction: Direction) -> Lang {
     }
 }
 
-/// A line of the paired mirror (as on disk) as the range of the linked
-/// paragraph in the editor's `text`. `None` unless `file` is the mirror.
+/// The paired file as the build of `lang` read it, when `file` is that:
+/// its text and its links (segment of the open document → unit of the
+/// text). A copy with translations not saved yet, or the file as saved.
+fn paired_source(
+    state: &AppState,
+    lang: Lang,
+    file: &Path,
+) -> Option<(String, HashMap<SegmentId, usize>)> {
+    let copy = state
+        .latex
+        .builds()
+        .get(&lang)
+        .and_then(|b| b.mirror.clone());
+    if let Some(copy) = copy {
+        return (copy.file == file).then_some((copy.text, copy.links));
+    }
+    let fs = state.file();
+    let pair = fs.pair.as_ref().filter(|p| canonical(&p.path) == file)?;
+    Some((pair.file.text().to_owned(), pair.links.clone()))
+}
+
+/// A line of the paired mirror (as the build of `lang` read it) as the
+/// range of the linked paragraph in the editor's `text`. `None` unless
+/// `file` is the mirror.
 fn mirror_hit(
     state: &AppState,
+    lang: Lang,
     file: &Path,
     line: usize,
     text: &str,
     document: u64,
 ) -> Option<Range16> {
     let id = {
-        let fs = state.file();
-        let pair = fs.pair.as_ref().filter(|p| canonical(&p.path) == file)?;
-        let mirror = pair.file.text();
-        let at = line_start(mirror, line.saturating_sub(1));
-        let ub = units(mirror, state.engine.mode());
+        let (mirror, links) = paired_source(state, lang, file)?;
+        let at = line_start(&mirror, line.saturating_sub(1));
+        let ub = units(&mirror, state.engine.mode());
         let ranges: Vec<_> = ub.iter().map(|u| u.range.clone()).collect();
-        let j = crate::latex_sync::index_at_line(&ranges, mirror, at).unwrap_or(0);
-        let by_unit: HashMap<usize, SegmentId> =
-            pair.links.iter().map(|(id, u)| (*u, *id)).collect();
+        let j = crate::latex_sync::index_at_line(&ranges, &mirror, at).unwrap_or(0);
+        let by_unit: HashMap<usize, SegmentId> = links.iter().map(|(id, u)| (*u, *id)).collect();
         (0..=j).rev().find_map(|k| by_unit.get(&k).copied())?
     };
     // A click resolved after another file was opened or a swap: no place.
@@ -747,10 +1080,11 @@ fn mirror_hit(
     })
 }
 
-/// The mirror's file and line for the paragraph at `offset` (UTF-16) of
-/// the editor's `text`.
+/// The mirror's file and line (as the build of `lang` read it) for the
+/// paragraph at `offset` (UTF-16) of the editor's `text`.
 fn mirror_line(
     state: &AppState,
+    lang: Lang,
     offset: usize,
     text: &str,
     document: u64,
@@ -763,15 +1097,26 @@ fn mirror_line(
         .filter(|s| s.from <= offset)
         .map(|s| s.id)
         .collect();
-    let fs = state.file();
-    let pair = fs.pair.as_ref()?;
-    let unit = ids
-        .iter()
-        .rev()
-        .find_map(|id| pair.links.get(id).copied())?;
-    let mirror = pair.file.text();
-    let u = units(mirror, state.engine.mode()).into_iter().nth(unit)?;
-    Some((canonical(&pair.path), line_of(mirror, u.content.start) + 1))
+    let copy = state
+        .latex
+        .builds()
+        .get(&lang)
+        .and_then(|b| b.mirror.clone());
+    let (file, mirror, links) = match copy {
+        Some(copy) => (copy.file, copy.text, copy.links),
+        None => {
+            let fs = state.file();
+            let pair = fs.pair.as_ref()?;
+            (
+                canonical(&pair.path),
+                pair.file.text().to_owned(),
+                pair.links.clone(),
+            )
+        }
+    };
+    let unit = ids.iter().rev().find_map(|id| links.get(id).copied())?;
+    let u = units(&mirror, state.engine.mode()).into_iter().nth(unit)?;
+    Some((file, line_of(&mirror, u.content.start) + 1))
 }
 
 #[tauri::command]
@@ -991,7 +1336,7 @@ pub async fn latex_inverse(
     let file = canonical(&point.file);
     let line = point.line as usize;
     let current = state.file().path.as_deref().map(canonical);
-    if let Some(range) = mirror_hit(&state, &file, line, &text, document) {
+    if let Some(range) = mirror_hit(&state, lang, &file, line, &text, document) {
         return Ok(Some(SyncHit {
             file: file.display().to_string(),
             line: point.line,
@@ -1159,7 +1504,7 @@ pub async fn latex_forward(
     let at = utf16_to_byte(&text, offset);
     let current = state.file().path.as_deref().map(canonical);
     if lang != source_lang(state.engine.direction())
-        && let Some((input, line)) = mirror_line(&state, offset, &text, document)
+        && let Some((input, line)) = mirror_line(&state, lang, offset, &text, document)
     {
         let pdf = pdf_of(&state, lang)?;
         return latex::synctex::forward(&tc, &pdf, &input, line as u32, 0)
@@ -1371,6 +1716,7 @@ mod tests {
             },
             source,
             direction,
+            mirror: None,
         }
     }
 

@@ -25,13 +25,16 @@ import type {
 type Args = Record<string, unknown>;
 
 /** Six relay accounts with made-up key tails (never real key material). */
+const DAY = 24 * 60 * 60 * 1000;
+/** Key 6 never got through (?never). */
+const NEVER = new URLSearchParams(window.location.search).has("never");
 const POOL: (Omit<KeyEntry, "name">)[] = [
-  { number: 1, fingerprint: "a1b2c3d4e5f6", tail: "Xa7Q", state: "ready", inFlight: 2, detail: null },
-  { number: 2, fingerprint: "b2c3d4e5f6a1", tail: "M3kd", state: "ready", inFlight: 1, detail: null },
-  { number: 3, fingerprint: "c3d4e5f6a1b2", tail: "p0Rz", state: "cooling", inFlight: 0, detail: null },
-  { number: 4, fingerprint: "d4e5f6a1b2c3", tail: "Ve2t", state: "ready", inFlight: 2, detail: null },
-  { number: 5, fingerprint: "e5f6a1b2c3d4", tail: "q8Lw", state: "ready", inFlight: 1, detail: null },
-  { number: 6, fingerprint: "f6a1b2c3d4e5", tail: "Hn5s", state: "ready", inFlight: 0, detail: null },
+  { number: 1, fingerprint: "a1b2c3d4e5f6", tail: "Xa7Q", state: "ready", inFlight: 2, detail: null, lastThrough: Date.now() - 2 * 60_000 },
+  { number: 2, fingerprint: "b2c3d4e5f6a1", tail: "M3kd", state: "ready", inFlight: 1, detail: null, lastThrough: Date.now() - 5 * 60_000 },
+  { number: 3, fingerprint: "c3d4e5f6a1b2", tail: "p0Rz", state: "cooling", inFlight: 0, detail: null, lastThrough: Date.now() - 3 * DAY },
+  { number: 4, fingerprint: "d4e5f6a1b2c3", tail: "Ve2t", state: "ready", inFlight: 2, detail: null, lastThrough: Date.now() - 60_000 },
+  { number: 5, fingerprint: "e5f6a1b2c3d4", tail: "q8Lw", state: "ready", inFlight: 1, detail: null, lastThrough: Date.now() - 9 * 60_000 },
+  { number: 6, fingerprint: "f6a1b2c3d4e5", tail: "Hn5s", state: NEVER ? "idle" : "ready", inFlight: 0, detail: null, lastThrough: NEVER ? null : Date.now() - 4 * 60_000 },
 ];
 
 function clone<T>(value: T): T {
@@ -60,6 +63,34 @@ const SLOW = Number(PARAMS.get("slow") ?? 0);
 const ACTIVE = PARAMS.get("active");
 /** `squeeze=N`: a squeeze gets key k through on its (N + k - 1)-th try, key 6 is invalid. */
 const SQUEEZE = Number(PARAMS.get("squeeze") ?? 3);
+/** Figures come as TikZ with a color the template defined before xcolor (?figcolor). */
+const FIGCOLOR = PARAMS.has("figcolor");
+/** The check of an answer cannot repair it (?checkfail). */
+const CHECKFAIL = PARAMS.has("checkfail");
+/** The document compiles without errors, so a fix has nothing to do (?fixclean). */
+const FIXCLEAN = PARAMS.has("fixclean");
+/** Builds cannot take unsaved edits (a part included through a macro) (?leftout). */
+const LEFTOUT = PARAMS.has("leftout");
+/** No LibreOffice: a PowerPoint figure comes as its drawing (?nolo). */
+const NOLO = PARAMS.has("nolo");
+/** A provider of no particular service, for the user guide's pictures. */
+const NEUTRAL = PARAMS.has("neutral");
+const RELAY = NEUTRAL
+  ? { name: "OpenAI (GPT-5)", url: "https://api.openai.com/v1", host: "api.openai.com", model: "gpt-5", file: "BiWrite" }
+  : { name: "AnyRouter (GPT-6 Astra)", url: "https://anyrouter.top/v1", host: "anyrouter.top", model: "gpt-6-astra", file: "AnyRouter" };
+/** An empty materials folder. */
+const NOMATERIALS = PARAMS.has("nomaterials");
+
+const FIGURE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="80" viewBox="0 0 300 80"><rect width="100%" height="100%" fill="#fff"/><rect x="10" y="20" width="100" height="36" fill="#DCE6F2" stroke="#1F4E79"/><text x="60" y="43" font-size="12" text-anchor="middle">Paired run</text><rect x="190" y="20" width="100" height="36" fill="#fff" stroke="#404040"/><text x="240" y="43" font-size="12" text-anchor="middle">Faulty run</text><path d="M110 38H190" stroke="#404040"/></svg>';
+
+/** The figure environment a figure file of `format` is inserted as. */
+function figureEnvironment(format: string): string {
+  const file = format === "pptx" && NOLO
+    ? "\\IfFileExists{figures/fig_paired-runs.pdf}{\\includegraphics[width=\\linewidth]{figures/fig_paired-runs.pdf}}{\\fbox{\\parbox{0.9\\linewidth}{\\centering\\texttt{figures/fig\\_paired-runs.pptx}}}}"
+    : "\\includegraphics[width=\\linewidth]{figures/fig_paired-runs.pdf}";
+  return `\\begin{figure}[t]\n\\centering\n${file}\n\\caption{A faulty run and its paired run.}\n\\label{fig:paired-runs}\n\\end{figure}`;
+}
 
 const SAMPLE = `Graph neural networks can learn new tasks from a few examples in context.
 
@@ -138,6 +169,14 @@ const state = {
   deferMirror: 0,
   /** `overwrite` and `overwriteMirror` of each Save. */
   saveArgs: [] as { overwrite: boolean; overwriteMirror: boolean }[],
+  /** Answers checked by Smart apply, as asked for. */
+  checks: [] as Record<string, unknown>[],
+  /** The editor's text of each build asked for. */
+  compiled: [] as string[],
+  /** Keys given a new key in their place, by number. */
+  swapped: [] as number[],
+  /** Copies of figures saved, by kind, with the PNG's size. */
+  figureSaves: [] as { kind: string; png: number }[],
   /** Copies into a new folder asked for, with the dialog's title. */
   projectCopies: [] as { kind: "save" | "export"; title: string }[],
   revision: 1,
@@ -162,12 +201,12 @@ const state = {
       },
       {
         id: "p-relay",
-        name: "AnyRouter (GPT-6 Astra)",
+        name: RELAY.name,
         kind: "openai_compatible",
         wireApi: "responses",
         serviceTier: "priority",
-        baseUrl: "https://anyrouter.top/v1",
-        model: "gpt-6-astra",
+        baseUrl: RELAY.url,
+        model: RELAY.model,
         temperature: 0,
         effort: "high",
         keyConcurrency: 2,
@@ -177,20 +216,20 @@ const state = {
         keyNames: {},
         builtin: false,
         needsKey: true,
-        squeezable: true,
+        squeezable: !NEUTRAL,
       },
     ] as ProviderView[],
     activeProvider: ACTIVE === "mock" ? "mock" : "p-relay",
-    activeLabel: ACTIVE === "mock" ? "Mock" : "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+    activeLabel: ACTIVE === "mock" ? "Mock" : `${RELAY.name} · ${RELAY.model}`,
     concurrency: 4,
     docNote: "",
     presets: [
       {
-        name: "AnyRouter (GPT-6 Astra)",
+        name: RELAY.name,
         kind: "openai_compatible",
         wireApi: "responses",
-        baseUrl: "https://anyrouter.top/v1",
-        model: "gpt-6-astra",
+        baseUrl: RELAY.url,
+        model: RELAY.model,
         effort: "high",
         serviceTier: "priority",
         keyConcurrency: 2,
@@ -210,7 +249,7 @@ const state = {
     ],
     promptDir: "/Users/me/Library/Application Support/app.biwrite.desktop/prompts",
     assistantProvider: "",
-    assistantLabel: "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+    assistantLabel: `${RELAY.name} · ${RELAY.model}`,
     assistantReady: true,
     logDir: "/Users/me/Library/Logs/app.biwrite.desktop",
     requestLog: { enabled: true, persist: true } as LogSettings,
@@ -219,7 +258,8 @@ const state = {
     matchPool: true,
     effectiveConcurrency: 12,
     latex: { compileOnSave: true },
-    checkUpdates: true,
+    // No notice of a newer version in the README's pictures.
+    checkUpdates: !PARAMS.has("quiet"),
     closeToTray: true,
     keepAlive: true,
     version: "0.1.1",
@@ -229,6 +269,8 @@ const state = {
   offers: [] as { source: string; translation: string }[],
   /** The last assistant request (for UI tests). */
   lastAssist: null as Record<string, unknown> | null,
+  /** Reference images and papers taken from the materials folder. */
+  materialsTaken: [] as string[],
 };
 
 /** Paragraphs separated by blank lines (LaTeX blocks get a rough kind). */
@@ -423,7 +465,7 @@ function squeezeEvent(change: Record<string, unknown>): void {
   void emit("squeeze", {
     ...change,
     providerId: "p-relay",
-    providerName: "AnyRouter (GPT-6 Astra)",
+    providerName: RELAY.name,
     running: squeezeRun.running,
     through: squeezeRun.through.filter((t) => t !== null).length,
     total: POOL.length,
@@ -516,12 +558,12 @@ export function fakeRecord(over: Partial<RequestRecord> = {}): RequestRecord {
     id,
     startedAt: Date.now() - 1000 * (10 - id),
     purpose: "translate",
-    provider: "AnyRouter (GPT-6 Astra)",
+    provider: RELAY.name,
     wire: "responses",
-    endpoint: "anyrouter.top/v1/responses",
+    endpoint: `${RELAY.host}/v1/responses`,
     key: { number: ((id - 1) % 6) + 1, count: 6, tail: POOL[(id - 1) % 6].tail, fingerprint: POOL[(id - 1) % 6].fingerprint },
-    request: { model: "gpt-6-astra", effort: "high", serviceTier: "priority" },
-    response: { model: "gpt-6-astra", effort: "high", serviceTier: "default" },
+    request: { model: RELAY.model, effort: "high", serviceTier: "priority" },
+    response: { model: RELAY.model, effort: "high", serviceTier: "default" },
     httpStatus: 200,
     state: "ok",
     error: null,
@@ -541,14 +583,14 @@ function seedRecords(): void {
     fakeRecord({
       state: "error",
       error: "rate limited by the provider",
-      response: { model: "gpt-6-astra", effort: "high", serviceTier: "auto" },
+      response: { model: RELAY.model, effort: "high", serviceTier: "auto" },
       usage: { inputTokens: null, cachedTokens: null, outputTokens: null, reasoningTokens: null },
-      notes: ["stream error rate_limit_exceeded: Your requests to gpt-6-astra have exceeded token rate limit.", "key 2 of 3 set aside: retrying with another key"],
+      notes: [`stream error rate_limit_exceeded: Your requests to ${RELAY.model} have exceeded token rate limit.`, "key 2 of 3 set aside: retrying with another key"],
       durationMs: 1900,
       firstTokenMs: null,
     }),
     fakeRecord(),
-    fakeRecord({ purpose: "polish", response: { model: "gpt-6-astra-2026-09", effort: "medium", serviceTier: null } }),
+    fakeRecord({ purpose: "polish", response: { model: `${RELAY.model}-2026-09`, effort: "medium", serviceTier: null } }),
     fakeRecord({
       provider: "DeepSeek",
       wire: "chat",
@@ -619,10 +661,33 @@ We present UniClean, a cleaning system that composes operators into a pipeline a
 const TABLE =
   "\\begin{table}[t]\n  \\centering\n  \\caption{Accuracy on four benchmarks (\\%).}\n  \\label{tab:accuracy}\n  \\begin{tabular}{lrrrr}\n    \\toprule\n    Method & Cora & CiteSeer & PubMed & arXiv \\\\\n    \\midrule\n    Fine-tuned GNN & 81.5 & 70.3 & 79.0 & 71.7 \\\\\n    Prompt graph (ours) & 80.9 & 69.8 & 78.6 & 70.9 \\\\\n    \\bottomrule\n  \\end{tabular}\n\\end{table}";
 
+/** What a diagram of the paired runs shows. */
+const FIGURE_NOTES = {
+  zh: ["两个框分别是故障运行和配对运行，箭头标出两者之差。"],
+  en: ["Two boxes for the faulty run and its paired run, with an arrow for their difference."],
+};
 const TABLE_NOTES = {
   zh: ["三线表，两行方法对比四个基准，数值取自第 5 节。"],
   en: ["A booktabs table: two methods on four benchmarks, numbers from Section 5."],
 };
+
+const TIKZ =
+  "\\begin{figure}[t]\n  \\centering\n  \\begin{tikzpicture}\n    \\node[draw, fill=subsectioncolor!20] (a) {Paired run};\n    \\node[draw, right=of a] (b) {Faulty run};\n    \\draw[-{Stealth}] (a) -- (b);\n  \\end{tikzpicture}\n  \\caption{A faulty run and its paired run.}\n  \\label{fig:paired}\n\\end{figure}";
+
+/** A fix's change of line `index` (0-based) of `text` to `line`, as the backend gives it. */
+function mockHunk(text: string, index: number, line: string) {
+  const lines = text.split(/(?<=\n)/);
+  const old = lines[index];
+  const now = `${line}${old.endsWith("\n") ? "\n" : ""}`;
+  return {
+    line: index + 1,
+    old,
+    new: now,
+    before: lines.slice(Math.max(0, index - 2), index).join(""),
+    after: lines.slice(index + 1, index + 3).join(""),
+    diff: roughDiff(old, now),
+  };
+}
 
 function emitLater(delay: number, payload: unknown): void {
   setTimeout(() => void emit("assist", clone(payload)), delay);
@@ -705,6 +770,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   latex_open_folder: () => session(),
   latex_compile: async (a): Promise<BuildView> => {
     const lang = a.lang === "zh" ? "zh" : "en";
+    state.compiled.push(String(a.text));
     const record: Built = { source: sourceNow(lang), direction: state.direction };
     await wait(1200);
     built[lang] = record;
@@ -728,6 +794,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
       untranslated: zh ? 2 : 0,
       output: "",
       projectRc: null,
+      unsavedLeftOut: LEFTOUT,
     };
   },
   latex_cancel: () => null,
@@ -842,7 +909,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.ignored.mirror = false;
     return { name: "paper_zh.tex", written: true, pending: 0, changed: 1 };
   },
-  export_api_keys: () => "/Users/me/Desktop/AnyRouter-keys.txt",
+  export_api_keys: () => `/Users/me/Desktop/${RELAY.file}-keys.txt`,
   import_api_keys: () => state.settings,
   swap_languages: (a) => {
     state.swaps.push(Boolean(a.keep));
@@ -920,7 +987,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
   latex_delete_template: () => null,
   latex_reveal_templates: () => null,
   assist_start: (a) => {
-    const req = a.request as { action: string; text: string; from: number; to: number; instruction: string };
+    const req = a.request as { action: string; text: string; from: number; to: number; instruction: string; figure?: string };
+    const asFile = req.action === "figure" && LATEX && (req.figure === "pdf" || req.figure === "pptx");
     state.lastAssist = clone(a.request) as Record<string, unknown>;
     const id = nextJob++;
     let [from, to] = req.from === req.to ? paragraphAround(req.text, req.from) : [req.from, req.to];
@@ -929,8 +997,12 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const original = insert ? req.text.slice(...paragraphAround(req.text, req.from)) : req.text.slice(from, to);
     const p = POLISHED.default;
     const revision =
-      req.action === "figure"
-        ? TABLE
+      asFile
+        ? figureEnvironment(req.figure ?? "")
+        : req.action === "figure"
+        ? FIGCOLOR
+          ? TIKZ
+          : TABLE
         : req.action === "write"
           ? WRITTEN.revision
           : req.action === "ask"
@@ -950,16 +1022,18 @@ const handlers: Record<string, (args: Args) => unknown> = {
         revision,
         translation:
           req.action === "figure"
-            ? "四个基准上的准确率（%）。"
+            ? asFile || FIGCOLOR
+              ? "故障运行与配对运行。"
+              : "四个基准上的准确率（%）。"
             : req.action === "write"
               ? WRITTEN.translation
               : req.action === "ask"
                 ? null
                 : p.translation,
         changesZh:
-          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.zh : req.action === "figure" ? TABLE_NOTES.zh : p.zh,
+          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.zh : req.action === "figure" ? (asFile || FIGCOLOR ? FIGURE_NOTES : TABLE_NOTES).zh : p.zh,
         changesEn:
-          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.en : req.action === "figure" ? TABLE_NOTES.en : p.en,
+          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.en : req.action === "figure" ? (asFile || FIGCOLOR ? FIGURE_NOTES : TABLE_NOTES).en : p.en,
         answer:
           req.action === "ask"
             ? "第二句的“seems important”没有给出依据。建议改为指向结果的陈述，例如写明消息传递带来的准确率提升，并引用对应的表。"
@@ -971,18 +1045,123 @@ const handlers: Record<string, (args: Args) => unknown> = {
         usage: { inputTokens: 5210, outputTokens: 412 },
         durationMs: 9400,
         // The sample paper loads amsmath, graphicx, hyperref, natbib: the table needs booktabs.
-        missingPackages: req.action === "figure" && LATEX ? ["booktabs"] : [],
+        missingPackages: asFile ? [] : req.action === "figure" && LATEX ? [FIGCOLOR ? "tikz" : "booktabs"] : [],
+        libraries: [],
         preambleHere: req.action === "figure" && LATEX,
+        hunks: [],
+        fix: null,
+        figure: asFile
+          ? {
+              format: req.figure,
+              file: req.figure === "pptx" ? "figures/fig_paired-runs.pptx" : "figures/fig_paired-runs.pdf",
+              pdf: !(req.figure === "pptx" && NOLO),
+              pptx: req.figure === "pptx",
+              svg: req.figure === "pptx" && NOLO ? FIGURE_SVG : null,
+              export: req.figure === "pptx" && NOLO,
+            }
+          : null,
       },
     });
     return {
       id,
       target: { from, to, text: original, wholeParagraph: req.from === req.to, insert },
-      model: "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+      model: `${RELAY.name} · ${RELAY.model}`,
       skill: "research-builder d227e92",
     };
   },
   assist_cancel: () => null,
+  assist_fix: (a) => {
+    const req = a.request as { text: string; instruction: string };
+    state.lastAssist = clone({ action: "fix", ...req }) as Record<string, unknown>;
+    const id = nextJob++;
+    const lines = req.text.split("\n");
+    // A color the template defined before xcolor, else a package the tables need.
+    const colored = lines.findIndex((l) => l.includes("subsectioncolor"));
+    const begin = lines.findIndex((l) => l.trim().startsWith("\\begin{document}"));
+    const hunks = FIXCLEAN
+      ? []
+      : colored >= 0
+        ? [mockHunk(req.text, colored, lines[colored].replaceAll("subsectioncolor", "black"))]
+        : begin >= 0
+          ? [mockHunk(req.text, begin, `\\usepackage{booktabs}\n${lines[begin]}`)]
+          : [];
+    emitLater(150, { kind: "stage", id, fixing: false, round: 0 });
+    if (hunks.length) {
+      emitLater(500, { kind: "stage", id, fixing: true, round: 1 });
+      emitLater(800, { kind: "partial", id, text: "<edit>\n<find>" });
+      emitLater(1100, { kind: "stage", id, fixing: false, round: 1 });
+    }
+    emitLater(1500, {
+      kind: "done",
+      id,
+      result: {
+        revision: null,
+        translation: null,
+        changesZh: hunks.length ? ["模板的颜色在加载 xcolor 之前定义，TikZ 用不了，改用 black。"] : [],
+        changesEn: hunks.length ? ["The template defined the color before xcolor was loaded; black instead."] : [],
+        answer: null,
+        removed: [],
+        repeated: [],
+        translationMatches: false,
+        diff: [],
+        usage: { inputTokens: hunks.length ? 9120 : 0, outputTokens: hunks.length ? 210 : 0 },
+        durationMs: 1500,
+        missingPackages: [],
+        libraries: [],
+        preambleHere: false,
+        hunks,
+        fix: { before: FIXCLEAN ? 0 : 6, errors: [], rounds: hunks.length ? 1 : 0, missed: 0 },
+      },
+    });
+    return {
+      id,
+      target: { from: 0, to: 0, text: "", wholeParagraph: false, insert: false },
+      model: `${RELAY.name} · ${RELAY.model}`,
+      skill: "",
+    };
+  },
+  assist_check: (a) => {
+    const req = a.request as { id: number; revision: string; preamble: string };
+    state.checks.push(clone(a.request) as Record<string, unknown>);
+    const id = req.id;
+    const bad = req.revision.includes("subsectioncolor");
+    emitLater(150, { kind: "stage", id, fixing: false, round: 0 });
+    if (bad) {
+      emitLater(500, { kind: "stage", id, fixing: true, round: 1 });
+      emitLater(900, { kind: "stage", id, fixing: false, round: 1 });
+    }
+    const repaired = bad && !CHECKFAIL;
+    emitLater(bad ? 1300 : 600, {
+      kind: "checked",
+      id,
+      result: {
+        revision: repaired ? req.revision.replaceAll("subsectioncolor", "figBlue") : req.revision,
+        preamble: repaired
+          ? `${req.preamble}\\usetikzlibrary{arrows.meta,positioning}\n\\definecolor{figBlue}{RGB}{31,78,121}\n`
+          : req.preamble,
+        passed: !bad || repaired,
+        errors: bad && !repaired
+          ? [{ line: 52, file: "paper.tex", message: "Package xcolor Error: Undefined color model `'.", context: "" }]
+          : [],
+        before: 0,
+        rounds: bad ? 1 : 0,
+        changesZh: repaired ? ["模板颜色在 xcolor 之前定义，改用自定义颜色 figBlue，并在导言区加载箭头和定位库。"] : [],
+        changesEn: repaired ? ["The template color predates xcolor: own color figBlue, and the arrow and positioning libraries."] : [],
+        usage: { inputTokens: bad ? 8800 : 0, outputTokens: bad ? 320 : 0 },
+      },
+    });
+    return null;
+  },
+  figure_pdf: async () => (await fetch("/dev/figure.pdf")).arrayBuffer(),
+  figure_save: (a) => {
+    const png = a.png as number[] | null;
+    state.figureSaves.push({ kind: String(a.kind), png: png ? png.length : 0 });
+    return `/Users/me/papers/gnn-icl/fig_paired-runs.${String(a.kind)}`;
+  },
+  assist_check_cancel: (a) => {
+    emitLater(0, { kind: "check_failed", id: Number(a.id), message: "cancelled" });
+    return null;
+  },
   load_reference: () => ({ name: "uniclean.tex", text: UNICLEAN, chars: UNICLEAN.length, truncated: false }),
   assist_offer: (a) => {
     state.offers.push({ source: String(a.source), translation: String(a.translation) });
@@ -996,6 +1175,60 @@ const handlers: Record<string, (args: Args) => unknown> = {
       encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23b8432f'/><rect x='8' y='14' width='6' height='20' fill='white'/><rect x='17' y='8' width='6' height='26' fill='white'/><rect x='26' y='18' width='6' height='16' fill='white'/></svg>"),
   }),
   drop_attachment: () => null,
+  materials_get: () => ({
+    folder: "/Users/me/Library/Application Support/app.biwrite.desktop/materials",
+    inSkill: false,
+    counts: [
+      { name: "domain", files: 1 },
+      { name: "general", files: 0 },
+      { name: "writing-samples", files: 1 },
+      { name: "figures", files: 2 },
+      { name: "icons", files: 12 },
+    ],
+    unnamedIcons: 42,
+  }),
+  materials_reveal: () => null,
+  materials_list: () =>
+    NOMATERIALS
+      ? []
+      : [
+          { folder: "domain", path: "domain/old-paper.pdf", kind: "pdftext" },
+          { folder: "domain", path: "domain/uniclean/main.tex", kind: "text" },
+          { folder: "writing-samples", path: "writing-samples/voice.md", kind: "text" },
+          { folder: "figures", path: "figures/system.pdf", kind: "pdf" },
+          { folder: "figures", path: "figures/pipeline.png", kind: "image" },
+          { folder: "figures", path: "figures/motivation.pptx", kind: "pptx" },
+        ],
+  materials_text: (a) => {
+    state.materialsTaken.push(String(a.path));
+    return { name: "main.tex", text: UNICLEAN, chars: UNICLEAN.length, truncated: false };
+  },
+  materials_image: (a) => {
+    state.materialsTaken.push(String(a.path));
+    return {
+      id: Date.now() % 100000,
+      name: String(a.path).split("/").pop(),
+      dataUrl:
+        "data:image/svg+xml;utf8," +
+        encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%231F3864'/></svg>"),
+    };
+  },
+  materials_pdf: async (a) => {
+    state.materialsTaken.push(String(a.path));
+    // A paper reads as the sample paper, a figure as the sample figure.
+    const file = String(a.path).startsWith("figures/") ? "/dev/figure.pdf" : "/dev/sample.pdf";
+    return (await fetch(file)).arrayBuffer();
+  },
+  materials_pptx: async (a) => {
+    state.materialsTaken.push(String(a.path));
+    if (NOLO) throw "reading a PowerPoint figure needs LibreOffice";
+    return (await fetch("/dev/figure.pdf")).arrayBuffer();
+  },
+  attach_image_data: (a) => {
+    const png = String(a.png);
+    state.materialsTaken.push(`png:${String(a.name)}:${png.slice(0, 8)}:${png.length}`);
+    return { id: Date.now() % 100000, name: String(a.name), dataUrl: `data:image/png;base64,${png}` };
+  },
   get_skill: () => ({
     name: "research-builder",
     source: "https://github.com/qzkinhit/research-builder",
@@ -1062,6 +1295,19 @@ const handlers: Record<string, (args: Args) => unknown> = {
   rename_api_key: (a) => {
     state.settings.providers[1].keyNames[String(a.fingerprint)] = String(a.name);
     return state.settings;
+  },
+  replace_api_key: (a) => {
+    const key = String(a.key).trim();
+    const k = POOL[Number(a.number) - 1];
+    if (!k || k.tail !== String(a.tail)) throw new Error("the keys have changed; reopen the settings and try again");
+    if (!key || /\s/.test(key)) throw new Error("paste one key");
+    const names = state.settings.providers[1].keyNames;
+    const fresh = `ff${Date.now().toString(16).slice(-10)}`;
+    if (names[k.fingerprint]) names[fresh] = names[k.fingerprint];
+    delete names[k.fingerprint];
+    Object.assign(k, { fingerprint: fresh, tail: key.slice(-4), lastThrough: null, state: "idle" });
+    state.swapped.push(Number(a.number));
+    return clone(state.settings);
   },
   test_api_key: () => "图神经网络可以从上下文中的少量示例学习新任务。",
   set_active_provider: (a) => {
@@ -1162,7 +1408,7 @@ export function installMockBackend(): void {
       httpStatus: 200,
       durationMs: 8123,
       firstTokenMs: 5000,
-      response: { model: "gpt-6-astra", effort: "high", serviceTier: "default" },
+      response: { model: RELAY.model, effort: "high", serviceTier: "default" },
       usage: { inputTokens: 95, cachedTokens: 64, outputTokens: 120, reasoningTokens: 99 },
     });
     void emit("request-log", clone(done));

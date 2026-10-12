@@ -19,6 +19,9 @@
   let message = $state<{ ok: boolean; text: string } | null>(null);
   let loaded = $state(false);
   let squeeze = $state<SqueezeView | null>(null);
+  /** The key a new one is being pasted for (by fingerprint), and the paste. */
+  let swapping = $state<string | null>(null);
+  let fresh = $state("");
   /** Keep the keys that got through alive (a setting for every provider). */
   let keepAlive = $state<boolean | null>(null);
 
@@ -85,7 +88,8 @@
     const minutes = Math.floor((now - ms) / 60_000);
     if (minutes < 1) return t("squeeze.agoNow");
     if (minutes < 60) return t("squeeze.agoMin", { n: minutes });
-    return t("squeeze.agoHour", { n: Math.floor(minutes / 60) });
+    if (minutes < 48 * 60) return t("squeeze.agoHour", { n: Math.floor(minutes / 60) });
+    return t("squeeze.agoDay", { n: Math.floor(minutes / (24 * 60)) });
   }
 
   /** A key that got through and was not answered for five minutes may
@@ -119,6 +123,24 @@
       onchange(view);
       k.name = name;
     }
+  }
+
+  /** Paste a new key for this one (a new key of the same account). */
+  function startSwap(k: KeyEntry): void {
+    swapping = swapping === k.fingerprint ? null : k.fingerprint;
+    fresh = "";
+  }
+
+  async function swap(k: KeyEntry): Promise<void> {
+    const view = await act(`swap-${k.fingerprint}`, () =>
+      settingsIpc.replaceKey(provider.id, k.number, k.tail, fresh),
+    );
+    if (!view) return;
+    swapping = null;
+    fresh = "";
+    onchange(view);
+    await reload();
+    message = { ok: true, text: t("keys.swapped", { n: k.number }) };
   }
 
   async function store(mode: "add" | "replace"): Promise<void> {
@@ -310,19 +332,44 @@
           </span>
         {:else if squeeze?.running && sq && !sq.refused && !sq.throughSince}
           <span class="state" title={sq.lastError ?? ""}>{t("squeeze.trying", { n: sq.tries + (sq.trying ? 1 : 0) })}</span>
+        {:else if provider.squeezable && k.lastThrough === null && k.state !== "ready" && !sq?.refused}
+          <span class="state never" title={sq?.lastError ?? k.detail ?? ""}>{t("keys.neverThrough")}</span>
         {:else}
-          <span class="state" title={sq?.lastError ?? k.detail ?? ""}>
+          <span
+            class="state"
+            title={sq?.lastError ??
+              k.detail ??
+              (provider.squeezable && k.lastThrough ? t("keys.lastThrough", { ago: ago(k.lastThrough) }) : "")}
+          >
             {t(stateLabel[sq?.refused ? "rejected" : k.state])}
           </span>
         {/if}
         <span class="num mono">{k.inFlight}</span>
         <span class="actions">
+          <button class="btn" class:on={swapping === k.fingerprint} onclick={() => startSwap(k)} disabled={!!busy}>
+            {t("keys.swap")}
+          </button>
           <button class="btn" onclick={() => test(k)} disabled={!!busy}>
             {busy === `test-${k.fingerprint}` ? t("common.testing") : t("common.test")}
           </button>
           <button class="remove" onclick={() => remove(k)} disabled={!!busy} aria-label={t("common.remove")}>✕</button>
         </span>
       </div>
+      {#if swapping === k.fingerprint}
+        <div class="swap row">
+          <input
+            class="input mono"
+            type="password"
+            bind:value={fresh}
+            placeholder={t("keys.swapPaste")}
+            autocomplete="off"
+            spellcheck="false"
+            onkeydown={(e) => e.key === "Enter" && fresh.trim() && swap(k)}
+          />
+          <button class="btn primary" onclick={() => swap(k)} disabled={!!busy || !fresh.trim()}>{t("common.save")}</button>
+          <button class="btn" onclick={() => startSwap(k)} disabled={!!busy}>{t("common.cancel")}</button>
+        </div>
+      {/if}
     {:else}
       <p class="empty">{loaded ? t("keys.empty") : "…"}</p>
     {/each}
@@ -439,7 +486,7 @@
   .head,
   .entry {
     display: grid;
-    grid-template-columns: 28px minmax(120px, 1fr) 90px minmax(110px, 0.8fr) 70px 110px;
+    grid-template-columns: 28px minmax(110px, 1fr) 90px minmax(110px, 0.8fr) 60px 160px;
     gap: 10px;
     align-items: center;
   }
@@ -493,6 +540,21 @@
   }
   .entry[data-squeeze="trying"] .state {
     color: var(--accent);
+  }
+  .state.never {
+    color: var(--error);
+  }
+  .actions .btn.on {
+    background: var(--paper-2);
+  }
+  .swap {
+    gap: 6px;
+    padding: 6px 0 8px 38px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .swap .input {
+    flex: 1;
+    min-width: 0;
   }
   .actions {
     display: inline-flex;

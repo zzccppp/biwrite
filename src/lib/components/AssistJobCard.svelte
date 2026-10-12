@@ -2,13 +2,19 @@
   import { type AssistJob, ACTION_LABEL } from "../assist.svelte";
   import { t } from "../i18n.svelte";
   import { formatCount, formatDuration } from "../logFormat";
-  import type { AssistResult } from "../types";
+  import type { AssistResult, FigureView, FixReport, TexError } from "../types";
+  import FigurePreview from "./FigurePreview.svelte";
 
   interface Props {
     job: AssistJob;
     /** The job's document is no longer open. */
     stale: boolean;
+    /** A LaTeX file that compiles: Smart apply builds it. */
+    latex: boolean;
     onaccept: (job: AssistJob) => void;
+    /** Apply after building the document with the answer in it (repaired if need be). */
+    onsmartapply: (job: AssistJob) => void;
+    oncancelcheck: (job: AssistJob) => void;
     /** Undo an applied job's change, wherever later edits put it. */
     onrevert: (job: AssistJob) => void;
     ondiscard: (job: AssistJob) => void;
@@ -22,11 +28,33 @@
     onstop: (job: AssistJob) => void;
   }
 
-  let { job, stale, onaccept, onrevert, ondiscard, onremove, onagain, onreapply, onfollowup, onfocus, onstop }: Props =
-    $props();
+  let {
+    job,
+    stale,
+    latex,
+    onaccept,
+    onsmartapply,
+    oncancelcheck,
+    onrevert,
+    ondiscard,
+    onremove,
+    onagain,
+    onreapply,
+    onfollowup,
+    onfocus,
+    onstop,
+  }: Props = $props();
 
   let followUp = $state("");
   let copied = $state(false);
+  /** What saving a copy of a figure said. */
+  let figureNote = $state<string | null>(null);
+
+  /** The files a figure's save writes. */
+  function files(f: FigureView): string {
+    if (f.pdf && f.pptx) return `${f.file.replace(/\.pptx$/, ".pdf")}, ${f.file}`;
+    return f.file;
+  }
   /** An applied, discarded or kept card shows its result again. */
   let expanded = $state(false);
   const finished = $derived(job.state === "applied" || job.state === "discarded");
@@ -43,7 +71,39 @@
 
   const r = $derived(job.result);
   const unchanged = $derived(!!r?.revision && r.revision.trim() === job.target.text.trim());
-  const preview = $derived(job.target.text.replace(/\s+/g, " ").slice(0, 90));
+  const preview = $derived(
+    job.action === "fix" ? t("assist.target.document") : job.target.text.replace(/\s+/g, " ").slice(0, 90),
+  );
+  /** The answer as it would be applied: repaired by the last check, if any. */
+  const revision = $derived(job.check?.revision ?? r?.revision ?? null);
+  const smart = $derived(latex && !!r?.revision && !unchanged && job.action !== "ask" && job.action !== "fix");
+  /** The lines applying adds before \begin{document}: those Smart apply
+   * settled on, or the packages and TikZ libraries a figure needs. */
+  const preamble = $derived.by(() => {
+    if (job.check) return job.check.preamble.trim();
+    if (job.action !== "figure" || !r?.preambleHere) return "";
+    const lines = r.missingPackages.map((p) => `\\usepackage{${p}}`);
+    if (r.libraries.length) lines.push(`\\usetikzlibrary{${r.libraries.join(",")}}`);
+    return lines.join("\n");
+  });
+  /** What a revert that found the text edited lists: the text from before. */
+  const before = $derived(
+    job.action === "fix" ? (job.applied?.hunks ?? []).map((h) => h.old).join("…\n") : job.target.text,
+  );
+
+  function stage(s: { fixing: boolean; round: number }): string {
+    return s.fixing ? t("assist.stage.fixing", { n: s.round }) : t("assist.stage.building");
+  }
+
+  function fixSummary(f: FixReport): string {
+    if (f.before === 0) return t("assist.fix.clean");
+    if (!f.errors.length) return t("assist.fix.passed", { n: f.before });
+    return t("assist.fix.left", { n: f.before, left: f.errors.length });
+  }
+
+  function where(e: TexError): string {
+    return e.line ? t("assist.atLine", { n: e.line }) : e.file ? `${e.file}: ` : "";
+  }
 
   async function copy(text: string): Promise<void> {
     try {
@@ -78,7 +138,11 @@
     <div class="streaming">
       <span class="spinner" aria-hidden="true"></span>
       <span class="label"
-        >{job.retry ? t("assist.retrying", { n: job.retry.attempt, of: job.retry.of }) : t("assist.running")}</span
+        >{job.retry
+          ? t("assist.retrying", { n: job.retry.attempt, of: job.retry.of })
+          : job.stage
+            ? stage(job.stage)
+            : t("assist.running")}</span
       >
       <button class="btn small" onclick={() => onstop(job)}>{t("assist.stop")}</button>
     </div>
@@ -91,7 +155,17 @@
     </div>
   {:else if finished}
     <div class="row">
-      <p class="note">{t(job.state === "applied" ? "assist.applied" : "assist.discarded")}</p>
+      <p class="note">
+        {t(
+          job.state !== "applied"
+            ? "assist.discarded"
+            : !job.check?.passed
+              ? "assist.applied"
+              : job.check.rounds
+                ? "assist.appliedRepaired"
+                : "assist.appliedChecked",
+        )}
+      </p>
       <span class="spacer"></span>
       {#if r}
         <button class="btn small" aria-expanded={expanded} onclick={() => (expanded = !expanded)}
@@ -103,12 +177,12 @@
       {/if}
       <button class="btn small" onclick={() => onremove(job)}>{t("common.delete")}</button>
     </div>
-    {#if job.state === "applied" && job.revertBlocked && !job.target.insert}
+    {#if job.state === "applied" && job.revertBlocked && !job.target.insert && before}
       <section class="original">
         <h4 class="smallcaps">{t("assist.original")}</h4>
-        <p class="answer">{job.target.text}</p>
+        <p class="answer" class:code={job.action === "fix"}>{before}</p>
         <div class="row">
-          <button class="btn small" onclick={() => copy(job.target.text)}>
+          <button class="btn small" onclick={() => copy(before)}>
             {copied ? t("assist.copied") : t("assist.copy")}
           </button>
         </div>
@@ -135,6 +209,12 @@
         <span class="spacer"></span>
         <button class="btn small" onclick={() => onremove(job)}>{t("common.delete")}</button>
       </div>
+    {:else if job.conflict && job.action === "fix"}
+      <p class="warn">{t("assist.fix.moved")}</p>
+      <div class="row">
+        <button class="btn small primary" disabled={job.restarting} onclick={() => onagain(job)}>{t("assist.again")}</button>
+        <button class="btn small" onclick={() => ondiscard(job)}>{t("assist.discard")}</button>
+      </div>
     {:else if job.conflict}
       <p class="warn">{job.to > job.from ? t("assist.conflict") : t("assist.gone")}</p>
       <div class="row">
@@ -143,16 +223,38 @@
         {/if}
         <button class="btn small" onclick={() => ondiscard(job)}>{t("assist.discard")}</button>
       </div>
+    {:else if job.checking}
+      <div class="streaming">
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="label">{stage(job.checking)}</span>
+        <button class="btn small" onclick={() => oncancelcheck(job)}>{t("assist.stop")}</button>
+      </div>
     {:else}
+      {#if job.check && !job.check.passed}
+        <section class="left">
+          <p class="warn">{t("assist.check.left", { n: job.check.errors.length })}</p>
+          <ul class="errors">
+            {#each job.check.errors.slice(0, 6) as e, i (i)}<li>{where(e)}{e.message}</li>{/each}
+          </ul>
+        </section>
+      {/if}
+      {#if job.checkError}
+        <p class="error">{t("assist.check.failed", { error: job.checkError })}</p>
+      {/if}
       <div class="row">
-        {#if r.revision && !unchanged && job.action !== "ask"}
+        {#if job.action === "fix" ? !!r.hunks.length : r.revision && !unchanged && job.action !== "ask"}
           <button class="btn small primary" disabled={job.applying || job.restarting} onclick={() => onaccept(job)}>
             {job.target.insert ? t("assist.insert") : t("assist.accept")}
           </button>
         {/if}
+        {#if smart}
+          <button class="btn small" disabled={job.applying || job.restarting} onclick={() => onsmartapply(job)}>
+            {t("assist.smartApply")}
+          </button>
+        {/if}
         <button class="btn small" disabled={job.restarting} onclick={() => onagain(job)}>{t("assist.again")}</button>
-        {#if r.revision || r.answer}
-          <button class="btn small" onclick={() => copy(r.revision ?? r.answer ?? "")}>
+        {#if (revision || r.answer) && job.action !== "fix"}
+          <button class="btn small" onclick={() => copy(revision ?? r.answer ?? "")}>
             {copied ? t("assist.copied") : t("assist.copy")}
           </button>
         {/if}
@@ -184,24 +286,50 @@
     </section>
   {/if}
 
-  {#if r.revision}
+  {#if job.action === "fix" && r.fix}
+    <p class="note">{fixSummary(r.fix)}</p>
+    {#each r.hunks as h, i (i)}
+      <section>
+        <h4 class="smallcaps">{t("assist.line", { n: h.line })}</h4>
+        <pre class="code diff">{#each h.diff as part, k (k)}<span class={part.kind}>{part.text}</span>{/each}</pre>
+      </section>
+    {/each}
+    {#if r.fix.errors.length}
+      <section>
+        <h4 class="smallcaps">{t("assist.fix.errors")}</h4>
+        <ul class="errors">
+          {#each r.fix.errors.slice(0, 6) as e, i (i)}<li>{where(e)}{e.message}</li>{/each}
+        </ul>
+      </section>
+    {/if}
+  {/if}
+
+  {#if revision}
     {#if job.action === "figure"}
-      <pre class="code">{r.revision}</pre>
+      {#if r.figure}
+        <FigurePreview id={job.id} figure={r.figure} onnote={(text) => (figureNote = text)} />
+        <p class="note">{t("assist.figure.file", { file: files(r.figure) })}</p>
+        {#if r.figure.export}
+          <p class="warn">{t("assist.figure.export", { pptx: r.figure.file })}</p>
+        {/if}
+        {#if figureNote}<p class="note">{figureNote}</p>{/if}
+      {/if}
+      <pre class="code">{revision}</pre>
       {#if r.translation}
         <section>
           <h4 class="smallcaps">{t("assist.caption")}</h4>
           <p class="translation" lang="zh-CN">{r.translation}</p>
         </section>
       {/if}
-      {#if r.missingPackages.length}
+      {#if preamble}
+        <p class="warn">{t("assist.packagesAdded", { packages: preamble.split("\n").join("  ") })}</p>
+      {:else if r.missingPackages.length && !r.preambleHere}
         <p class="warn">
-          {r.preambleHere
-            ? t("assist.packagesAdded", { packages: r.missingPackages.join(", ") })
-            : t("assist.packagesNeeded", { packages: r.missingPackages.map((p) => `\\usepackage{${p}}`).join(" ") })}
+          {t("assist.packagesNeeded", { packages: r.missingPackages.map((p) => `\\usepackage{${p}}`).join(" ") })}
         </p>
       {/if}
     {:else if job.action === "write"}
-      <p class="written">{r.revision}</p>
+      <p class="written">{revision}</p>
       {#if r.translation}
         <section>
           <h4 class="smallcaps">{t("assist.translation")}</h4>
@@ -231,6 +359,18 @@
       {/if}
       {#if r.changesEn.length}
         <ul lang="en">{#each r.changesEn as c, i (i)}<li>{c}</li>{/each}</ul>
+      {/if}
+    </section>
+  {/if}
+
+  {#if job.check && (job.check.changesZh.length || job.check.changesEn.length)}
+    <section class="changes">
+      <h4 class="smallcaps">{t("assist.check.changes")}</h4>
+      {#if job.check.changesZh.length}
+        <ul lang="zh-CN">{#each job.check.changesZh as c, i (i)}<li>{c}</li>{/each}</ul>
+      {/if}
+      {#if job.check.changesEn.length}
+        <ul lang="en">{#each job.check.changesEn as c, i (i)}<li>{c}</li>{/each}</ul>
       {/if}
     </section>
   {/if}
@@ -416,6 +556,14 @@
     margin: 0;
     font-size: 12.5px;
     color: var(--error);
+  }
+  .errors {
+    margin: 2px 0 0;
+    padding-left: 18px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
   }
   .note {
     margin: 0;

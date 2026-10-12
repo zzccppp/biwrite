@@ -36,6 +36,11 @@ pub struct ProviderEntry {
     /// Names of the pool's keys, by key fingerprint (never the key itself).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub key_names: BTreeMap<String, String>,
+    /// When each key of the pool was last answered by a relay that turns
+    /// keys away (Unix milliseconds), by key fingerprint: a key without one
+    /// never got through.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub key_through: BTreeMap<String, u64>,
     /// Keychain items the keys after the first take (see `secrets`).
     /// Versions that store them in one item drop it.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -202,6 +207,7 @@ fn mock_entry() -> ProviderEntry {
         has_key: false,
         key_count: 0,
         key_names: BTreeMap::new(),
+        key_through: Default::default(),
         key_parts: 0,
     }
 }
@@ -547,6 +553,7 @@ mod tests {
             has_key: true,
             key_count: 2,
             key_names: BTreeMap::new(),
+            key_through: Default::default(),
             key_parts: 0,
         }
     }

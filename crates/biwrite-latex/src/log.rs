@@ -154,9 +154,111 @@ pub fn parse(log: &str) -> Vec<Issue> {
     out
 }
 
+/// An error of a log with what TeX printed after it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ErrorContext {
+    /// Source file as the log names it.
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub message: String,
+    /// The lines after the message up to the one where TeX stopped reading
+    /// (`l.<n> …`) and the one after it, which together show the source
+    /// line split where TeX stopped. Help text is left out.
+    pub context: String,
+}
+
+/// Help text TeX and LaTeX print after an error.
+fn help_text(line: &str) -> bool {
+    let t = line.trim();
+    t.is_empty()
+        || t == "..."
+        || t.starts_with("See the ") && t.ends_with("explanation.")
+        || t.starts_with("Type  H <return>")
+        || t.starts_with("Type X to quit")
+        || t.starts_with("Try typing  <return>")
+}
+
+/// The errors of `log` with their context, in the order TeX met them, the
+/// same error at the same place once. At most `max`.
+pub fn error_contexts(log: &str, max: usize) -> Vec<ErrorContext> {
+    let lines: Vec<&str> = log.lines().collect();
+    let mut out: Vec<ErrorContext> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if out.len() >= max {
+            break;
+        }
+        let (file, mut at, message) = match file_line_error(line) {
+            Some((file, n, message)) => (Some(file), Some(n), message),
+            None => match line.strip_prefix("! ") {
+                Some(message) => (None, None, message.trim().to_owned()),
+                None => continue,
+            },
+        };
+        let mut context = Vec::new();
+        for (k, l) in lines.iter().enumerate().skip(i + 1).take(14) {
+            if file_line_error(l).is_some() || l.starts_with("! ") {
+                break;
+            }
+            if let Some(rest) = l.strip_prefix("l.") {
+                if at.is_none() {
+                    at = rest
+                        .split(|c: char| !c.is_ascii_digit())
+                        .next()
+                        .and_then(|n| n.parse().ok());
+                }
+                context.push(*l);
+                if let Some(next) = lines.get(k + 1).filter(|n| !n.trim().is_empty()) {
+                    context.push(next);
+                }
+                break;
+            }
+            if !help_text(l) {
+                context.push(*l);
+            }
+        }
+        let error = ErrorContext {
+            file,
+            line: at,
+            message,
+            context: context.join("\n"),
+        };
+        if !out
+            .iter()
+            .any(|e| e.file == error.file && e.line == error.line && e.message == error.message)
+        {
+            out.push(error);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn errors_come_with_the_lines_tex_printed_after_them() {
+        let log = "(./main.tex\n./main.tex:18: Package xcolor Error: Undefined color model `'.\n\nSee the xcolor package documentation for explanation.\nType  H <return>  for immediate help.\n ...                                              \n                                                  \nl.18 \\node[fill=subsectioncolor] (a) {A};\n                                         \n./main.tex:18: Undefined control sequence.\n\\XC@getmodel ...\nl.18 \\node[fill=subsectioncolor]\n                                  (a) {A};\n./main.tex:18: Undefined control sequence.\n\\XC@getmodel ...\nl.18 \\node[fill=subsectioncolor]\n                                  (a) {A};\n! Emergency stop.\n<*> main.tex\n";
+        let errors = error_contexts(log, 10);
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert_eq!(errors[0].file.as_deref(), Some("main.tex"));
+        assert_eq!(errors[0].line, Some(18));
+        assert_eq!(
+            errors[0].message,
+            "Package xcolor Error: Undefined color model `'."
+        );
+        assert_eq!(
+            errors[0].context,
+            "l.18 \\node[fill=subsectioncolor] (a) {A};"
+        );
+        assert_eq!(
+            errors[1].context,
+            "\\XC@getmodel ...\nl.18 \\node[fill=subsectioncolor]\n                                  (a) {A};"
+        );
+        assert_eq!(errors[2].message, "Emergency stop.");
+        assert_eq!(errors[2].file, None);
+        assert_eq!(error_contexts(log, 1).len(), 1);
+    }
 
     const LOG: &str = r"This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023)
 (./main.tex

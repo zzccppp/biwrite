@@ -11,6 +11,7 @@ import type {
   AttachmentView,
   BuildView,
   CacheView,
+  CheckRequest,
   ClearedView,
   Direction,
   DiskView,
@@ -40,6 +41,8 @@ import type {
   SessionView,
   SettingsView,
   SkillInfo,
+  MaterialEntry,
+  MaterialsView,
   Snapshot,
   SqueezeEvent,
   SqueezeView,
@@ -134,6 +137,9 @@ export const settingsIpc = {
   listKeys: (id: string) => invoke<KeyEntry[]>("list_api_keys", { id }),
   renameKey: (id: string, fingerprint: string, name: string) =>
     invoke<SettingsView>("rename_api_key", { id, fingerprint, name }),
+  /** A new key in place of key `number` (its tail checked), keeping its name. */
+  replaceKey: (id: string, number: number, tail: string, key: string) =>
+    invoke<SettingsView>("replace_api_key", { id, number, tail, key }),
   testKey: (id: string, fingerprint: string) => invoke<string>("test_api_key", { id, fingerprint }),
   squeezeStatus: (id: string) => invoke<SqueezeView>("squeeze_status", { id }),
   squeezeStart: (id: string) => invoke<SqueezeView>("squeeze_start", { id }),
@@ -165,6 +171,16 @@ export const settingsIpc = {
 export const assistIpc = {
   start: (request: AssistRequest) => invoke<AssistStarted>("assist_start", { request }),
   cancel: (id: number) => invoke<void>("assist_cancel", { id }),
+  /** Make the document compile: TeX's errors go to the model, a few rounds at most. */
+  fix: (text: string, instruction: string) => invoke<AssistStarted>("assist_fix", { request: { text, instruction } }),
+  /** Check (and repair) an answer before it is applied; the result comes as an event. */
+  check: (request: CheckRequest) => invoke<void>("assist_check", { request }),
+  checkCancel: (id: number) => invoke<void>("assist_check_cancel", { id }),
+  /** The PDF a figure job made. */
+  figurePdf: (id: number) => invoke<ArrayBuffer>("figure_pdf", { id }),
+  /** Save a copy of a figure job's file (`png`: the preview drawn as PNG). */
+  figureSave: (id: number, kind: "pdf" | "pptx" | "png", png: number[] | null = null) =>
+    invoke<string | null>("figure_save", { id, kind, png }),
   /** Hand the engine an approved translation before the edit is applied. */
   offer: (source: string, translation: string) => invoke<void>("assist_offer", { source, translation }),
   attachImage: () => invoke<AttachmentView | null>("attach_image"),
@@ -176,6 +192,18 @@ export const assistIpc = {
   chooseSkillFolder: () => invoke<SkillInfo | null>("choose_skill_folder"),
   resetSkillFolder: () => invoke<SkillInfo>("reset_skill_folder"),
   revealSkill: () => invoke<void>("reveal_skill"),
+  /** The author's own materials, in the folders of the skill's. */
+  materials: () => invoke<MaterialsView>("materials_get"),
+  /** The papers and figures of the materials, to take as references. */
+  listMaterials: () => invoke<MaterialEntry[]>("materials_list"),
+  materialText: (path: string) => invoke<ReferenceView>("materials_text", { path }),
+  materialImage: (path: string) => invoke<AttachmentView>("materials_image", { path }),
+  materialPdf: (path: string) => invoke<ArrayBuffer>("materials_pdf", { path }),
+  /** A PowerPoint figure as a PDF (LibreOffice converts it). */
+  materialPptx: (path: string) => invoke<ArrayBuffer>("materials_pptx", { path }),
+  /** A reference image drawn here (a PDF's first page), as a PNG in base64. */
+  attachImageData: (name: string, png: string) => invoke<AttachmentView>("attach_image_data", { name, png }),
+  revealMaterials: () => invoke<void>("materials_reveal"),
 };
 
 /** LaTeX: builds, the PDF, SyncTeX, project files and templates. Folders

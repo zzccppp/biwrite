@@ -484,7 +484,8 @@ until `write_mirror` with `overwrite`. A file gone is not a change (saving
 puts it back); one no longer UTF-8 is; a write of ours that landed though it
 reported a failure is not. Texts are compared after decoding, so a change of
 line endings or BOM alone is no change (a save writes the app's back). Builds map PDF clicks against the file
-as TeX read it from disk (`latex_commands::as_on_disk`).
+as TeX read it from disk (`latex_commands::as_on_disk`) when the files as
+saved are built (unsaved edits are built from a staged copy instead).
 
 ## Version 0.2
 

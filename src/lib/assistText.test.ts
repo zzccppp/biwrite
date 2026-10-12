@@ -8,6 +8,7 @@ import {
   insertEdges,
   insertionAt,
   mapPlace,
+  newPreambleLines,
   notLoaded,
   type Place,
   reapplyInstruction,
@@ -158,4 +159,12 @@ test("assist: another card's paragraph or a new one after an inserted paragraph 
 test("assist: a package after an escaped line break and a comment sign counts as not loaded", () => {
   assert.deepEqual(notLoaded("a\\\\% \\usepackage{tikz}\n", ["tikz"]), ["tikz"]);
   assert.deepEqual(notLoaded("100\\% \\usepackage{tikz}\n", ["tikz"]), []);
+});
+
+test("assist: lines for the preamble that it has already are not added again", () => {
+  const preamble = "\\documentclass{article}\n\\usepackage{booktabs,graphicx}\n\\usetikzlibrary{arrows.meta}\n% \\usepackage{tikz}\n";
+  const lines = "\\usepackage{booktabs}\n\\usepackage{tikz,graphicx}\n\\usetikzlibrary{arrows.meta}\n\\usetikzlibrary{positioning}\n";
+  assert.equal(newPreambleLines(preamble, lines), "\\usepackage{tikz}\n\\usetikzlibrary{positioning}\n");
+  assert.equal(newPreambleLines(preamble, "\\usepackage{booktabs}\n"), "");
+  assert.equal(newPreambleLines("", "\\usepackage[table]{xcolor}\n"), "\\usepackage[table]{xcolor}\n");
 });
