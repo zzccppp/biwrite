@@ -67,6 +67,10 @@ const SQUEEZE = Number(PARAMS.get("squeeze") ?? 3);
 const FIGCOLOR = PARAMS.has("figcolor");
 /** The check of an answer cannot repair it (?checkfail). */
 const CHECKFAIL = PARAMS.has("checkfail");
+/** Accept cannot check (the model unreachable). */
+const CHECKERROR = PARAMS.has("checkerror");
+/** Smart revert cannot check the preamble lines (model and build down). */
+const TIDYFAIL = PARAMS.has("tidyfail");
 /** The document compiles without errors, so a fix has nothing to do (?fixclean). */
 const FIXCLEAN = PARAMS.has("fixclean");
 /** Builds cannot take unsaved edits (a part included through a macro) (?leftout). */
@@ -169,7 +173,7 @@ const state = {
   deferMirror: 0,
   /** `overwrite` and `overwriteMirror` of each Save. */
   saveArgs: [] as { overwrite: boolean; overwriteMirror: boolean }[],
-  /** Answers checked by Smart apply, as asked for. */
+  /** Answers checked by Accept, as asked for. */
   checks: [] as Record<string, unknown>[],
   /** The editor's text of each build asked for. */
   compiled: [] as string[],
@@ -262,6 +266,8 @@ const state = {
     checkUpdates: !PARAMS.has("quiet"),
     closeToTray: true,
     keepAlive: true,
+    keepAliveForever: true,
+    assistedApply: true,
     version: "0.1.1",
   } as SettingsView,
   records: [] as RequestRecord[],
@@ -269,6 +275,12 @@ const state = {
   offers: [] as { source: string; translation: string }[],
   /** The last assistant request (for UI tests). */
   lastAssist: null as Record<string, unknown> | null,
+  /** Per key of the pool (by index): when its latest keep-alive was
+   * answered, and whether one is being tried again. */
+  keptAt: [] as (number | null)[],
+  keepRetrying: [] as boolean[],
+  /** The preamble lines each smart revert was asked to check. */
+  tidies: [] as string[],
   /** Reference images and papers taken from the materials folder. */
   materialsTaken: [] as string[],
 };
@@ -447,7 +459,10 @@ function squeezeView() {
       : POOL.map((k, i) => ({
           fingerprint: k.fingerprint,
           throughSince: squeezeRun.through[i],
-          lastOk: squeezeRun.through[i],
+          lastOk: state.keptAt[i] ?? squeezeRun.through[i],
+          // Set by a test: the latest keep-alive, or one being tried again.
+          keptAt: squeezeRun.through[i] === null ? null : (state.keptAt[i] ?? null),
+          keepRetrying: squeezeRun.through[i] !== null && !!state.keepRetrying[i],
           tries: squeezeRun.tries[i],
           trying: squeezeRun.running && squeezeRun.through[i] === null && !(i === 5 && squeezeRun.tries[i] > 0),
           refused: i === 5 && squeezeRun.tries[i] > 0,
@@ -817,6 +832,27 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.paired = false;
     return null;
   },
+  // How a file changed on disk: a line the other program rewrote.
+  disk_diff: (a) => {
+    const changed = a.which === "mirror" ? state.paired && state.disk.mirror : state.disk.document !== null;
+    if (!changed) return [];
+    const before = a.which === "mirror" ? "我们给出肯定的回答。" : "We answer this question affirmatively.";
+    const after = a.which === "mirror" ? "我们的回答是肯定的。" : "We answer this question in the affirmative.";
+    return [
+      {
+        line: 31,
+        old: `${before}\n`,
+        new: `${after}\n`,
+        before: "",
+        after: "",
+        diff: [
+          { kind: "delete", text: before },
+          { kind: "insert", text: after },
+          { kind: "equal", text: "\n" },
+        ],
+      },
+    ];
+  },
   check_disk: () => {
     const document = state.disk.document !== null && state.disk.document !== state.ignored.document;
     const mirror = state.paired && state.disk.mirror && !state.ignored.mirror;
@@ -953,6 +989,14 @@ const handlers: Record<string, (args: Args) => unknown> = {
   set_keep_alive: (a) => {
     state.settings.keepAlive = Boolean(a.on);
     if (squeezeRun.started !== null) squeezeEvent({ kind: "kept" });
+    return clone(state.settings);
+  },
+  set_assisted_apply: (a) => {
+    state.settings.assistedApply = Boolean(a.on);
+    return clone(state.settings);
+  },
+  set_keep_alive_forever: (a) => {
+    state.settings.keepAliveForever = Boolean(a.on);
     return clone(state.settings);
   },
   set_tray_language: () => null,
@@ -1121,17 +1165,24 @@ const handlers: Record<string, (args: Args) => unknown> = {
     };
   },
   assist_check: (a) => {
-    const req = a.request as { id: number; revision: string; preamble: string };
+    const req = a.request as { id: number; revision: string; preamble: string; fit?: boolean };
     state.checks.push(clone(a.request) as Record<string, unknown>);
     const id = req.id;
     const bad = req.revision.includes("subsectioncolor");
-    emitLater(150, { kind: "stage", id, fixing: false, round: 0 });
+    // The model fits it first (and leaves it as it is here), then the build.
+    const fit = req.fit ? 400 : 0;
+    if (req.fit) emitLater(100, { kind: "stage", id, fixing: true, round: 0 });
+    if (CHECKERROR) {
+      emitLater(fit + 300, { kind: "check_failed", id, message: "provider server error (HTTP 503)" });
+      return null;
+    }
+    emitLater(fit + 150, { kind: "stage", id, fixing: false, round: 0 });
     if (bad) {
-      emitLater(500, { kind: "stage", id, fixing: true, round: 1 });
-      emitLater(900, { kind: "stage", id, fixing: false, round: 1 });
+      emitLater(fit + 500, { kind: "stage", id, fixing: true, round: 1 });
+      emitLater(fit + 900, { kind: "stage", id, fixing: false, round: 1 });
     }
     const repaired = bad && !CHECKFAIL;
-    emitLater(bad ? 1300 : 600, {
+    emitLater(fit + (bad ? 1300 : 600), {
       kind: "checked",
       id,
       result: {
@@ -1145,6 +1196,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
           : [],
         before: 0,
         rounds: bad ? 1 : 0,
+        fitted: false,
         changesZh: repaired ? ["模板颜色在 xcolor 之前定义，改用自定义颜色 figBlue，并在导言区加载箭头和定位库。"] : [],
         changesEn: repaired ? ["The template color predates xcolor: own color figBlue, and the arrow and positioning libraries."] : [],
         usage: { inputTokens: bad ? 8800 : 0, outputTokens: bad ? 320 : 0 },
@@ -1157,6 +1209,31 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const png = a.png as number[] | null;
     state.figureSaves.push({ kind: String(a.kind), png: png ? png.length : 0 });
     return `/Users/me/papers/gnn-icl/fig_paired-runs.${String(a.kind)}`;
+  },
+  // Smart revert, as the model would judge: a line goes unless what is left
+  // after \begin{document} uses it (a table's rules for booktabs, a picture
+  // for tikz and its libraries, a colour's name).
+  assist_tidy: async (a) => {
+    const req = a.request as { text: string; lines: string };
+    state.tidies.push(req.lines);
+    await wait(700);
+    if (TIDYFAIL) throw "the model could not check the lines: provider server error (HTTP 503)";
+    const body = req.text.slice(Math.max(0, req.text.indexOf("\\begin{document}")));
+    const remove: string[] = [];
+    const kept: string[] = [];
+    for (const s of req.lines.split("\n").filter((l) => l.trim())) {
+      const pkg = /\\usepackage\{([^}]*)\}/.exec(s)?.[1];
+      const colour = /\\definecolor\{([^}]*)\}/.exec(s)?.[1];
+      const used = pkg === "booktabs"
+        ? /\\(toprule|midrule|bottomrule|cmidrule)/.test(body)
+        : pkg === "tikz" || /\\usetikzlibrary/.test(s)
+          ? /\\begin\{tikzpicture\}|\\tikz/.test(body)
+          : colour
+            ? new RegExp(`\\b${colour}\\b`).test(body)
+            : true;
+      (used ? kept : remove).push(s);
+    }
+    return { remove, kept };
   },
   assist_check_cancel: (a) => {
     emitLater(0, { kind: "check_failed", id: Number(a.id), message: "cancelled" });

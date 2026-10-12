@@ -14,6 +14,7 @@ pub mod packages;
 pub mod project;
 pub mod synctex;
 pub mod templates;
+pub mod tidy;
 pub mod toolchain;
 
 pub use bundle::{Bundle, bundle, copy_bundle};

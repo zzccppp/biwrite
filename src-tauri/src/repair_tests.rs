@@ -236,6 +236,7 @@ fn insertion(id: u64, text: &str, revision: &str, preamble: &str) -> CheckStart 
         revision: revision.into(),
         preamble_at: Some(begin),
         preamble: preamble.into(),
+        fit: false,
     }
 }
 
@@ -445,6 +446,7 @@ async fn a_real_paper_builds_unsaved_and_repairs_a_figure() {
         revision: figure.into(),
         preamble_at: Some(saved[..begin].encode_utf16().count()),
         preamble: String::new(),
+        fit: false,
     };
     let model = Scripted::new(&[
         "<revision>\n\\begin{figure}[t]\n\\centering\n\\begin{tikzpicture}\n\\node[draw, fill=figPaired!20] (a) {Paired run};\n\\node[draw, right=2cm of a] (b) {Faulty run};\n\\draw[->] (a) -- (b);\n\\end{tikzpicture}\n\\caption{A faulty run and its paired run.}\n\\label{fig:test-paired}\n\\end{figure}\n</revision>\n<preamble>\n\\usetikzlibrary{positioning}\n\\definecolor{figPaired}{RGB}{31,78,121}\n</preamble>\n<changes_zh>\n改用自定义颜色。\n</changes_zh>",
@@ -480,4 +482,96 @@ async fn a_real_paper_builds_unsaved_and_repairs_a_figure() {
     assert!(fixed.report.before > 0);
     assert!(fixed.report.errors.is_empty(), "{:?}", fixed.report.errors);
     assert_eq!(project_files(&dir), before, "the paper is as it was");
+}
+
+/// A model that cannot be reached.
+struct Down;
+
+impl ChatModel for Down {
+    fn label(&self) -> String {
+        "down".into()
+    }
+
+    fn complete<'a>(
+        &'a self,
+        _request: &'a ChatRequest,
+        _on_partial: PartialFn<'a>,
+    ) -> biwrite_engine::BoxFuture<'a, Result<ChatOutput, TranslateError>> {
+        Box::pin(async move {
+            Err(TranslateError::Server {
+                status: 503,
+                retry_after: None,
+            })
+        })
+    }
+
+    fn max_retries(&self) -> Option<u32> {
+        Some(0)
+    }
+}
+
+#[tokio::test]
+async fn accepting_with_the_model_down_is_an_error_before_any_build() {
+    // The frontend then applies the answer as it is.
+    let app = tauri::test::mock_app();
+    app.manage(app_state(&temp("fit-down")));
+    let state = app.state::<AppState>();
+    let start = CheckStart {
+        fit: true,
+        ..insertion(9, CLEAN, FIGURE, "\\usepackage{tikz}\n")
+    };
+    assert!(check_loop(&state, &Down, &start, &quiet()).await.is_err());
+}
+
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn accepting_fits_the_answer_with_the_model_and_then_builds_it() {
+    let dir = temp("fit");
+    let path = dir.join("main.tex");
+    std::fs::write(&path, CLEAN).unwrap();
+    let app = tauri::test::mock_app();
+    app.manage(app_state(&dir));
+    let state = app.state::<AppState>();
+    open(&state, &path);
+    settle(&state).await;
+    let before = project_files(&dir);
+
+    // The model fits it, and it compiles: no repair round.
+    let model = Scripted::new(&[
+        "<revision>\n\\begin{tikzpicture}\n\\node[fill=figA] (a) {A};\n\\end{tikzpicture}\n</revision>\n<preamble>\n\\usepackage{tikz}\n\\definecolor{figA}{RGB}{31,78,121}\n</preamble>\n<changes_zh>\n改用自定义颜色 figA。\n</changes_zh>\n<changes_en>\nOwn color figA.\n</changes_en>",
+    ]);
+    let start = CheckStart {
+        fit: true,
+        ..insertion(7, CLEAN, FIGURE, "\\usepackage{tikz}\n")
+    };
+    let result = check_loop(&state, &model, &start, &quiet()).await.unwrap();
+    assert!(result.passed, "{:?}", result.errors);
+    assert!(result.fitted);
+    assert_eq!(result.rounds, 0);
+    assert!(result.revision.contains("fill=figA"));
+    assert_eq!(result.changes_en, vec!["Own color figA."]);
+    let prompts = model.prompts();
+    assert_eq!(prompts.len(), 1);
+    assert!(
+        prompts[0].contains("Before it is applied, fit it to this document"),
+        "{}",
+        prompts[0]
+    );
+    assert!(!prompts[0].contains("<errors>"));
+
+    // The model leaves it as it is: built, it fails, and the model repairs it.
+    let model = Scripted::new(&[
+        &format!(
+            "<revision>\n{FIGURE}\n</revision>\n<preamble>\n\\usepackage{{tikz}}\n</preamble>"
+        ),
+        "<revision>\n\\begin{tikzpicture}\n\\node[fill=figB] (a) {A};\n\\end{tikzpicture}\n</revision>\n<preamble>\n\\usepackage{tikz}\n\\definecolor{figB}{RGB}{31,78,121}\n</preamble>\n<changes_zh>\n改用自定义颜色 figB。\n</changes_zh>",
+    ]);
+    let result = check_loop(&state, &model, &start, &quiet()).await.unwrap();
+    assert!(result.passed, "{:?}", result.errors);
+    assert!(!result.fitted, "unchanged by the fit");
+    assert_eq!(result.rounds, 1);
+    assert!(result.revision.contains("fill=figB"));
+    assert!(model.prompts()[1].contains("<errors>"));
+    assert_eq!(project_files(&dir), before, "the project is as it was");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

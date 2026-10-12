@@ -225,6 +225,10 @@ export interface SettingsView {
   closeToTray: boolean;
   /** Keys that got through to a relay that turns keys away are kept alive. */
   keepAlive: boolean;
+  /** Kept alive however long the author is away (else 30 minutes). */
+  keepAliveForever: boolean;
+  /** Accept and Revert go through the model and a build (LaTeX). */
+  assistedApply: boolean;
   /** This build's version. */
   version: string;
 }
@@ -290,6 +294,10 @@ export interface SqueezeKey {
   throughSince: number | null;
   /** When it was last answered (Unix ms). */
   lastOk: number | null;
+  /** When its latest keep-alive was answered (Unix ms), since it got through. */
+  keptAt: number | null;
+  /** Its latest keep-alive failed, and it is tried again shortly. */
+  keepRetrying: boolean;
   tries: number;
   trying: boolean;
   refused: boolean;
@@ -525,6 +533,13 @@ export interface FixReport {
 }
 
 /** An answer checked (and repaired) before it is applied. */
+/** Of the lines an inserted figure added before \begin{document}, those
+ * that can go with it and those the document still uses. */
+export interface Tidied {
+  remove: string[];
+  kept: string[];
+}
+
 export interface CheckResult {
   revision: string;
   /** Lines to add before \begin{document} (empty for none). */
@@ -535,6 +550,8 @@ export interface CheckResult {
   /** Errors the document had before. */
   before: number;
   rounds: number;
+  /** The model fitted the answer to the document before the build, and changed it. */
+  fitted: boolean;
   changesZh: string[];
   changesEn: string[];
   usage: { inputTokens: number; outputTokens: number };
@@ -553,6 +570,8 @@ export interface CheckRequest {
   /** Where lines go before \begin{document}, when the preamble is in the open file. */
   preambleAt: number | null;
   preamble: string;
+  /** The model fits the answer to the document before the first build. */
+  fit: boolean;
 }
 
 export type AssistEvent =

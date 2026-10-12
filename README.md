@@ -52,7 +52,7 @@ BiWrite 是一个中英双语的论文写作桌面编辑器。左侧编写正文
 | [双语编辑](#双语编辑) | 左侧英文，右侧中文（用「EN ⇄ 中」可以反过来）。只有改动过的段落会重新翻译，并以原译文为基础修订。公式、引用、交叉引用、标签、网址和注释以占位符发给模型，返回后逐字节还原。中文文件打开后以中文为原文，未译完就切换时，剩余段落译好后自动填回。 |
 | [LaTeX](#latex-论文) | 用本机的 TeX 发行版编译（latexmk、pdfLaTeX、XeLaTeX 或 LuaLaTeX，按项目的 `latexmkrc` 或宏包选择）。未保存的修改在缓存文件夹中编译，本地文件保持上次保存的内容。PDF 显示在右侧，点击 PDF 在源码中选中句子，`⌘⌥J` 在 PDF 中定位光标，问题列表跳到对应行。也可以由译文编译中文 PDF。 |
 | [你自己的中文版](#已有的中文版) | `paper.tex` 与 `paper_zh.tex`，或 `sections_en/` 与 `sections_zh/`，逐段配对。你的中文直接作为译文，不产生请求，保存时把每个改动过的段落原位写入另一个文件。 |
-| [写作助手](#写作助手) | 润色（写上要求就按要求修改）、提问、仿写新段落、生成图表（LaTeX 代码、PDF 图或可编辑的 PPT 图，可以临摹一张图或仿照它的风格）、语法修复，或改写某段译文让原文随之修改。任务在后台运行，由你决定是否采纳，「智能应用」先编译检查再写入。 |
+| [写作助手](#写作助手) | 润色（写上要求就按要求修改）、提问、仿写新段落、生成图表（LaTeX 代码、PDF 图或可编辑的 PPT 图，可以临摹一张图或仿照它的风格）、语法修复，或改写某段译文让原文随之修改。任务在后台运行，由你决定是否采纳，LaTeX 论文中采纳会先由模型调整、编译检查再写入。 |
 | [我的素材](#我的素材) | 与 research-builder 的 `materials/` 相同的文件夹。你的论文给出仿写的文风，你的图和论文可以作为参照样例，你的图标用在 PPT 图里。 |
 | [模板](#模板) | 内置 VLDB（PVLDB 2027）、ICLR 2027 和 IEEE TII。可以把项目文件夹或 `.zip` 导入为模板，把项目导出为模板，打开任意 LaTeX 文件夹。 |
 | [模型接口](#配置模型接口) | OpenAI 兼容的 Chat Completions（OpenAI、DeepSeek、通义千问、Kimi、OpenRouter、Ollama 等本地服务）、OpenAI Responses 接口和 Anthropic Messages 接口，附带预设，也可以配置第三方服务。翻译和写作助手可以用不同的接口。 |
@@ -88,7 +88,7 @@ LaTeX 功能需要 TeX 发行版：macOS 用 MacTeX，Windows 和 Linux 用 TeX 
 * 「EN ⇄ 中」把中文放到左侧编辑，右侧显示英文。只有你改过的中文段落会生成新的英文，切回英文时其余段落逐字还原。切换会等待正在翻译的段落，再点一次立即切换。这些段落先保留原文，译好后自动替换到左侧。
 * **全部**菜单提供「重新翻译所有段落」「继续翻译剩余段落」（翻译失败的段落、暂停时积压的段落，以及提前切换后仍是原文语言的段落）和「把原文当作中文」（或英文）。
 * 中文文件打开后以中文为原文，翻译成英文，PDF 和导出的 `.tex` 都按文件本身的语言处理。中英混合的文档判断错了，可以在**全部**菜单中改正，左侧文字明显是另一种语言时，点「EN ⇄ 中」也会直接改正。
-* **保存**（`⌘S`）把文件本身的语言写回文件，编辑另一种语言时由译文组成。**另存为**（`⌘⇧S`）默认建议一个不重名的文件名，例如 `paper-2.tex`，原文件保持不变。
+* **保存**（`⌘S`）把文件本身的语言写回文件，编辑另一种语言时由译文组成。**另存为**（`⌘⇧S`）默认建议一个不重名的文件名，例如 `paper-2.tex`，原文件保持不变。软件内的修改，包括写作助手的采纳和还原，都只作用于编辑器里的内容，只有保存或另存为才写入本地文件。本地文件在编辑期间被别处改过时，保存会先询问，提示里的「查看差异」逐行显示两边的不同，只供查看。
 
 ## LaTeX 论文
 
@@ -125,7 +125,7 @@ LaTeX 功能需要 TeX 发行版：macOS 用 MacTeX，Windows 和 Linux 用 TeX 
 * **提问**就所选文字或整篇论文回答问题（可以追问），只给出回答，不改动正文。
 * **仿写**按你的要求在光标所在段落之后写新段落，新段落模仿参照样例的写法，不照搬它的句子、结论、数字和引用，并附带对照中文。
 * **图表**生成插入到段落之后的图或表。LaTeX 论文可以在「格式」中选择生成什么：
-  * 「LaTeX 代码」直接插入，代码还需要的宏包在插入时补进导言区。
+  * 「LaTeX 代码」在采纳时插入，代码还需要的宏包同时补进导言区。
   * 「PDF 图」用 TikZ 画好后单独编译成 PDF，用 `\includegraphics` 引入，编译出错时先让模型修好。
   * 「PPT 图」生成可编辑的 PowerPoint 示意图，由原生形状、块状箭头和 SVG 图标组成，遵循 skill 的插图规则。装了 LibreOffice 时同时转换成论文引用的 PDF。
 
@@ -135,7 +135,7 @@ LaTeX 功能需要 TeX 发行版：macOS 用 MacTeX，Windows 和 Linux 用 TeX 
 * **按译文改**在输入框中预填这一段的中文。改写中文后运行，英文以最小改动修订为相同的意思。每个已翻译段落上的铅笔按钮可以直接进入这个操作。
 * 「上下文」可选只发送目标段落、含前后段或整篇论文。「参照样例」可以添加文字、文件（`.tex`、`.md`、`.txt`）、图片，或者用「+ 素材」从[素材文件夹](#我的素材)中选论文和图。
 
-每个任务都在后台运行。结果以差异显示改动，附修订稿的中文和中英文两份改动说明。「采纳」把结果原样写入文字当前所在的位置，即使你在等待期间继续输入。「智能应用」先把结果放进文档编译一次，如果带来新的错误（缺宏包、缺 TikZ 库、模板颜色等），先让模型修好再写入。如果目标文字本身在等待期间被改过，「让模型重新套用」会把修订套用到当前文本上。
+每个任务都在后台运行。结果以差异显示改动，附修订稿的中文和中英文两份改动说明。「采纳」把结果写入文字当前所在的位置，即使你在等待期间继续输入。LaTeX 论文中采纳会先让模型把结果改成适合这篇文档的样子（改用文档已有的宏包和颜色，补上需要的导言区行），再放进文档编译一次，如果带来新的错误（缺宏包、缺 TikZ 库、模板颜色等），先让模型修好再写入，修不好或模型、编译不可用时按原样写入。如果目标文字本身在等待期间被改过，「让模型重新套用」会把修订套用到当前文本上。「还原」撤回已采纳的结果。还原插入的图表时，导言区补加的行由模型判断是否还有用，模型选出的行删掉后先编译一次，没有新的错误才真正删除。模型无法连接时只撤掉正文，导言区不动。一张卡片在采纳或还原时，其他卡片要等它结束。「设置」中的「采纳和还原由模型辅助」默认勾选，不勾时采纳直接写入，还原只撤掉正文。
 
 规则来自 [research-builder](https://github.com/qzkinhit/research-builder)，每项操作使用 skill 中对应的部分：润色和修改用去 AI 腔规则与写作手册，仿写还用论文骨架和讲故事的套路，图表用图表风格，PPT 图用 `paper-figure-pptx` 的插图规则与图标库。BiWrite 自带一份 skill，「设置」中的「写作技能」可以从 GitHub 更新，也可以换成你自己的 skill 文件夹。
 
@@ -264,7 +264,7 @@ the toolbar opens it on GitHub.
 | [Bilingual editing](#bilingual-editing) | English on the left, Chinese on the right (or the other way round with `EN ⇄ 中`). Only edited paragraphs are translated again, revised from their previous translation. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back byte for byte. A Chinese file opens as the Chinese side, and swapping before everything is translated fills in the rest as it arrives. |
 | [LaTeX](#latex-papers) | Compiles with your TeX distribution (latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX, as the project's `latexmkrc` or packages ask). Unsaved edits compile in a cache folder, and the file on disk stays as last saved. The PDF shows in the right pane, a click in the PDF selects the sentence in the source, `⌘⌥J` shows the cursor's place in the PDF, and problems link to their lines. A Chinese PDF is built from the translation. |
 | [Your own Chinese version](#an-existing-chinese-version) | `paper.tex` with `paper_zh.tex`, or `sections_en/` with `sections_zh/`, pair up paragraph by paragraph. Your Chinese becomes the translation with no requests, and saving writes each edited paragraph into the other file in place. |
-| [Writing assistant](#writing-assistant) | Polish (as you ask, when you write a request), ask, write new paragraphs in the manner of a reference, write figures or tables (LaTeX code, a PDF picture or an editable PowerPoint diagram, traced from an image or in the style of one), fix LaTeX errors, or rewrite a paragraph's translation and let the paragraph follow. Jobs run in the background, you decide what is applied, and *Smart apply* compiles before it applies. |
+| [Writing assistant](#writing-assistant) | Polish (as you ask, when you write a request), ask, write new paragraphs in the manner of a reference, write figures or tables (LaTeX code, a PDF picture or an editable PowerPoint diagram, traced from an image or in the style of one), fix LaTeX errors, or rewrite a paragraph's translation and let the paragraph follow. Jobs run in the background, you decide what is applied, and in a LaTeX paper *Accept* has the model fit the result and compiles before it applies. |
 | [My materials](#my-materials) | The folders of research-builder's `materials/`. Your papers give the voice to write in, your figures and papers serve as references, and your icons go into PowerPoint figures. |
 | [Templates](#templates) | VLDB (PVLDB 2027), ICLR 2027 and IEEE TII built in. Import a project folder or a `.zip` as a template, export a project as one, open any LaTeX folder. |
 | [Model providers](#set-up-a-model-provider) | OpenAI-compatible Chat Completions (OpenAI, DeepSeek, Qwen, Kimi, OpenRouter, local servers such as Ollama), the OpenAI Responses API and the Anthropic Messages API, with presets, third-party services included. Translation and the assistant can use different providers. |
@@ -343,7 +343,11 @@ it the PowerPoint file alone is made.
 * **Save** (`⌘S`) overwrites the file with its own language, composed from
   the translations while you edit the other one. **Save As** (`⌘⇧S`)
   suggests a name not taken yet, such as `paper-2.tex`, and leaves the
-  original as it was.
+  original as it was. Edits made in BiWrite, the assistant's Accept and
+  Revert among them, change only what the editor shows, and only Save or
+  Save As writes your files. When the file was changed elsewhere while you
+  edited, saving asks first, and *Show the changes* in the notice shows the
+  two versions line by line, for you to look at.
 
 ## LaTeX papers
 
@@ -422,8 +426,8 @@ paragraph at the cursor, as the editor shows it, saved or not:
   Chinese.
 * **Figure** writes a figure or table to insert after the paragraph. In a
   LaTeX paper, *Format* chooses what it becomes:
-  * *LaTeX code* is inserted as it is, and the packages it still needs are
-    added to the preamble on insert.
+  * *LaTeX code* is inserted on *Accept*, and the packages it still needs
+    are added to the preamble with it.
   * *PDF picture* is TikZ built into a PDF of its own and included with
     `\includegraphics`. When it does not compile, the model repairs it first.
   * *PowerPoint* is an editable diagram of native shapes, block arrows and
@@ -452,12 +456,21 @@ paragraph at the cursor, as the editor shows it, saved or not:
 
 Every job runs in the background. The result shows the changes as a diff,
 the Chinese of the revision and the reasons in both languages. *Accept*
-applies it as it is where the text is now, even after you kept typing.
-*Smart apply* first compiles the document with the result, and when that
-brings new errors (a missing package, a TikZ library, a colour of the
-template), has the model repair them before applying. If the target itself
+applies it where the text is now, even after you kept typing. In a LaTeX
+paper the model first fits the result to the document (the packages and
+colours the document has, and the lines it needs before `\begin{document}`),
+then the document is compiled with it, and when that brings
+new errors (a missing package, a TikZ library, a colour of the template),
+has the model repair them before applying, or applies it as it is when they
+cannot be repaired or neither the model nor a build can be used. If the target itself
 was edited meanwhile, *Re-apply with the model* brings the revision onto the
-current text.
+current text. *Revert* takes an applied result back. Reverting an inserted
+figure also takes out the lines it added before `\begin{document}` that the
+model judges no longer needed, once a build without them brings no new
+error. When the model cannot be reached, only the figure goes. While one
+card is accepted or reverted, the others wait for it. *Accept and Revert
+with the model's help*, in Settings, is on by default. Off, Accept applies
+the result at once and Revert takes out only the text.
 
 The rules come from [research-builder](https://github.com/qzkinhit/research-builder),
 each action with its part of the skill. Polishing and edits use the rules on

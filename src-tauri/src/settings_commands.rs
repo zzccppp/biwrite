@@ -599,6 +599,25 @@ pub async fn set_keep_alive(
     Ok(state.settings_view())
 }
 
+/// Keep the keys alive however long the author is away, or only within
+/// half an hour of their last use.
+#[tauri::command]
+pub async fn set_keep_alive_forever(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    on: bool,
+) -> CommandResult<SettingsView> {
+    let keeping = {
+        let mut s = state.settings();
+        s.keep_alive_forever = on;
+        state.persist(&s)?;
+        s.keep_alive
+    };
+    state.squeeze.set_forever(on);
+    crate::squeeze_commands::keep_alive_changed(&app, keeping);
+    Ok(state.settings_view())
+}
+
 /// Close to the tray (hide the window) or quit when the window is closed.
 #[tauri::command]
 pub async fn set_close_to_tray(
@@ -697,6 +716,20 @@ fn update_key_count(
     state.invalidate_assistant();
     if is_active {
         state.apply_active_provider()?;
+    }
+    Ok(state.settings_view())
+}
+
+/// Accept and Revert with the model's help and a build, or as they are.
+#[tauri::command]
+pub async fn set_assisted_apply(
+    state: State<'_, AppState>,
+    on: bool,
+) -> CommandResult<SettingsView> {
+    {
+        let mut s = state.settings();
+        s.assisted_apply = on;
+        state.persist(&s)?;
     }
     Ok(state.settings_view())
 }

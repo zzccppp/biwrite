@@ -135,3 +135,28 @@ export function newPreambleLines(preamble: string, lines: string): string {
   }
   return out.length > 0 ? out.join("\n") + "\n" : "";
 }
+
+/** Where `statement` (a line, or a block of lines, added before
+ * \begin{document}) stands in the preamble of `text` as whole lines, with
+ * the line break after it: only when it stands there exactly once. */
+export function preamblePlace(text: string, statement: string): { from: number; to: number } | null {
+  const end = text.search(/\\begin\{document\}/);
+  if (end < 0 || !statement) return null;
+  const preamble = text.slice(0, end);
+  let found: number | null = null;
+  for (let at = preamble.indexOf(statement); at >= 0; at = preamble.indexOf(statement, at + 1)) {
+    const startsLine = at === 0 || preamble[at - 1] === "\n";
+    const after = preamble.slice(at + statement.length);
+    if (!startsLine || !(after.startsWith("\n") || after.startsWith("\r\n"))) continue;
+    if (found !== null) return null;
+    found = at;
+  }
+  if (found === null) return null;
+  const stop = found + statement.length;
+  return { from: found, to: stop + (text.startsWith("\r\n", stop) ? 2 : 1) };
+}
+
+/** The lines of `lines` for a note: each statement on one line. */
+export function lineList(lines: string[]): string {
+  return lines.map((l) => l.replace(/\s*\n\s*/g, " ").trim()).join(" ");
+}

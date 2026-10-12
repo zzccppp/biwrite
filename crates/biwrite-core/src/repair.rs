@@ -223,7 +223,10 @@ pub fn answer_fix_prompt(req: &AnswerFixRequest<'_>) -> (String, String) {
     }
     let shown = (answer.start - 1).min(lines.len())..(answer.end - 1).min(lines.len());
     numbered_block(&mut user, "inserted", &numbered(&lines, shown));
-    block(&mut user, "errors", &errors_block(req.errors));
+    let fitting = req.errors.is_empty();
+    if !fitting {
+        block(&mut user, "errors", &errors_block(req.errors));
+    }
     let added = req
         .preamble
         .as_ref()
@@ -237,11 +240,25 @@ pub fn answer_fix_prompt(req: &AnswerFixRequest<'_>) -> (String, String) {
             added.end - 1
         ));
     }
-    user.push_str(". The numbers before | are line numbers for reference, not part of the text. The document now fails to compile with the errors in <errors>, which it did not have before. Fix them");
-    if req.preamble.is_some() {
-        user.push_str(" in <inserted> and in the lines added before \\begin{document}. Those lines may load packages (\\usepackage) and TikZ libraries (\\usetikzlibrary) and define colors and commands.");
+    user.push_str(". The numbers before | are line numbers for reference, not part of the text.");
+    if fitting {
+        // Before it is applied: fitted to the document, not repaired.
+        user.push_str(" Before it is applied, fit it to this document so that it compiles here: use the packages, colours and commands the document has, define only what it lacks, keep its \\label unlike the document's other labels, and give TikZ libraries and other preamble lines it needs");
+        if req.preamble.is_some() {
+            user.push_str(" in the lines added before \\begin{document}. Those lines may load packages (\\usepackage) and TikZ libraries (\\usetikzlibrary) and define colors and commands.");
+        } else {
+            user.push_str(
+                " inside it, since the preamble is in another file and cannot be changed.",
+            );
+        }
+        user.push_str(" Change nothing else, and when it fits as it is, return it unchanged.");
     } else {
-        user.push_str(" in <inserted>. The preamble is in another file and cannot be changed, so make <inserted> work with what is loaded and define the colors and commands it needs inside it.");
+        user.push_str(" The document now fails to compile with the errors in <errors>, which it did not have before. Fix them");
+        if req.preamble.is_some() {
+            user.push_str(" in <inserted> and in the lines added before \\begin{document}. Those lines may load packages (\\usepackage) and TikZ libraries (\\usetikzlibrary) and define colors and commands.");
+        } else {
+            user.push_str(" in <inserted>. The preamble is in another file and cannot be changed, so make <inserted> work with what is loaded and define the colors and commands it needs inside it.");
+        }
     }
     user.push_str(
         " Keep what <inserted> shows and says: its content, data, labels, caption and \\label.",
@@ -251,7 +268,11 @@ pub fn answer_fix_prompt(req: &AnswerFixRequest<'_>) -> (String, String) {
     if req.preamble.is_some() {
         user.push_str("<preamble>\nall the lines to add before \\begin{document} for it, or nothing\n</preamble>\n");
     }
-    user.push_str("<changes_zh>\nat most three short lines in Chinese on what was wrong and what changed\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>");
+    if fitting {
+        user.push_str("<changes_zh>\nat most three short lines in Chinese on what changed, or nothing\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>");
+    } else {
+        user.push_str("<changes_zh>\nat most three short lines in Chinese on what was wrong and what changed\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>");
+    }
     (SYSTEM.to_owned(), user)
 }
 

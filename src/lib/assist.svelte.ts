@@ -12,7 +12,9 @@ export {
   askedAbout,
   asParagraph,
   insertionAt,
+  lineList,
   newPreambleLines,
+  preamblePlace,
   notLoaded,
   reapplyInstruction,
   revertChange,
@@ -126,24 +128,32 @@ export class AssistJob {
   restarting = $state(false);
   /** Kept for later: the card folds, and can still be accepted. */
   kept = $state(false);
-  /** What applying put in (the target covers it from then on), and for a
-   * fix the lines it changed with what they were, for Revert (kept in step
-   * with later edits like the target). The lines it added before
-   * \begin{document} are not kept: Revert leaves them. */
+  /** What applying put in (the target covers it from then on), the lines
+   * it added before \begin{document}, and for a fix the lines it changed
+   * with what they were, for Revert (kept in step with later edits like the
+   * target). Revert takes the preamble lines out only when a build shows
+   * the rest of the document does without them. */
   applied = $state<{
     text: string;
+    preamble?: string;
     hunks?: { from: number; to: number; text: string; old: string }[];
   } | null>(null);
+  /** After Revert: the preamble lines being checked, those taken out, those
+   * kept (still used), or all kept since the check could not be done. */
+  tidy = $state<{ checking: boolean; removed: string[]; kept: string[]; failed: boolean } | null>(null);
   /** Revert found that text edited since: the card shows the text from before. */
   revertBlocked = $state(false);
   /** A fix building the document or asking the model to repair it (round from 1). */
   stage = $state<{ fixing: boolean; round: number } | null>(null);
-  /** Smart apply checking the answer: the same steps. */
+  /** Accept fitting and checking the answer: the same steps. */
   checking = $state<{ fixing: boolean; round: number } | null>(null);
   /** What the last check of the answer found. */
   check = $state<CheckResult | null>(null);
   /** The last check could not finish. */
   checkError = $state<string | null>(null);
+  /** Accept could not make it compile (or could not fit or check it), so
+   * it was inserted as it is. */
+  plainly = $state(false);
 
   constructor(
     started: AssistStarted,
@@ -249,6 +259,13 @@ export class AssistStore {
   /** The instruction box of each action: switching keeps each its own text
    * (via translation fills its box with the paragraph's translation). */
   drafts = $state<Record<AssistAction, string>>({ polish: "", edit: "", ask: "", figure: "", mirror: "", write: "", fix: "" });
+  /** An accept or a revert is under way (its build, the model's repair,
+   * the check of the preamble lines): the next waits for it, since they
+   * build in the same folder and edit the same preamble. */
+  get adopting(): boolean {
+    return this.jobs.some((j) => !!j.checking || j.applying || !!j.tidy?.checking);
+  }
+
   get instruction(): string {
     return this.drafts[this.action];
   }

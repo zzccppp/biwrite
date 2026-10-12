@@ -24,11 +24,21 @@
   let fresh = $state("");
   /** Keep the keys that got through alive (a setting for every provider). */
   let keepAlive = $state<boolean | null>(null);
+  /** However long the author is away, or half an hour after the last use. */
+  let forever = $state(true);
 
   async function setKeepAlive(on: boolean): Promise<void> {
     const view = await act("keep", () => settingsIpc.setKeepAlive(on));
     if (view) {
       keepAlive = view.keepAlive;
+      onchange(view);
+    }
+  }
+
+  async function setForever(on: boolean): Promise<void> {
+    const view = await act("forever", () => settingsIpc.setKeepAliveForever(on));
+    if (view) {
+      forever = view.keepAliveForever;
       onchange(view);
     }
   }
@@ -212,7 +222,10 @@
     void refreshSqueeze();
     settingsIpc
       .get()
-      .then((view) => (keepAlive = view.keepAlive))
+      .then((view) => {
+        keepAlive = view.keepAlive;
+        forever = view.keepAliveForever;
+      })
       .catch(() => {});
     const timer = setInterval(() => {
       void refreshState();
@@ -283,6 +296,15 @@
         />
         <span class="label smallcaps">{t("squeeze.keepAlive")}</span>
       </label>
+      <label class="inline keep forever" title={t("squeeze.foreverHint")}>
+        <input
+          type="checkbox"
+          checked={forever}
+          disabled={!!busy || !keepAlive}
+          onchange={(e) => void setForever(e.currentTarget.checked)}
+        />
+        <span class="label smallcaps">{t("squeeze.forever")}</span>
+      </label>
     {/if}
     {#if squeeze?.running || (provider.squeezable && keys.length > 0)}
       <span class="spacer"></span>
@@ -327,8 +349,23 @@
         />
         <span class="mono">…{k.tail}</span>
         {#if through && sq?.throughSince}
-          <span class="state" title={sq.lastOk ? t("squeeze.lastOk", { ago: ago(sq.lastOk) }) : ""}>
-            {t("squeeze.through", { ago: ago(sq.throughSince) })}
+          <!-- Got through, then kept alive (since the latest keep-alive), or
+               its keep-alive being tried again. -->
+          <span
+            class="state"
+            class:retrying={sq.keepRetrying}
+            title={[
+              t("squeeze.throughSince", { ago: ago(sq.throughSince) }),
+              sq.lastOk ? t("squeeze.lastOk", { ago: ago(sq.lastOk) }) : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          >
+            {sq.keepRetrying
+              ? t("squeeze.keepRetrying", { ago: ago(sq.lastOk ?? sq.throughSince) })
+              : sq.keptAt
+                ? t("squeeze.kept", { ago: ago(sq.keptAt) })
+                : t("squeeze.through", { ago: ago(sq.throughSince) })}
           </span>
         {:else if squeeze?.running && sq && !sq.refused && !sq.throughSince}
           <span class="state" title={sq.lastError ?? ""}>{t("squeeze.trying", { n: sq.tries + (sq.trying ? 1 : 0) })}</span>
@@ -525,6 +562,9 @@
     color: #3f8f5a;
   }
   .entry[data-state="cooling"] .state {
+    color: var(--accent);
+  }
+  .entry .state.retrying {
     color: var(--accent);
   }
   .entry[data-state="rejected"] .state,

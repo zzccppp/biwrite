@@ -64,7 +64,7 @@ Each feature name below links to its section.
 \item[{\hyperref[sec:latex]{LaTeX builds and PDF navigation}}] The PDF compiles inside the app. Unsaved edits compile in a cache folder, and the file on disk stays as last saved. A click on a sentence in the PDF selects it in the source, ready to polish. The paragraph at the cursor can be found in the PDF, and a build error opens its line.
 \item[{\hyperref[sec:zhpdf]{Chinese PDF}}] Once the English is translated, the Chinese PDF compiles in one step, and the Chinese PDF and a stand-alone Chinese .tex can be exported.
 \item[{\hyperref[sec:pair]{Your existing Chinese version}}] \texttt{paper\_zh.tex} or \texttt{sections\_zh/} pair with the English paragraph by paragraph. Edit either side and the matching paragraph of the other file is updated in place, with the rest unchanged.
-\item[{\hyperref[sec:assist]{Writing assistant}}] Polish (as you ask, when you write a request), ask, write new paragraphs in the manner of a reference paper, write figures (LaTeX code, a PDF picture or an editable PowerPoint diagram, traced from an image or in the style of one), fix LaTeX errors, or rewrite a translation and let the paragraph follow. A reference can be added as a file or taken from the materials folder, packages a figure needs are added on insert, and \ui{Smart apply} compiles before it applies. Jobs run in the background, and you decide what is applied.
+\item[{\hyperref[sec:assist]{Writing assistant}}] Polish (as you ask, when you write a request), ask, write new paragraphs in the manner of a reference paper, write figures (LaTeX code, a PDF picture or an editable PowerPoint diagram, traced from an image or in the style of one), fix LaTeX errors, or rewrite a translation and let the paragraph follow. A reference can be added as a file or taken from the materials folder, packages a figure needs are added, and in a LaTeX paper \ui{Accept} compiles before it applies. Jobs run in the background, and you decide what is applied.
 \item[{\hyperref[sec:materials]{My materials}}] The folders of research-builder's \texttt{materials/}. Your papers give the voice to write in, your papers and figures serve as references, and your icons go into PowerPoint figures.
 \item[{\hyperref[sec:templates]{Paper templates}}] VLDB, ICLR 2027 and IEEE TII built in. Your own projects can be imported as templates, and the open project exported.
 \item[{\hyperref[sec:provider]{APIs and key pools}}] OpenAI-compatible, OpenAI Responses and Anthropic APIs. A provider holds several keys, uses them evenly, moves to another key on rate limits, and takes a new key in place of an old one.
@@ -99,9 +99,9 @@ The model follows how the reference paper arranges its paragraphs, its sentence 
 
 \shot{f-imitate}{(1) Write, (2) where the new text goes, (3) what to write, (4) add a reference paper, (5) the reference added, (6) Run}
 
-The card (\fig{f-written}) shows the new paragraphs \n{1}, their Chinese paragraph by paragraph \n{2} and notes on how they were written \n{3}. \ui{Insert} \n{4} puts them after the target paragraph, and the right pane shows the Chinese from the card without another request (\fig{f-inserted}).
+The card (\fig{f-written}) shows the new paragraphs \n{1}, their Chinese paragraph by paragraph \n{2} and notes on how they were written \n{3}. \ui{Accept} \n{4} puts them after the target paragraph, and the right pane shows the Chinese from the card without another request (\fig{f-inserted}).
 
-\shot[0.55]{f-written}{(1) The new paragraphs, (2) their Chinese, (3) notes, (4) Insert}
+\shot[0.55]{f-written}{(1) The new paragraphs, (2) their Chinese, (3) notes, (4) Accept}
 \shot[0.8]{f-inserted}{(1) The new paragraphs on the left, (2) their Chinese on the right}
 
 \subsection{Step 4: Polish, edit and ask}
@@ -118,14 +118,14 @@ Choose \ui{Figure} (\fig{f-format} \n{1}), describe the figure or table \n{3}, f
 
 \shot{f-format}{(1) Figure, (2) Format, (3) the request, (4) Run}
 
-The card of a PDF picture or a PowerPoint diagram (\fig{f-pptx}) shows the picture \n{1}. \n{2} \ui{Save as} saves a copy as PowerPoint, PDF or PNG where you choose. \n{3} names the files that saving the document writes, into the folder of the paper's other figures, such as \texttt{figures/}, under names not taken yet. Until you save, the files live only in the app and in the cache folder \texttt{.biwrite/} beside the paper, and a build of the unsaved document still finds them. \n{4} \ui{Insert} or \ui{Smart apply} puts the figure environment that includes it into the paper.
+The card of a PDF picture or a PowerPoint diagram (\fig{f-pptx}) shows the picture \n{1}. \n{2} \ui{Save as} saves a copy as PowerPoint, PDF or PNG where you choose. \n{3} names the files that saving the document writes, into the folder of the paper's other figures, such as \texttt{figures/}, under names not taken yet. Until you save, the files live only in the app and in the cache folder \texttt{.biwrite/} beside the paper, and a build of the unsaved document still finds them. \n{4} \ui{Accept} puts the figure environment that includes it into the paper.
 
-\shot[0.62]{f-pptx}{(1) The picture, (2) Save as, (3) the files written on save, (4) Insert and Smart apply}
+\shot[0.62]{f-pptx}{(1) The picture, (2) Save as, (3) the files written on save, (4) Accept}
 
-With \ui{LaTeX code}, the card gives LaTeX ready to insert (\fig{f-table} \n{1}). The request lists the packages the document loads and asks for code that uses them first. When the code needs a package the document does not load, the card names it \n{2}. If the open file is the main file, \ui{Insert} \n{3} puts the code after the paragraph and adds the \texttt{\textbackslash usepackage} lines right before \texttt{\textbackslash begin\{document\}} (\fig{f-table-in}). In a section file, the card names the lines to add to the main file's preamble. When the inserted code does not compile, use \ui{Smart apply} or \ui{Fix} instead (Section~\ref{sec:assist}).
+With \ui{LaTeX code}, the card gives LaTeX ready to insert (\fig{f-table} \n{1}). The request lists the packages the document loads and asks for code that uses them first. When the code needs a package the document does not load, the card names it \n{2}. If the open file is the main file, \ui{Accept} \n{3} puts the code after the paragraph and adds the \texttt{\textbackslash usepackage} lines right before \texttt{\textbackslash begin\{document\}} (\fig{f-table-in}). In a section file, the card names the lines to add to the main file's preamble. Accepting it has the model fit the code and compiles the document first (Section~\ref{sec:assist}), and code that still does not compile once applied is for \ui{Fix}.
 
-\shot{f-table}{(1) The table, (2) the packages it needs, (3) Insert}
-\shot{f-table-in}{(1) The package added to the preamble on insert}
+\shot{f-table}{(1) The table, (2) the packages it needs, (3) Accept}
+\shot{f-table-in}{(1) The package added to the preamble on Accept}
 
 A figure can start from reference images (\fig{f-trace}). \ui{+ Image} \n{1} in the \ui{References} row adds an image file, and \ui{+ Materials} \n{2} takes a figure from the materials folder (Section~\ref{sec:materials}). Each image is either \ui{Trace} or \ui{Style} \n{3}.
 \begin{description}[leftmargin=1em, style=nextline]
@@ -201,9 +201,11 @@ In a mixed document the judgment can be wrong, and you can set it right. When th
 \subsection{Save and Save As}
 \ui{Save} (\fig{w-save} \n{1}, \cmdkey S) overwrites the file. \ui{Save As} \n{2} (\cmdkey\shiftkey S) saves under a new name and suggests one not taken yet, for example \texttt{paper-2.tex}. The original stays as it was.
 
-When another program changes the open file or its paired file on disk (another editor, git, a sync service), BiWrite notices when its window gains focus and asks whether to load the latest version. \ui{Load} puts it in; with unsaved changes the button reads \ui{Load (discard unsaved changes)}. A paired file is paired again, and the document keeps your edits. \ui{Ignore} changes nothing, and that version is not asked about again. Saving never overwrites a change made elsewhere without asking: it offers \ui{Overwrite}, \ui{Save As…} and \ui{Cancel}. A paired file changed elsewhere is not written until you choose \ui{Overwrite}.
+When another program changes the open file or its paired file on disk (another editor, git, a sync service), BiWrite notices when its window gains focus and asks whether to load the latest version. \ui{Load} puts it in. With unsaved changes the button reads \ui{Load (discard unsaved changes)}. A paired file is paired again, and the document keeps your edits. \ui{Ignore} changes nothing, and that version is not asked about again. Saving never overwrites a change made elsewhere without asking: it offers \ui{Overwrite}, \ui{Save As…} and \ui{Cancel}. A paired file changed elsewhere is not written until you choose \ui{Overwrite}. Each of these notices has \ui{Show the changes} (\fig{w-elsewhere} \n{1}), which shows line by line how the file on disk differs from the version read when you began editing (\fig{w-diff}). It is there to look at and leaves the choice to you. After Save As, when the original file was changed elsewhere while you edited, a notice says so and the original stays as it is.
 
 \shot{w-save}{(1) Save, (2) Save As}
+\shot[0.85]{w-elsewhere}{Saving a file changed elsewhere while you edited: (1) Show the changes, (2) Overwrite or Save As}
+\shot[0.85]{w-diff}{(1) What each side is, (2) the changes line by line, the removed struck out and the added coloured}
 
 \subsection{Glossary}
 \ui{Glossary} in the toolbar opens the glossary (\fig{w-glossary}). In the table \n{1}, set your preferred Chinese for a term or tick \ui{Keep EN}. The buttons \n{2} import and export CSV files with the columns \texttt{term,translation} (UTF-8). After a change, only paragraphs that mention the term are translated again.
@@ -346,14 +348,14 @@ With a pair, \ui{Chinese} in the PDF tab compiles your own Chinese main file (\t
 \shot{a-dock}{(1) Task, (2) target, (3) instruction, (4) context, (5) references, (6) Run}
 
 \subsection{Decide on the result}
-The finished card (\fig{a-result}) shows the changes as a diff \n{1} (deleted words struck out, new ones highlighted), the translation of the revision \n{2} and the reasons for the changes in Chinese and English \n{3}. \ui{Accept} \n{4} writes the revision where the text is now, even after you kept typing. If the target itself was edited meanwhile, the card says so, and \ui{Re-apply with the model} brings the revision onto the current text. \ui{Again} runs the job once more, \ui{Keep} folds the card into one line to decide later (it can still be accepted when shown again), \ui{Discard} drops it, and \cmdkey Z undoes an accepted revision. After Accept or Discard the card folds into one line too, and \ui{Show} opens the result again. \ui{Revert} on an accepted card undoes that one change and leaves later edits as they are, and the card can then be accepted again. If the text it put in was edited since, nothing is overwritten and the card shows the text from before, to copy and put back by hand. \ui{Delete} takes the card off the list.
+The finished card (\fig{a-result}) shows the changes as a diff \n{1} (deleted words struck out, new ones highlighted), the translation of the revision \n{2} and the reasons for the changes in Chinese and English \n{3}. \ui{Accept} \n{4} writes the revision where the text is now, even after you kept typing. If the target itself was edited meanwhile, the card says so, and \ui{Re-apply with the model} brings the revision onto the current text. \ui{Again} runs the job once more, \ui{Keep} folds the card into one line to decide later (it can still be accepted when shown again), \ui{Discard} drops it, and \cmdkey Z undoes an accepted revision. After Accept or Discard the card folds into one line too, and \ui{Show} opens the result again. \ui{Revert} on an accepted card undoes that one change and leaves later edits as they are, and the card can then be accepted again. Reverting an inserted figure takes it out at once, and the model then decides which of the lines it added before \texttt{\textbackslash begin\{document\}} are still needed, keeping booktabs while another table has \texttt{\textbackslash toprule}, say. The lines it picks are taken out of a copy that is built, and they go only when that brings no new error. Otherwise every line stays. The card names the lines taken out and those kept. When the model cannot be reached, only the figure goes and the lines stay. If the text it put in was edited since, nothing is overwritten and the card shows the text from before, to copy and put back by hand. \ui{Delete} takes the card off the list.
 
 \shot{a-result}{(1) The diff, (2) the translation, (3) the reasons, (4) Accept}
 
-\subsection{Smart apply}
-In a LaTeX paper, the card of a figure or table has \ui{Smart apply} \n{2} next to \ui{Insert} (\fig{a-smart} \n{1}). Inserted code may use a package, a TikZ library or a colour the document lacks, and the document then fails to compile. \ui{Smart apply} first compiles the document with the result and applies it at once when that brings no new error. When it brings new errors, the model repairs them, in at most three rounds, and the result is applied once it compiles. Errors the document had before do not count. The applied card says it was repaired to compile (\fig{a-smart-done} \n{1}), and shown again it lists the changes made to compile \n{2} and the lines added to the preamble \n{3}. When errors are left after three rounds, the card lists them and nothing is applied, and \ui{Insert} still applies the result as it is.
+\subsection{Accepting with the model's fit and a build}
+In a LaTeX paper saved as a \texttt{.tex} file, \ui{Accept} (\fig{a-smart} \n{1}) does not apply the result at once. Its code may use a package, a TikZ library or a colour the document lacks, and the document would then fail to compile. BiWrite first gives the result and the document to the model to fit it to the document, using the packages and colours the document has and adding the lines it needs before \texttt{\textbackslash begin\{document\}}, and the card shows \ui{Fitting it to the document}. The document is then compiled with the result, which is applied when that brings no new error. When it brings new errors, the model repairs them, in at most three rounds, and the result is applied once it compiles. Errors the document had before do not count. The applied card says the model fitted it or repaired it to compile (\fig{a-smart-done} \n{1}), and shown again it lists the changes made to compile \n{2} and the lines added to the preamble \n{3}. When errors are left after three rounds, or neither the model nor a build can be used, the model is left out and the result is applied as it is, the card says why, and \ui{Fix} can follow. \ui{Stop} on the card cancels the check, and nothing is applied. While one card is accepted or reverted, \ui{Accept} and \ui{Revert} of the others wait for it. In a new document not saved yet, in Markdown and in plain text, \ui{Accept} applies the result at once. \ui{Accept and Revert with the model's help}, in the \ui{Writing assistant} section of Settings (\fig{c-assistant} \n{2}), is ticked by default. Unticked, Accept applies the result at once and Revert takes out only the text. All of this changes only what the editor shows, builds are made in the cache folder \texttt{.biwrite/}, and only \ui{Save} or \ui{Save As} writes your files.
 
-\shot{a-smart}{(1) Insert, (2) Smart apply}
+\shot{a-smart}{(1) Accept}
 \shot{a-smart-done}{(1) Repaired to compile, (2) the changes made to compile, (3) the lines added to the preamble}
 
 \subsection{Fix}
@@ -476,7 +478,7 @@ A provider can hold several keys, a pool. \ui{Manage keys…} in the provider's 
 \subsection{Separate models for translation and writing}
 The \ui{Writing assistant} section of Settings (\fig{c-assistant} \n{1}) picks the model for polishing, edits and questions. A cheap, fast model can translate while a stronger one writes. \ui{Same as translation} uses one provider for both.
 
-\shot{c-assistant}{(1) The model of the writing assistant}
+\shot{c-assistant}{(1) The model of the writing assistant, (2) Accept and Revert with the model's help}
 
 \subsection{Request pacing}
 \label{sec:pacing}
@@ -536,7 +538,7 @@ macOS (Ctrl for \cmdkey and Alt for \optkey on Windows) & Action \\
 
 \paragraph{A Chinese file shows Chinese on the right.} BiWrite took the text for English, which happens with mixed documents. Choose \ui{Read the document as Chinese, translate into English} in the \ui{All} menu. The file stays as it is.
 
-\paragraph{An inserted figure does not compile.} Use \ui{Smart apply} instead of \ui{Insert}, which compiles and repairs the result before applying it. For a figure already inserted, run \ui{Fix} in the writing assistant. In a section file, check the packages named on the card and load them in the main file's preamble.
+\paragraph{An inserted figure does not compile.} Accepting it compiles and repairs it before it is applied. When it still does not compile, run \ui{Fix} in the writing assistant. In a section file, check the packages named on the card and load them in the main file's preamble.
 
 \paragraph{A PowerPoint diagram has no PDF.} Turning a PowerPoint diagram into a PDF needs LibreOffice. Install it and make the figure again, or open the PowerPoint file in PowerPoint and export a PDF of the same name into the same folder.
 

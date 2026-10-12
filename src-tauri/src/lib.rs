@@ -26,6 +26,7 @@ mod skills;
 mod squeeze_commands;
 mod state;
 mod storage_commands;
+mod tidy_commands;
 mod tray;
 mod updater;
 
@@ -195,6 +196,7 @@ pub fn run() {
             commands::open_link,
             commands::open_manual,
             disk_commands::check_disk,
+            disk_commands::disk_diff,
             disk_commands::ignore_disk,
             disk_commands::reload_document,
             disk_commands::adopt_disk,
@@ -252,6 +254,7 @@ pub fn run() {
             repair_commands::assist_fix,
             repair_commands::assist_check,
             repair_commands::assist_check_cancel,
+            tidy_commands::assist_tidy,
             assist_commands::assist_offer,
             assist_commands::attach_image,
             assist_commands::load_reference,
@@ -293,6 +296,8 @@ pub fn run() {
             updater::relaunch,
             settings_commands::set_check_updates,
             settings_commands::set_keep_alive,
+            settings_commands::set_keep_alive_forever,
+            settings_commands::set_assisted_apply,
             settings_commands::set_close_to_tray,
             settings_commands::set_tray_language,
             log_commands::get_request_log,

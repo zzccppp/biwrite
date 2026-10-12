@@ -490,3 +490,39 @@ async fn a_save_carries_the_paired_files_overwrite() {
     assert!(!std::fs::read_to_string(&zh).unwrap().contains("整理表格"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// What changed elsewhere can be looked at, line by line, for the document
+/// and its paired file; looking changes nothing.
+#[tokio::test]
+async fn a_change_made_elsewhere_can_be_seen_as_a_diff() {
+    let dir = temp("diff");
+    let (state, en, zh) = opened(&dir, true).await;
+    assert!(
+        crate::disk_commands::diff(&state, "document")
+            .await
+            .is_empty()
+    );
+    std::fs::write(&en, EN.replace("three steps", "four steps")).unwrap();
+    std::fs::write(&zh, format!("{ZH}\n最后，它清理异常值。\n")).unwrap();
+    let doc = crate::disk_commands::diff(&state, "document").await;
+    assert_eq!(doc.len(), 1);
+    assert_eq!(doc[0].line, 2);
+    assert!(doc[0].old.contains("three steps") && doc[0].new.contains("four steps"));
+    let mirror = crate::disk_commands::diff(&state, "mirror").await;
+    assert_eq!(mirror.len(), 1);
+    assert!(mirror[0].new.contains("最后，它清理异常值。"));
+    // Looking is no answer: the save still asks.
+    assert_eq!(checked(&state).await, changed(true, true));
+    assert!(matches!(
+        write_document(&state, en.clone(), EN.to_owned(), None).await,
+        Err(CommandError::ChangedOnDisk)
+    ));
+    // A file gone shows nothing.
+    std::fs::remove_file(&zh).unwrap();
+    assert!(
+        crate::disk_commands::diff(&state, "mirror")
+            .await
+            .is_empty()
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

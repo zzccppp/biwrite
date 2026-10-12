@@ -12,12 +12,14 @@ import type {
   BuildView,
   CacheView,
   CheckRequest,
+  Tidied,
   ClearedView,
   Direction,
   DiskView,
   ExportView,
   Fill,
   GlossaryEntry,
+  Hunk,
   InstalledView,
   KeyEntry,
   KeyStatus,
@@ -57,6 +59,9 @@ export const ipc = {
   getSession: () => invoke<SessionView>("get_session"),
   /** Which open files changed on disk elsewhere; `null` if `document` is no longer open. */
   checkDisk: (document: number) => invoke<DiskView | null>("check_disk", { document }),
+  /** How the document ("document") or its paired file ("mirror") changed on
+   * disk since it was read or last written, to look at. */
+  diskDiff: (which: "document" | "mirror") => invoke<Hunk[]>("disk_diff", { which }),
   /** Don't load those versions: not reported again (saving still asks). */
   ignoreDisk: (document: number, which: DiskView) => invoke<void>("ignore_disk", { document, which }),
   /** The document's text on disk, to put in the editor (own language edited); nothing changes until `adoptDisk`. */
@@ -145,6 +150,9 @@ export const settingsIpc = {
   squeezeStart: (id: string) => invoke<SqueezeView>("squeeze_start", { id }),
   squeezeStop: (id: string) => invoke<SqueezeView>("squeeze_stop", { id }),
   setKeepAlive: (on: boolean) => invoke<SettingsView>("set_keep_alive", { on }),
+  setKeepAliveForever: (on: boolean) => invoke<SettingsView>("set_keep_alive_forever", { on }),
+  /** Accept and Revert with the model's help and a build (LaTeX), or as they are. */
+  setAssistedApply: (on: boolean) => invoke<SettingsView>("set_assisted_apply", { on }),
   setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),
   setTranslateDelay: (seconds: number) => invoke<SettingsView>("set_translate_delay", { seconds }),
   setMatchPool: (on: boolean) => invoke<SettingsView>("set_match_pool", { on }),
@@ -176,6 +184,9 @@ export const assistIpc = {
   /** Check (and repair) an answer before it is applied; the result comes as an event. */
   check: (request: CheckRequest) => invoke<void>("assist_check", { request }),
   checkCancel: (id: number) => invoke<void>("assist_check_cancel", { id }),
+  /** Which lines an inserted figure added before \begin{document} can go
+   * with it, `text` being the document without the figure. */
+  tidy: (text: string, lines: string) => invoke<Tidied>("assist_tidy", { request: { text, lines } }),
   /** The PDF a figure job made. */
   figurePdf: (id: number) => invoke<ArrayBuffer>("figure_pdf", { id }),
   /** Save a copy of a figure job's file (`png`: the preview drawn as PNG). */

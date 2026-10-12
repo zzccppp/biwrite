@@ -28,6 +28,14 @@ export const messages = {
     zh: "模拟接口会在短暂延迟后把每段文字倒序输出，用于在没有 API 密钥时试用 BiWrite。请在上方添加真实接口。",
   },
   "settings.assistant": { en: "Writing assistant", zh: "写作助手" },
+  "settings.assistedApply": {
+    en: "Accept and Revert with the model's help",
+    zh: "采纳和还原由模型辅助",
+  },
+  "settings.assistedApplyHint": {
+    en: "In a LaTeX paper, Accept has the model fit the result to the document and compiles before it applies, and Revert has the model judge which lines added before \\begin{document} can go. Off, both apply and revert as they are.",
+    zh: "LaTeX 论文中，采纳时先由模型调整并编译检查，还原时由模型判断导言区补加的行能否删除。不勾时直接写入或撤回。",
+  },
   "settings.assistantModel": { en: "Model for polishing, edits and questions", zh: "润色、修改和提问使用的模型" },
   "settings.assistantSame": { en: "Same as translation ({label})", zh: "与翻译相同（{label}）" },
   "settings.assistantUses": {
@@ -210,12 +218,12 @@ export const messages = {
     zh: "文件较长，只发送前一部分。想发送其他部分，可以拆成几个文件分别添加。",
   },
   "assist.packagesAdded": {
-    en: "Inserting also adds to the preamble: {packages}",
-    zh: "插入时会同时在导言区加入：{packages}",
+    en: "Accepting also adds to the preamble: {packages}",
+    zh: "采纳时会同时在导言区加入：{packages}",
   },
   "assist.packagesNotAdded": {
-    en: "Inserted, but \\begin{document} was not found before it: add these to the preamble by hand: {packages}",
-    zh: "已插入，但前面找不到 \\begin{document}，请手动在导言区加入：{packages}",
+    en: "Accepted, but \\begin{document} was not found before it: add these to the preamble by hand: {packages}",
+    zh: "已采纳，但前面找不到 \\begin{document}，请手动在导言区加入：{packages}",
   },
   "assist.packagesNeeded": {
     en: "The document does not load every package this needs. Add to the main file's preamble: {packages}",
@@ -230,6 +238,7 @@ export const messages = {
   "assist.retrying": { en: "The server is busy. Retry {n} of {of}…", zh: "服务器繁忙，正在第 {n}/{of} 次重试…" },
   "assist.stop": { en: "Stop", zh: "停止" },
   "assist.stage.building": { en: "Compiling…", zh: "编译检查中…" },
+  "assist.stage.fitting": { en: "Fitting it to the document…", zh: "模型调整中…" },
   "assist.stage.fixing": { en: "Repairing, round {n}…", zh: "第 {n} 轮修复中…" },
   "assist.fix.clean": { en: "It compiles without errors. Nothing to change.", zh: "编译没有错误，不用修改。" },
   "assist.fix.passed": { en: "{n} errors. With these changes it compiles.", zh: "原有 {n} 个错误，按下面修改后编译通过。" },
@@ -244,7 +253,6 @@ export const messages = {
   },
   "assist.line": { en: "Line {n}", zh: "第 {n} 行" },
   "assist.atLine": { en: "line {n}: ", zh: "第 {n} 行 " },
-  "assist.smartApply": { en: "Smart apply", zh: "智能应用" },
   "assist.figure.format": { en: "Format", zh: "格式" },
   "assist.figure.latex": { en: "LaTeX code", zh: "LaTeX 代码" },
   "assist.figure.pdf": { en: "PDF picture", zh: "PDF 图" },
@@ -263,13 +271,24 @@ export const messages = {
   "assist.check.failed": { en: "The check stopped: {error}", zh: "检查中断：{error}" },
   "assist.check.changes": { en: "Changes to compile", zh: "为编译所做的修改" },
   "assist.accept": { en: "Accept", zh: "采纳" },
-  "assist.insert": { en: "Insert", zh: "插入" },
   "assist.discard": { en: "Discard", zh: "放弃" },
   "assist.again": { en: "Again", zh: "重新生成" },
   "assist.copy": { en: "Copy", zh: "复制" },
   "assist.copied": { en: "Copied.", zh: "已复制。" },
   "assist.applied": { en: "Applied. ⌘Z undoes it.", zh: "已应用，⌘Z 可撤销。" },
   "assist.appliedChecked": { en: "Compiles. Applied, ⌘Z undoes it.", zh: "编译通过，已应用，⌘Z 可撤销。" },
+  "assist.appliedFitted": {
+    en: "Fitted to the document by the model and compiles. Applied, ⌘Z undoes it.",
+    zh: "模型调整后编译通过，已应用，⌘Z 可撤销。",
+  },
+  "assist.appliedPlainErrors": {
+    en: "{n} compile errors were left after the check, so it was applied as it is. ⌘Z undoes it, and Fix can repair it.",
+    zh: "编译检查后仍有 {n} 个错误，已按原样写入，⌘Z 可撤销，也可以用语法修复。",
+  },
+  "assist.appliedPlain": {
+    en: "It could not be checked by a build, so it was applied as it is. ⌘Z undoes it.",
+    zh: "无法编译检查，已按原样写入，⌘Z 可撤销。",
+  },
   "assist.appliedRepaired": {
     en: "Repaired to compile and applied. ⌘Z undoes it.",
     zh: "修复后编译通过，已应用，⌘Z 可撤销。",
@@ -282,6 +301,26 @@ export const messages = {
   "assist.revertEdited": {
     en: "The text it put in was edited since, so it was not reverted. The card shows the text from before, to copy and put back by hand.",
     zh: "采纳后的文字已经改动过，没有自动还原。卡片里列出了采纳前的原文，可以复制后手动替换。",
+  },
+  "assist.waitAdopt": {
+    en: "The last accept or revert is still under way",
+    zh: "上一次采纳或还原还在进行",
+  },
+  "assist.tidy.checking": {
+    en: "Checking whether the lines it added before \\begin{document} are still needed",
+    zh: "正在检查导言区补加的行还有没有用",
+  },
+  "assist.tidy.removed": {
+    en: "{lines} went from before \\begin{document} too, as nothing else needs them.",
+    zh: "导言区补加的 {lines} 已一并删除，文档其他地方不再需要。",
+  },
+  "assist.tidy.kept": {
+    en: "{lines} stay before \\begin{document}, as the document still needs them.",
+    zh: "导言区补加的 {lines} 文档其他地方还在用，已保留。",
+  },
+  "assist.tidy.failed": {
+    en: "The model could not judge, so {lines} stay before \\begin{document}.",
+    zh: "模型无法判断，导言区补加的 {lines} 已保留。",
   },
   "assist.revertEditedInsert": {
     en: "The inserted text was edited since, so it was not taken out. Delete it by hand.",
@@ -562,6 +601,17 @@ export const messages = {
     zh: "配对文件 {mirror} 已在磁盘上被修改，因此没有写入。",
   },
   "disk.notNow": { en: "Not now", zh: "暂不写入" },
+  "disk.viewDiff": { en: "Show the changes", zh: "查看差异" },
+  "disk.diffTitle": { en: "Changed on disk while you edited", zh: "编辑期间本地文件的改动" },
+  "disk.diffOld": { en: "As read when you started", zh: "你开始编辑时读入的版本" },
+  "disk.diffNew": { en: "On disk now", zh: "本地现在的版本" },
+  "disk.diffNone": { en: "No line differs.", zh: "没有不同的行。" },
+  "disk.diffMore": { en: "{n} more changes are not shown.", zh: "另有 {n} 处改动没有显示。" },
+  "disk.savedAsElsewhere": {
+    en: "{name} was changed by another program while you edited it. Your text was saved under the new name, and the original was left as it is.",
+    zh: "{name} 在你编辑期间被其他程序改过。你的内容已另存为新文件，原文件保持不变。",
+  },
+  "disk.gotIt": { en: "OK", zh: "知道了" },
   "doc.mirrorStructure": {
     en: "{mirror} was not written: the changes would not fit its structure (a translation that adds a heading or a list item, or a new paragraph with no place of its own). Edit that paragraph, or update {mirror} by hand and reopen the document.",
     zh: "{mirror} 没有写入：改动放不进它的结构（某段译文多出标题或列表项，或新段落找不到合适的位置）。请修改该段，或手动更新 {mirror} 后重新打开文档。",
@@ -616,6 +666,9 @@ export const messages = {
   "squeeze.stop": { en: "Stop squeezing", zh: "停止挤" },
   "squeeze.through": { en: "through · {ago}", zh: "已挤进 · {ago}" },
   "squeeze.lastOk": { en: "Last answered {ago}", zh: "上次成功 {ago}" },
+  "squeeze.throughSince": { en: "Through {ago}", zh: "挤进于 {ago}" },
+  "squeeze.kept": { en: "kept alive · {ago}", zh: "保活中 · {ago}" },
+  "squeeze.keepRetrying": { en: "keep-alive retrying · {ago}", zh: "保活重试中 · {ago}" },
   "squeeze.trying": { en: "trying · {n}", zh: "挤中 · 第 {n} 次" },
   "squeeze.agoNow": { en: "just now", zh: "刚刚" },
   "squeeze.agoMin": { en: "{n} min ago", zh: "{n} 分钟前" },
@@ -635,8 +688,13 @@ export const messages = {
   "squeeze.keeping": { en: "Keeping {through}/{total} alive", zh: "保活 {through}/{total}" },
   "squeeze.keepAlive": { en: "Keep alive", zh: "持续保活" },
   "squeeze.keepAliveHint": {
-    en: "While the relay turns keys away, each key that got through is sent a short translation after 3 idle minutes, for 30 minutes after this provider was last used. These requests are listed under Requests.",
-    zh: "中转拥挤时，已挤进的密钥空闲 3 分钟后会收到一条很短的翻译以保住位置，只在最后一次使用该服务商后的 30 分钟内进行。这些请求列在请求记录里。",
+    en: "While the relay turns keys away, each key that got through is sent a short translation after 3 idle minutes, so it keeps its place. These requests are listed under Requests.",
+    zh: "中转拥挤时，已挤进的密钥空闲 3 分钟后会收到一条很短的翻译以保住位置。这些请求列在请求记录里。",
+  },
+  "squeeze.forever": { en: "Always", zh: "永久保活" },
+  "squeeze.foreverHint": {
+    en: "Ticked, keys are kept alive however long you are away. Unticked, only for 30 minutes after this provider was last used.",
+    zh: "勾选时一直保活，不论离开多久。不勾时只在最后一次使用该服务商后的 30 分钟内保活。",
   },
   "keys.import": { en: "Import from file…", zh: "从文件导入…" },
   "keys.exported": {

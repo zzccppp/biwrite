@@ -21,13 +21,12 @@
     ready: boolean;
     model: string;
     skill: string;
-    /** A LaTeX file that compiles: fixes and Smart apply build it. */
+    /** A LaTeX file that compiles: fixes and Accept build it. */
     latex: boolean;
     /** A LaTeX document: a figure can be a file of its own. */
     latexDoc: boolean;
     onrun: () => void;
     onaccept: (job: AssistJob) => void;
-    onsmartapply: (job: AssistJob) => void;
     onrevert: (job: AssistJob) => void;
     onagain: (job: AssistJob) => void;
     onreapply: (job: AssistJob) => void;
@@ -46,7 +45,6 @@
     latexDoc,
     onrun,
     onaccept,
-    onsmartapply,
     onrevert,
     onagain,
     onreapply,
@@ -319,9 +317,8 @@
       <AssistJobCard
         {job}
         stale={job.epoch !== store.epoch}
-        {latex}
+        held={store.adopting}
         {onaccept}
-        {onsmartapply}
         oncancelcheck={(j) => store.cancelCheck(j)}
         {onrevert}
         ondiscard={(j) => store.discard(j)}

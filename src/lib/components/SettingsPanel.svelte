@@ -253,6 +253,14 @@
             : t("settings.assistantMock")}
         </span>
       </label>
+      <label class="check assisted" title={t("settings.assistedApplyHint")}>
+        <input
+          type="checkbox"
+          checked={settings.assistedApply}
+          onchange={(e) => run(() => settingsIpc.setAssistedApply(e.currentTarget.checked))}
+        />
+        <span>{t("settings.assistedApply")}</span>
+      </label>
     </section>
 
     <SkillSection onchange={onskill} />

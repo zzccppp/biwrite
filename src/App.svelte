@@ -9,6 +9,7 @@
     asParagraph,
     insertionAt,
     newPreambleLines,
+    preamblePlace,
     reapplyInstruction,
     revertChange,
     uniqueIndex,
@@ -20,6 +21,7 @@
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import Splitter from "./lib/components/Splitter.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
+  import DiffSheet from "./lib/components/DiffSheet.svelte";
   import TemplatePanel from "./lib/components/TemplatePanel.svelte";
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TranslationPane from "./lib/components/TranslationPane.svelte";
@@ -50,10 +52,12 @@
     AssistRequest,
     AssistScope,
     CheckResult,
+    Tidied,
     Direction,
     Fill,
     IssueView,
     DiskView,
+    Hunk,
     MirrorSaved,
     Mode,
     PdfBox,
@@ -241,11 +245,31 @@
   /** An open file changed on disk elsewhere: `changed` asks whether to load
    * the versions there (`which`); `save`, the document's save was refused
    * over such a change; `mirror`, the paired file's write was. */
-  let diskAlert = $state<{ kind: "changed"; which: DiskView } | { kind: "save" } | { kind: "mirror"; name: string } | null>(
-    null,
-  );
+  let diskAlert = $state<
+    | { kind: "changed"; which: DiskView }
+    | { kind: "save" }
+    | { kind: "mirror"; name: string }
+    // Saved under a new name while the original had changed on disk.
+    | { kind: "savedAs"; name: string; hunks: Hunk[] }
+    | null
+  >(null);
   let checkingDisk = false;
   let diskBar = $state<HTMLElement | null>(null);
+  /** The changes made on disk elsewhere, shown (only to look at). */
+  let diffFiles = $state<{ name: string; hunks: Hunk[] }[] | null>(null);
+
+  /** Show how the document (and its paired file) changed on disk since the
+   * app read or last wrote them. It decides nothing. */
+  async function showDiff(which: { document: boolean; mirror: boolean }): Promise<void> {
+    try {
+      const files: { name: string; hunks: Hunk[] }[] = [];
+      if (which.document) files.push({ name: session.name, hunks: await ipc.diskDiff("document") });
+      if (which.mirror) files.push({ name: session.pair?.name ?? "", hunks: await ipc.diskDiff("mirror") });
+      diffFiles = files;
+    } catch (err) {
+      fail(err);
+    }
+  }
 
   /** Answer the question about files on disk with nothing: Ignore, Cancel, Not now. */
   function dismissDisk(): void {
@@ -530,6 +554,13 @@
     const wasUntitled = session.path === null;
     const oldPath = session.path;
     const sentEpoch = epoch;
+    // Saved under a new name, the original is left as it is: when it changed
+    // on disk meanwhile, the author hears so after the save.
+    let elsewhere: { name: string; hunks: Hunk[] } | null = null;
+    if (as && oldPath) {
+      const hunks = await ipc.diskDiff("document").catch(() => [] as Hunk[]);
+      if (hunks.length > 0) elsewhere = { name: session.name, hunks };
+    }
     try {
       const text = doc.toString();
       let copy: ProjectCopy | null = null;
@@ -543,6 +574,7 @@
           : await ipc.saveFile(text, session.document, overwrite, mirrorOverwrite);
       }
       if (!saved || sentEpoch !== epoch) return;
+      if (elsewhere) diskAlert = { kind: "savedAs", ...elsewhere };
       // Saved: what was asked about the save, or the paired file now
       // written, is over (a refusal asks again below).
       if (diskAlert?.kind === "save") diskAlert = null;
@@ -1612,7 +1644,7 @@
   }
 
   /** Apply an approved revision where its target is now (for a fix, its
-   * changes; after Smart apply, the checked answer and its lines).
+   * changes; after the check of Accept, the checked answer and its lines).
    * Translations are handed over first; the edit is then worked out from
    * the document as it is at that moment and made in one go. */
   async function acceptJob(job: AssistJob, checked: CheckResult | null = null): Promise<void> {
@@ -1629,15 +1661,19 @@
       return;
     }
     const revision = checked?.revision ?? r.revision;
+    tidyRuns.delete(job);
+    job.tidy = null;
     job.applying = true;
     try {
       await settleEdits();
-      if (!job.target.insert && job.target.wholeParagraph && r.translation && r.translationMatches && !checked) {
+      // A check that changed nothing leaves the translation as good as it was.
+      const asAnswered = !checked || checked.revision === r.revision;
+      if (!job.target.insert && job.target.wholeParagraph && r.translation && r.translationMatches && asAnswered) {
         // Else the paragraph is translated again.
         await assistIpc.offer(revision, r.translation).catch(() => {});
       }
       // New paragraphs come with their translation, paragraph for paragraph.
-      if (job.action === "write" && r.translation && !checked) {
+      if (job.action === "write" && r.translation && asAnswered) {
         const paragraphs = (s: string) => s.trim().split(/\n\s*\n/).map((p) => p.trim());
         const [en, zh] = [paragraphs(revision), paragraphs(r.translation)];
         if (en.length === zh.length) {
@@ -1683,7 +1719,9 @@
       // card selects that text, and a follow-up asks about it.
       job.from = from + shift;
       job.to = from + shift + insert.length;
-      job.applied = { text: insert };
+      job.applied = { text: insert, preamble: lines && at !== null ? lines : undefined };
+      job.tidy = null;
+      if (checked) job.plainly = false;
       job.state = "applied";
       editor.focus();
       void flush();
@@ -1692,10 +1730,23 @@
     }
   }
 
-  /** Smart apply: the document is built with the answer put in (in the
-   * project's .biwrite folder, nothing saved), and when that brings errors
-   * the model repairs the answer and the lines it needs before
-   * \begin{document}. What compiles is applied once the check is back. */
+  /** Accept: in a LaTeX project, with the model's help on, the answer is
+   * fitted and checked first, elsewhere applied as it is. A fix applies its
+   * changes. */
+  function adoptJob(job: AssistJob): void {
+    // One at a time (the buttons wait too).
+    if (assist.adopting) return;
+    const assisted = settings?.assistedApply !== false;
+    if (assisted && job.action !== "fix" && job.action !== "ask" && isLatex && compilable) void smartApplyJob(job);
+    else void acceptJob(job);
+  }
+
+  /** Accept with the model's help: the model fits the answer to the
+   * document, which is then built with it put in (in the project's .biwrite
+   * folder, nothing saved), and when that brings errors the model repairs
+   * the answer and the lines it needs before \begin{document}. What
+   * compiles is applied once the check is back, and what still does not, or
+   * could not be fitted or checked, as it is. */
   async function smartApplyJob(job: AssistJob): Promise<void> {
     const r = job.result;
     if (!editor || !r?.revision || job.state !== "done" || job.applying || job.restarting || job.checking) return;
@@ -1712,6 +1763,10 @@
     const whole = editor.doc.toString();
     job.check = null;
     job.checkError = null;
+    job.plainly = false;
+    // A revert's check of the preamble lines no longer counts.
+    tidyRuns.delete(job);
+    job.tidy = null;
     job.checking = { fixing: false, round: 0 };
     try {
       await assistIpc.check({
@@ -1725,6 +1780,8 @@
         preambleAt: preambleAt(whole, place.from),
         // As they will be applied: none the preamble has already.
         preamble: newPreambleLines(whole.slice(0, preambleAt(whole, place.from) ?? 0), figureLines(job)),
+        // The model fits it to the document first.
+        fit: true,
       });
     } catch (err) {
       job.checking = null;
@@ -1732,10 +1789,18 @@
     }
   }
 
-  /** A check came back: what compiles is applied. */
+  /** A check came back: what compiles is applied. When it still does not
+   * compile, or the check could not be done (the model unreachable), the
+   * answer is inserted as it is, as Insert does. */
   function onChecked(id: number): void {
     const job = assist.find(id);
-    if (job?.check?.passed && job.state === "done") void acceptJob(job, job.check);
+    if (!job || job.state !== "done") return;
+    if (job.check?.passed) {
+      void acceptJob(job, job.check);
+    } else if (job.check || job.checkError) {
+      job.plainly = true;
+      void acceptJob(job);
+    }
   }
 
   /** Make a fix's changes, each found by the lines around it in the document
@@ -1792,7 +1857,7 @@
    * come to need them. The card can then be accepted again. */
   function revertJob(job: AssistJob): void {
     const applied = job.applied;
-    if (!editor || job.state !== "applied" || !applied) return;
+    if (!editor || job.state !== "applied" || !applied || assist.adopting) return;
     if (job.epoch !== assist.epoch) {
       session.flash(t("assist.stale"));
       return;
@@ -1823,6 +1888,7 @@
       return;
     }
     const original = job.target.insert ? "" : job.target.text;
+    const preamble = applied.preamble;
     const change = revertChange(doc, job, applied.text, original);
     if (!change) {
       // Not overwritten: the card lists the text from before instead.
@@ -1846,6 +1912,64 @@
     job.state = "done";
     editor.focus();
     void flush();
+    // The lines it added before \begin{document} go only when the rest of
+    // the document does without them.
+    if (preamble && isLatex && settings?.assistedApply !== false) void tidyPreamble(job, preamble);
+  }
+
+  /** Most tries of the check of the preamble lines after a revert, when
+   * the text changes while it runs. */
+  const TIDY_TRIES = 3;
+  /** The latest check of each job's preamble lines. */
+  const tidyRuns = new WeakMap<AssistJob, number>();
+
+  /** After a revert, take out the lines the job added before
+   * \begin{document} that the model judges no longer needed (the backend
+   * builds the document without them first). When the model cannot decide,
+   * the lines stay, as a plain revert leaves them. */
+  async function tidyPreamble(job: AssistJob, lines: string): Promise<void> {
+    // (Compared by number: the state holds a proxy of what it is given.)
+    const run = (tidyRuns.get(job) ?? 0) + 1;
+    tidyRuns.set(job, run);
+    job.tidy = { checking: true, removed: [], kept: [], failed: false };
+    const epoch = assist.epoch;
+    // Still the same revert, in the same document.
+    // (Accepted again meanwhile, even while that is being checked, it is not.)
+    const current = () =>
+      tidyRuns.get(job) === run &&
+      job.state === "done" &&
+      !job.checking &&
+      !job.applying &&
+      job.epoch === epoch &&
+      assist.epoch === epoch;
+    const allKept = () => {
+      if (current()) job.tidy = { checking: false, removed: [], kept: [lines.trim()], failed: true };
+    };
+    for (let tries = 1; tries <= TIDY_TRIES; tries++) {
+      if (!editor || !current()) return;
+      const text = editor.doc.toString();
+      let result: Tidied;
+      try {
+        result = await assistIpc.tidy(text, lines);
+      } catch {
+        // The model could not decide (after its own retries): a plain revert.
+        break;
+      }
+      if (!editor || !current()) return;
+      // Written into while it ran: checked again on the text as it is.
+      if (swapping || editor.doc.toString() !== text) continue;
+      const places = result.remove
+        .map((s) => preamblePlace(text, s))
+        .filter((p): p is { from: number; to: number } => p !== null)
+        .sort((a, b) => a.from - b.from);
+      if (places.length > 0) {
+        editor.view.dispatch({ changes: places, userEvent: "input.assist" });
+        void flush();
+      }
+      job.tidy = { checking: false, removed: result.remove, kept: result.kept, failed: false };
+      return;
+    }
+    allKept();
   }
 
   /** Once a job's rerun started: the old card goes, unless it was applied meanwhile. */
@@ -1977,7 +2101,9 @@
           onRequest: (record) => requestLog.apply(record),
           onAssist: (event) => {
             assist.onEvent(event);
-            if (event.kind === "checked") onChecked(event.id);
+            if (event.kind === "checked" || (event.kind === "check_failed" && event.message !== "cancelled")) {
+              onChecked(event.id);
+            }
           },
           onFills: (fills) => applyFills(fills),
           onSqueeze: (event) => onSqueeze(event),
@@ -2138,8 +2264,7 @@
         latex={isLatex && compilable}
         latexDoc={isLatex}
         onrun={() => runAssist()}
-        onaccept={(job) => acceptJob(job, job.check)}
-        onsmartapply={smartApplyJob}
+        onaccept={adoptJob}
         onrevert={revertJob}
         onagain={againJob}
         onreapply={reapplyJob}
@@ -2168,12 +2293,14 @@
       {#if diskAlert.kind === "changed"}
         {@const which = diskAlert.which}
         <span>{diskChanged(which)}</span>
+        <button class="link" onclick={() => showDiff(which)}>{t("disk.viewDiff")}</button>
         <button class="btn primary" onclick={() => loadFromDisk(which)}>
           {t(loadLoses(which) ? "disk.loadDiscard" : "disk.load")}
         </button>
         <button class="btn" onclick={() => ignoreDisk(which)}>{t("disk.ignore")}</button>
       {:else if diskAlert.kind === "save"}
         <span>{t("disk.saveRefused", { name: session.name })}</span>
+        <button class="link" onclick={() => showDiff({ document: true, mirror: false })}>{t("disk.viewDiff")}</button>
         <button
           class="btn primary"
           onclick={() => {
@@ -2189,8 +2316,14 @@
           }}>{t("disk.saveAs")}</button
         >
         <button class="btn" onclick={dismissDisk}>{t("common.cancel")}</button>
+      {:else if diskAlert.kind === "savedAs"}
+        {@const savedAs = diskAlert}
+        <span>{t("disk.savedAsElsewhere", { name: savedAs.name })}</span>
+        <button class="link" onclick={() => (diffFiles = [{ name: savedAs.name, hunks: savedAs.hunks }])}>{t("disk.viewDiff")}</button>
+        <button class="btn" onclick={() => (diskAlert = null)}>{t("disk.gotIt")}</button>
       {:else}
         <span>{t("disk.mirrorRefused", { mirror: diskAlert.name })}</span>
+        <button class="link" onclick={() => showDiff({ document: false, mirror: true })}>{t("disk.viewDiff")}</button>
         <button
           class="btn primary"
           onclick={() => {
@@ -2215,6 +2348,10 @@
     ondismisserror={dismissError}
   />
 </div>
+
+{#if diffFiles}
+  <DiffSheet files={diffFiles} onclose={() => (diffFiles = null)} />
+{/if}
 
 {#if showSettings && settings}
   <SettingsPanel

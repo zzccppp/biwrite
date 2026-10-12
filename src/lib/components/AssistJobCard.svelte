@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { type AssistJob, ACTION_LABEL } from "../assist.svelte";
+  import { type AssistJob, ACTION_LABEL, lineList } from "../assist.svelte";
   import { t } from "../i18n.svelte";
   import { formatCount, formatDuration } from "../logFormat";
   import type { AssistResult, FigureView, FixReport, TexError } from "../types";
@@ -9,11 +9,12 @@
     job: AssistJob;
     /** The job's document is no longer open. */
     stale: boolean;
-    /** A LaTeX file that compiles: Smart apply builds it. */
-    latex: boolean;
+    /** Another accept or revert is under way: this card's wait. */
+    held: boolean;
+    /** Apply (in a LaTeX project after a build with the answer in it,
+     * repaired if need be). */
     onaccept: (job: AssistJob) => void;
-    /** Apply after building the document with the answer in it (repaired if need be). */
-    onsmartapply: (job: AssistJob) => void;
+    /** Stop that build. */
     oncancelcheck: (job: AssistJob) => void;
     /** Undo an applied job's change, wherever later edits put it. */
     onrevert: (job: AssistJob) => void;
@@ -31,9 +32,8 @@
   let {
     job,
     stale,
-    latex,
+    held,
     onaccept,
-    onsmartapply,
     oncancelcheck,
     onrevert,
     ondiscard,
@@ -76,9 +76,8 @@
   );
   /** The answer as it would be applied: repaired by the last check, if any. */
   const revision = $derived(job.check?.revision ?? r?.revision ?? null);
-  const smart = $derived(latex && !!r?.revision && !unchanged && job.action !== "ask" && job.action !== "fix");
-  /** The lines applying adds before \begin{document}: those Smart apply
-   * settled on, or the packages and TikZ libraries a figure needs. */
+  /** The lines applying adds before \begin{document}: those the check of
+   * Accept settled on, or the packages and TikZ libraries a figure needs. */
   const preamble = $derived.by(() => {
     if (job.check) return job.check.preamble.trim();
     if (job.action !== "figure" || !r?.preambleHere) return "";
@@ -92,6 +91,7 @@
   );
 
   function stage(s: { fixing: boolean; round: number }): string {
+    if (s.fixing && s.round === 0) return t("assist.stage.fitting");
     return s.fixing ? t("assist.stage.fixing", { n: s.round }) : t("assist.stage.building");
   }
 
@@ -156,15 +156,21 @@
   {:else if finished}
     <div class="row">
       <p class="note">
-        {t(
-          job.state !== "applied"
-            ? "assist.discarded"
-            : !job.check?.passed
-              ? "assist.applied"
-              : job.check.rounds
-                ? "assist.appliedRepaired"
-                : "assist.appliedChecked",
-        )}
+        {job.state === "applied" && job.plainly
+          ? job.check && !job.check.passed
+            ? t("assist.appliedPlainErrors", { n: job.check.errors.length })
+            : t("assist.appliedPlain")
+          : t(
+              job.state !== "applied"
+                ? "assist.discarded"
+                : !job.check?.passed
+                  ? "assist.applied"
+                  : job.check.rounds
+                    ? "assist.appliedRepaired"
+                    : job.check.fitted
+                      ? "assist.appliedFitted"
+                      : "assist.appliedChecked",
+            )}
       </p>
       <span class="spacer"></span>
       {#if r}
@@ -173,7 +179,12 @@
         >
       {/if}
       {#if job.state === "applied" && job.applied && !stale}
-        <button class="btn small" onclick={() => onrevert(job)}>{t("assist.revert")}</button>
+        <button
+          class="btn small"
+          disabled={held}
+          title={held ? t("assist.waitAdopt") : undefined}
+          onclick={() => onrevert(job)}>{t("assist.revert")}</button
+        >
       {/if}
       <button class="btn small" onclick={() => onremove(job)}>{t("common.delete")}</button>
     </div>
@@ -201,6 +212,17 @@
       <button class="btn small" onclick={() => onremove(job)}>{t("common.delete")}</button>
     </div>
   {:else if r}
+    {#if job.tidy?.checking}
+      <div class="streaming tidy">
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="label">{t("assist.tidy.checking")}</span>
+      </div>
+    {:else if job.tidy?.failed}
+      <p class="note tidy">{t("assist.tidy.failed", { lines: lineList(job.tidy.kept) })}</p>
+    {:else if job.tidy}
+      {#if job.tidy.removed.length}<p class="note tidy">{t("assist.tidy.removed", { lines: lineList(job.tidy.removed) })}</p>{/if}
+      {#if job.tidy.kept.length}<p class="note tidy">{t("assist.tidy.kept", { lines: lineList(job.tidy.kept) })}</p>{/if}
+    {/if}
     {@render body(r)}
 
     {#if stale}
@@ -243,13 +265,13 @@
       {/if}
       <div class="row">
         {#if job.action === "fix" ? !!r.hunks.length : r.revision && !unchanged && job.action !== "ask"}
-          <button class="btn small primary" disabled={job.applying || job.restarting} onclick={() => onaccept(job)}>
-            {job.target.insert ? t("assist.insert") : t("assist.accept")}
-          </button>
-        {/if}
-        {#if smart}
-          <button class="btn small" disabled={job.applying || job.restarting} onclick={() => onsmartapply(job)}>
-            {t("assist.smartApply")}
+          <button
+            class="btn small primary"
+            disabled={job.applying || job.restarting || held}
+            title={held ? t("assist.waitAdopt") : undefined}
+            onclick={() => onaccept(job)}
+          >
+            {t("assist.accept")}
           </button>
         {/if}
         <button class="btn small" disabled={job.restarting} onclick={() => onagain(job)}>{t("assist.again")}</button>

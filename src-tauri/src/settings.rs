@@ -145,6 +145,13 @@ pub struct AppSettings {
     /// Keys that got through to a relay that turns keys away are sent a
     /// short translation when idle, so they keep their place.
     pub keep_alive: bool,
+    /// They are kept alive however long the author is away; off, only
+    /// within half an hour of the author's last use.
+    pub keep_alive_forever: bool,
+    /// Accept and Revert in a LaTeX project go through the model and a
+    /// build (the model fits an answer, judges the preamble lines a revert
+    /// may take out); off, they apply and revert as they are.
+    pub assisted_apply: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +191,8 @@ impl Default for AppSettings {
             check_updates: true,
             close_to_tray: true,
             keep_alive: true,
+            keep_alive_forever: true,
+            assisted_apply: true,
             keep_file: false,
         }
     }
@@ -459,6 +468,8 @@ pub struct SettingsView {
     pub check_updates: bool,
     pub close_to_tray: bool,
     pub keep_alive: bool,
+    pub keep_alive_forever: bool,
+    pub assisted_apply: bool,
     /// This build's version.
     pub version: String,
 }
@@ -498,6 +509,8 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         check_updates: settings.check_updates,
         close_to_tray: settings.close_to_tray,
         keep_alive: settings.keep_alive,
+        keep_alive_forever: settings.keep_alive_forever,
+        assisted_apply: settings.assisted_apply,
         version: env!("CARGO_PKG_VERSION").to_owned(),
     }
 }
@@ -534,6 +547,19 @@ impl Paths {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Settings written before these options read as on.
+    #[test]
+    fn keeping_alive_always_and_assisted_apply_are_on_unless_turned_off() {
+        let old: AppSettings = serde_json::from_str(r#"{"keepAlive": true}"#).unwrap();
+        assert!(old.keep_alive_forever && old.assisted_apply);
+        let off: AppSettings =
+            serde_json::from_str(r#"{"keepAliveForever": false, "assistedApply": false}"#).unwrap();
+        assert!(!off.keep_alive_forever && !off.assisted_apply);
+        let paths = Paths::in_dir(&std::env::temp_dir());
+        let v = view(&AppSettings::default(), String::new(), &paths);
+        assert!(v.keep_alive_forever && v.assisted_apply);
+    }
 
     fn deepseek() -> ProviderEntry {
         ProviderEntry {

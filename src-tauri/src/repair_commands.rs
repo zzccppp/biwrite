@@ -5,7 +5,8 @@
 //! changes it answers with and builds again, a few rounds at most. Its card
 //! then offers the changes as hunks to accept.
 //!
-//! A check runs when an answer is applied with Smart apply: the document is
+//! A check runs when an answer is accepted with the model's help: the model
+//! first fits the answer to the document (when asked to), the document is
 //! built with the answer put in, and when that brings errors the document
 //! did not have, the model corrects the answer and the lines it adds before
 //! `\begin{document}`, a few rounds at most. The editor then applies what
@@ -71,6 +72,9 @@ pub struct CheckResult {
     pub before: usize,
     /// Rounds of repairs the model made.
     pub rounds: u32,
+    /// The model fitted the answer to the document before it was built,
+    /// and changed it.
+    pub fitted: bool,
     pub changes_zh: Vec<String>,
     pub changes_en: Vec<String>,
     pub usage: TokenUsage,
@@ -109,7 +113,7 @@ type OnStage<'a> = &'a (dyn Fn(bool, u32) + Send + Sync);
 
 /// The model's answer to `chat`, retried after passing failures. With an
 /// app, its text as it arrives and the retries go to the card of job `id`.
-async fn ask(
+pub(crate) async fn ask(
     app: Option<&AppHandle>,
     id: u64,
     model: &dyn ChatModel,
@@ -349,6 +353,11 @@ pub struct CheckStart {
     /// The lines put there for the answer.
     #[serde(default)]
     pub preamble: String,
+    /// The model fits the answer to the document before the first build
+    /// (Accept with the model's help). A model that cannot be reached is an
+    /// error, and the answer is applied as it is.
+    #[serde(default)]
+    pub fit: bool,
 }
 
 /// The document of `start` with `revision` and `preamble` in it, and where
@@ -434,6 +443,49 @@ pub(crate) async fn check_loop(
     let editable = start.preamble_at.is_some();
     let mut revision = start.revision.clone();
     let mut preamble = start.preamble.clone();
+    let packages = crate::latex_commands::document_packages(state, &start.text)
+        .map(|(p, _)| p.into_iter().collect::<Vec<_>>());
+    let mut notes = Notes::default();
+    let mut usage = TokenUsage::default();
+    // First the model fits the answer to the document.
+    let mut fitted = false;
+    if start.fit {
+        on_stage(true, 0);
+        let (text, answer, lines) = compose(start, &revision, &preamble);
+        let (system, user) = repair::answer_fix_prompt(&repair::AnswerFixRequest {
+            text: &text,
+            answer: answer.clone(),
+            preamble: if editable {
+                Some(lines.clone().unwrap_or(answer.start..answer.start))
+            } else {
+                None
+            },
+            errors: &[],
+            packages: packages.as_deref(),
+        });
+        let chat = ChatRequest {
+            purpose: "check".to_owned(),
+            system,
+            user,
+            images: Vec::new(),
+        };
+        let out = ask(None, start.id, model, &chat)
+            .await
+            .map_err(|e| CommandError::Settings(e.to_string()))?;
+        add_usage(&mut usage, out.usage);
+        let fit = repair::parse_answer_fix(&out.text);
+        let next_revision = fit.revision.unwrap_or_else(|| revision.clone());
+        let next_preamble = match fit.preamble {
+            Some(p) if editable => p,
+            _ => preamble.clone(),
+        };
+        if next_revision != revision || next_preamble != preamble {
+            fitted = true;
+            notes.add(fit.changes_zh, fit.changes_en);
+            revision = next_revision;
+            preamble = next_preamble;
+        }
+    }
     on_stage(false, 0);
     let (mut text, mut answer, mut lines) = compose(start, &revision, &preamble);
     let mut checked = check_build(state, &text, CHECK_FOLDER).await?;
@@ -445,10 +497,6 @@ pub(crate) async fn check_loop(
         check_build(state, &start.text, BEFORE_FOLDER).await?.errors
     };
     let mut new = new_errors(&checked.errors, &before, &text, &answer, lines.as_ref());
-    let packages = crate::latex_commands::document_packages(state, &text)
-        .map(|(p, _)| p.into_iter().collect::<Vec<_>>());
-    let mut notes = Notes::default();
-    let mut usage = TokenUsage::default();
     let mut rounds = 0;
     while !new.is_empty() && rounds < MAX_ROUNDS {
         rounds += 1;
@@ -498,6 +546,7 @@ pub(crate) async fn check_loop(
         errors: new,
         before: before.len(),
         rounds,
+        fitted,
         changes_zh: notes.zh,
         changes_en: notes.en,
         usage,

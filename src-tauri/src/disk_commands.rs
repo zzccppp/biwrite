@@ -103,6 +103,34 @@ pub async fn check_disk(
     check(&state, document).await
 }
 
+/// How a file changed on disk: from the text the app last read or wrote
+/// of the open document (`which` = "document") or its paired file
+/// ("mirror") to the one on disk now, in whole lines. For the author to
+/// look at, nothing more. Empty when nothing changed or the file cannot be
+/// read.
+#[tauri::command]
+pub async fn disk_diff(
+    state: State<'_, AppState>,
+    which: String,
+) -> CommandResult<Vec<biwrite_core::repair::Hunk>> {
+    Ok(diff(&state, &which).await)
+}
+
+/// See [`disk_diff`].
+pub(crate) async fn diff(state: &AppState, which: &str) -> Vec<biwrite_core::repair::Hunk> {
+    let (document, mirror) = known(state);
+    let Some((path, known, _)) = (if which == "mirror" { mirror } else { document }) else {
+        return Vec::new();
+    };
+    let Some(bytes) = read_bytes(&path).await else {
+        return Vec::new();
+    };
+    match TextFile::decode(bytes) {
+        Ok(disk) => biwrite_core::repair::hunks(&known, disk.text()),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// See [`check_disk`].
 pub(crate) async fn check(state: &AppState, document: u64) -> CommandResult<Option<DiskView>> {
     // Never halfway through a write of ours.

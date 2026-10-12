@@ -206,6 +206,19 @@ fn the_answer_prompt_shows_what_was_put_in_and_what_may_change() {
     });
     assert!(user.contains("cannot be changed"));
     assert!(!user.contains("<preamble>\nall the lines"));
+    // Without errors: fitted before it is applied.
+    let (_, user) = answer_fix_prompt(&AnswerFixRequest {
+        text: &text,
+        answer: start..end,
+        preamble: Some(pre..pre_end),
+        errors: &[],
+        packages: None,
+    });
+    assert!(user.contains("Before it is applied, fit it to this document"));
+    assert!(user.contains("when it fits as it is, return it unchanged"));
+    assert!(!user.contains("<errors>") && !user.contains("fails to compile"));
+    assert!(user.contains("<preamble>\nall the lines to add"));
+    assert!(user.contains("on what changed, or nothing"));
 }
 
 #[test]
