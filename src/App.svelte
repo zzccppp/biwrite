@@ -73,14 +73,16 @@
   let settingsFocus = $state<string | null>(null);
   /** A newer release found at startup. */
   let updateAvailable = $state<string | null>(null);
-  /** Squeezes running in the background, by provider id. */
+  /** Squeezes running in the background, and keys kept alive, by provider id. */
   let squeezes = $state<Record<string, SqueezeEvent>>({});
   const squeezeLabel = $derived.by(() => {
-    const running = Object.values(squeezes).filter((e) => e.running);
-    if (running.length === 0) return null;
+    const shown = Object.values(squeezes).filter((e) => e.running || (e.keeping && e.through > 0));
+    if (shown.length === 0) return null;
     return {
-      text: running.map((e) => t("squeeze.status", { through: e.through, total: e.total })).join(" · "),
-      title: running.map((e) => e.providerName).join(" · "),
+      text: shown
+        .map((e) => t(e.running ? "squeeze.status" : "squeeze.keeping", { through: e.through, total: e.total }))
+        .join(" · "),
+      title: shown.map((e) => e.providerName).join(" · "),
     };
   });
 
@@ -999,14 +1001,15 @@
     }
   }
 
-  /** The PDF menu's actions run on the selection the click made. */
+  /** The PDF menu's actions run on the selection the click made ("edit":
+   * polishing as the author writes in the instruction box). */
   function pdfAction(action: "polish" | "edit" | "ask"): void {
     pdfMenu = null;
     if (action === "polish") {
       void runAssist({ action: "polish", instruction: "" });
       return;
     }
-    assist.setAction(action);
+    assist.setAction(action === "edit" ? "polish" : action);
     setAssistOpen(true);
     requestAnimationFrame(() => assistPanel?.focus());
   }
@@ -1164,7 +1167,6 @@
       }
     } else if (key === "k" && !e.shiftKey) {
       e.preventDefault();
-      assist.setAction(assist.action === "polish" ? "edit" : assist.action);
       setAssistOpen(true);
       requestAnimationFrame(() => assistPanel?.focus());
     }
@@ -1231,7 +1233,8 @@
     };
     try {
       await assist.start(request, o.reapplies ?? null);
-      if (o.instruction === undefined) assist.instruction = "";
+      // Via translation keeps the edited translation, to change and run again.
+      if (o.instruction === undefined && request.action !== "mirror") assist.instruction = "";
       if (!showAssist) setAssistOpen(true);
       return true;
     } catch (err) {

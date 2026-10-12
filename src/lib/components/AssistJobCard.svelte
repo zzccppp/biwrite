@@ -26,9 +26,19 @@
 
   let followUp = $state("");
   let copied = $state(false);
-  /** An applied or discarded card shows its result again. */
+  /** An applied, discarded or kept card shows its result again. */
   let expanded = $state(false);
   const finished = $derived(job.state === "applied" || job.state === "discarded");
+  /** Shown as one line (dimmed): finished or kept, and not opened. A revert
+   * that found the text edited lists the text from before, in full. */
+  const folded = $derived(
+    !expanded && ((finished && !(job.state === "applied" && job.revertBlocked)) || (job.state === "done" && job.kept)),
+  );
+
+  function keep(): void {
+    job.kept = true;
+    expanded = false;
+  }
 
   const r = $derived(job.result);
   const unchanged = $derived(!!r?.revision && r.revision.trim() === job.target.text.trim());
@@ -52,20 +62,14 @@
   }
 </script>
 
-<article
-  class="card"
-  class:expanded
-  class:blocked={job.revertBlocked}
-  data-state={job.state}
-  data-action={job.action}
->
+<article class="card" class:folded data-state={job.state} data-action={job.action}>
   <button class="head" onclick={() => onfocus(job)} title={job.target.text}>
     <span class="action smallcaps">{t(ACTION_LABEL[job.action])}</span>
     {#if job.reapplies}<span class="tag">{t("assist.reapplying")}</span>{/if}
     <span class="snippet">{preview || "—"}</span>
   </button>
 
-  {#if job.instruction && job.action !== "polish"}
+  {#if job.instruction}
     <p class="instruction">{job.instruction.split("\n")[0]}</p>
   {/if}
 
@@ -114,11 +118,22 @@
       {@render follow()}
       {@render meta(r)}
     {/if}
+  {:else if r && job.kept && !expanded}
+    <div class="row">
+      <p class="note">{t("assist.kept")}</p>
+      <span class="spacer"></span>
+      <button class="btn small" aria-expanded={false} onclick={() => (expanded = true)}>{t("assist.show")}</button>
+      <button class="btn small" onclick={() => onremove(job)}>{t("common.delete")}</button>
+    </div>
   {:else if r}
     {@render body(r)}
 
     {#if stale}
       <p class="warn">{t("assist.stale")}</p>
+      <div class="row">
+        <span class="spacer"></span>
+        <button class="btn small" onclick={() => onremove(job)}>{t("common.delete")}</button>
+      </div>
     {:else if job.conflict}
       <p class="warn">{job.to > job.from ? t("assist.conflict") : t("assist.gone")}</p>
       <div class="row">
@@ -129,7 +144,7 @@
       </div>
     {:else}
       <div class="row">
-        {#if r.revision && !unchanged}
+        {#if r.revision && !unchanged && job.action !== "ask"}
           <button class="btn small primary" disabled={job.applying || job.restarting} onclick={() => onaccept(job)}>
             {job.target.insert ? t("assist.insert") : t("assist.accept")}
           </button>
@@ -141,7 +156,17 @@
           </button>
         {/if}
         <span class="spacer"></span>
-        <button class="btn small" onclick={() => ondiscard(job)}>{t("assist.discard")}</button>
+        {#if job.kept}
+          <button class="btn small" aria-expanded={true} onclick={() => (expanded = false)}>{t("assist.hide")}</button>
+        {:else}
+          <button class="btn small" onclick={keep}>{t("assist.keep")}</button>
+        {/if}
+        <!-- A question has nothing to accept or discard, so it is deleted when done with. -->
+        {#if job.action === "ask"}
+          <button class="btn small" onclick={() => onremove(job)}>{t("common.delete")}</button>
+        {:else}
+          <button class="btn small" onclick={() => ondiscard(job)}>{t("assist.discard")}</button>
+        {/if}
       </div>
     {/if}
 
@@ -259,8 +284,7 @@
     border-color: var(--rule-strong);
     box-shadow: 0 6px 18px -14px rgba(0, 0, 0, 0.4);
   }
-  .card[data-state="applied"]:not(.expanded):not(.blocked),
-  .card[data-state="discarded"]:not(.expanded) {
+  .card.folded {
     opacity: 0.6;
   }
   .head {

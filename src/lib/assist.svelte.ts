@@ -23,7 +23,8 @@ export type JobState = "running" | "done" | "failed" | "applied" | "discarded";
 
 export const ACTION_LABEL = {
   polish: "assist.action.polish",
-  edit: "assist.action.edit",
+  // Polishing with an instruction (Re-apply runs one): shown as polishing.
+  edit: "assist.action.polish",
   ask: "assist.action.ask",
   figure: "assist.action.figure",
   mirror: "assist.action.mirror",
@@ -99,6 +100,8 @@ export class AssistJob {
   applying = $state(false);
   /** Being run again (Again, Re-apply): its buttons wait for that. */
   restarting = $state(false);
+  /** Kept for later: the card folds, and can still be accepted. */
+  kept = $state(false);
   /** What applying put in, and the package lines it added to the preamble,
    * for Revert (kept in step with later edits like the target). */
   applied = $state<{ text: string; packages: { from: number; to: number; text: string } | null } | null>(null);
@@ -152,11 +155,18 @@ export class AssistStore {
   jobs = $state<AssistJob[]>([]);
   attachments = $state<AttachmentView[]>([]);
   samples = $state<Sample[]>([]);
-  action = $state<AssistAction>(
-    load(ACTION_KEY, ["polish", "edit", "ask", "figure", "mirror", "write"] as const, "polish"),
-  );
+  /** Polishing takes an instruction too, so "edit" (of older versions) loads as polishing. */
+  action = $state<AssistAction>(load(ACTION_KEY, ["polish", "ask", "figure", "mirror", "write"] as const, "polish"));
   scope = $state<AssistScope>(load(SCOPE_KEY, ["target", "neighbors", "document"] as const, "neighbors"));
-  instruction = $state("");
+  /** The instruction box of each action: switching keeps each its own text
+   * (via translation fills its box with the paragraph's translation). */
+  drafts = $state<Record<AssistAction, string>>({ polish: "", edit: "", ask: "", figure: "", mirror: "", write: "" });
+  get instruction(): string {
+    return this.drafts[this.action];
+  }
+  set instruction(text: string) {
+    this.drafts[this.action] = text;
+  }
   /** Bumped when another document is loaded (reactive: cards turn stale). */
   epoch = $state(0);
   /** Edits made while jobs were being started, to map their targets through. */
@@ -165,7 +175,8 @@ export class AssistStore {
   #early = new Map<number, AssistEvent[]>();
 
   running = $derived(this.jobs.filter((j) => j.state === "running").length);
-  ready = $derived(this.jobs.filter((j) => j.state === "done").length);
+  /** Results waiting to be accepted (answers and kept results wait for nothing). */
+  ready = $derived(this.jobs.filter((j) => j.state === "done" && j.action !== "ask" && !j.kept).length);
 
   setAction(a: AssistAction): void {
     this.action = a;
@@ -255,9 +266,9 @@ export class AssistStore {
     job.state = "discarded";
   }
 
-  /** Forget one finished job. */
+  /** Forget one job that is not running (a finished one, an answer, a kept result). */
   remove(job: AssistJob): void {
-    if (job.open) return;
+    if (job.state === "running") return;
     this.jobs = this.jobs.filter((j) => j !== job);
   }
 

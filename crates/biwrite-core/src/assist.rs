@@ -261,15 +261,17 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
     }
 
     let kind = markup(req.mode);
+    // Polishing with an instruction revises as it asks.
+    let instructed = !req.instruction.trim().is_empty();
     let task = match action {
-        Action::Polish => format!(
+        Action::Polish if !instructed => format!(
             "Polish the text in <target>, {kind} written in {src}, by the rules. Change only what the rules require. Keep claims, numbers, citations and terms, and keep every part that already follows the rules word for word."
         ),
-        Action::Edit => format!(
+        Action::Polish | Action::Edit => format!(
             "Revise the text in <target>, {kind} written in {src}, as <instruction> asks, and follow the rules in what you write. Change nothing the instruction does not require."
         ),
         Action::Ask => format!(
-            "Answer the question in <instruction> about the text in <target>{}. Be concrete: quote the words you would change and say how. Answer in the language of the question.",
+            "Answer the question in <instruction> about the text in <target>{}. Answer what is asked, concretely, and quote the text where that helps. Give no rewritten version of the text. Answer in the language of the question.",
             if req.document.is_some() { " and the document" } else { "" }
         ),
         Action::Mirror => format!(
@@ -323,9 +325,7 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
         Action::Polish | Action::Edit => format!(
             "\n\nReply in exactly this form:\n<revision>\nthe revised text in {src}, ready to replace <target>\n</revision>\n<translation>\na faithful {other} translation of the revised text\n</translation>\n<changes_zh>\nat most three short lines in Chinese on what changed and why\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>\nIf nothing should change, return the text unchanged in <revision> and say so in the change notes."
         ),
-        Action::Ask => format!(
-            "\n\nReply with the answer in <answer>…</answer>. If the answer proposes a concrete rewrite of <target>, also give it in <revision> (in {src}) with <translation> ({other}), <changes_zh> and <changes_en>."
-        ),
+        Action::Ask => "\n\nReply with the answer in <answer>…</answer>.".to_owned(),
         Action::Figure => format!(
             "\n\nReply in exactly this form:\n<revision>\nthe source to insert\n</revision>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\nat most three short lines in Chinese describing the figure\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
         ),
@@ -521,7 +521,11 @@ pub fn parse_for(
             // No tags at all: the whole reply is the answer.
             (!text.contains("<revision>")).then(|| text.trim().to_owned())
         });
-        answer.answer = free.filter(|a| !a.is_empty());
+        // A question gets its answer only, whatever else the reply holds.
+        return Ok(Answer {
+            answer: free.filter(|a| !a.is_empty()),
+            ..Answer::default()
+        });
     }
     let Some(revision) = revision_raw.filter(|r| !r.is_empty()) else {
         return Ok(answer);

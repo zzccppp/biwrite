@@ -406,7 +406,20 @@ function squeezeEvent(change: Record<string, unknown>): void {
     running: squeezeRun.running,
     through: squeezeRun.through.filter((t) => t !== null).length,
     total: POOL.length,
+    keeping: state.settings.keepAlive && squeezeRun.started !== null,
   });
+}
+
+/** Like the backend's keeper: a round every two seconds while keeping alive is on. */
+setInterval(() => {
+  if (state.settings.keepAlive && squeezeRun.started !== null) squeezeEvent({ kind: "kept" });
+}, 2000);
+
+/** A key kept alive loses its place (for UI tests): with keeping alive on, it is squeezed back in. */
+function dropKey(index: number): void {
+  squeezeRun.through[index] = null;
+  squeezeEvent({ kind: "kept" });
+  if (state.settings.keepAlive && !squeezeRun.running) startSqueeze();
 }
 
 function startSqueeze(): void {
@@ -785,6 +798,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   },
   set_keep_alive: (a) => {
     state.settings.keepAlive = Boolean(a.on);
+    if (squeezeRun.started !== null) squeezeEvent({ kind: "kept" });
     return clone(state.settings);
   },
   set_tray_language: () => null,
@@ -827,14 +841,12 @@ const handlers: Record<string, (args: Args) => unknown> = {
     if (insert) from = to;
     const original = insert ? req.text.slice(...paragraphAround(req.text, req.from)) : req.text.slice(from, to);
     const p = POLISHED.default;
-    // A question asking for a change ("怎么改", "revise") gets a revision too.
-    const askRevises = req.action === "ask" && /改|revise|rewrite/i.test(req.instruction);
     const revision =
       req.action === "figure"
         ? TABLE
         : req.action === "write"
           ? WRITTEN.revision
-          : req.action === "ask" && !askRevises
+          : req.action === "ask"
             ? null
             : p.revision;
     const chunks = ["<revision>\nThis note asks", "<revision>\nThis note asks whether the same idea transfers", "<revision>\nThis note asks whether the same idea transfers to graph neural networks."];
@@ -1058,4 +1070,4 @@ export function installMockBackend(): void {
   }, 1500);
 }
 
-export const mockState = state;
+export const mockState = Object.assign(state, { dropKey });

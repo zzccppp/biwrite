@@ -161,19 +161,55 @@ fn unusable_answers_are_errors() {
 }
 
 #[test]
-fn ask_answers_with_or_without_a_rewrite() {
+fn a_question_gets_its_answer_only() {
     let protector = Protector::new(Mode::Plain);
     let plain = parse(Action::Ask, "The claim needs a number.", &protector).unwrap();
     assert_eq!(plain.answer.as_deref(), Some("The claim needs a number."));
     assert!(plain.revision.is_none());
+    // A reply that rewrites the text anyway: the rewrite is left out.
     let both = parse(
         Action::Ask,
-        "<answer>Add the number.</answer><revision>Accuracy rose by 4 points.</revision><translation>准确率提高了 4 个点。</translation>",
+        "<answer>Add the number.</answer><revision>Accuracy rose by 4 points.</revision><translation>准确率提高了 4 个点。</translation><changes_zh>加了数字</changes_zh>",
         &protector,
     )
     .unwrap();
     assert_eq!(both.answer.as_deref(), Some("Add the number."));
-    assert_eq!(both.revision.as_deref(), Some("Accuracy rose by 4 points."));
+    assert!(both.revision.is_none() && both.translation.is_none());
+    assert!(both.changes_zh.is_empty());
+    // The prompt asks for no rewrite.
+    let ask = build(
+        &Request {
+            action: Action::Ask,
+            target: "x",
+            instruction: "How should this read?",
+            ..Default::default()
+        },
+        &skill(),
+    );
+    assert!(ask.user.contains("Give no rewritten version"));
+    assert!(!ask.user.contains("<revision>"));
+}
+
+#[test]
+fn polishing_with_an_instruction_revises_as_it_asks() {
+    let request = |instruction| Request {
+        action: Action::Polish,
+        target: "Results are good.",
+        instruction,
+        ..Default::default()
+    };
+    let bare = build(&request(""), &skill());
+    assert!(bare.user.contains("Polish the text in <target>"));
+    assert!(!bare.user.contains("<instruction>"));
+    let asked = build(&request("State the dataset count."), &skill());
+    assert!(asked.user.contains("as <instruction> asks"));
+    assert!(
+        asked
+            .user
+            .contains("<instruction>\nState the dataset count.")
+    );
+    // The same rules either way.
+    assert_eq!(bare.system, asked.system);
 }
 
 #[test]

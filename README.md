@@ -46,7 +46,7 @@ the toolbar opens it on GitHub.
 | [Bilingual editing](#bilingual-editing) | English on the left, Chinese on the right (or the other way round with `EN ⇄ 中`). Only edited paragraphs are translated again, revised from their previous translation. Math, citations, references, labels, URLs and comments reach the model as placeholders and come back byte for byte. A Chinese file opens as the Chinese side, and swapping before everything is translated fills in the rest as it arrives. |
 | [LaTeX](#latex-papers) | Compiles with your TeX distribution (latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX, as the project's `latexmkrc` or packages ask). The PDF shows in the right pane, a click in the PDF selects the sentence in the source, `⌘⌥J` shows the cursor's place in the PDF, and problems link to their lines. A Chinese PDF is built from the translation. |
 | [Your own Chinese version](#an-existing-chinese-version) | `paper.tex` with `paper_zh.tex`, or `sections_en/` with `sections_zh/`, pair up paragraph by paragraph. Your Chinese becomes the translation with no requests, and saving writes each edited paragraph into the other file in place. |
-| [Writing assistant](#writing-assistant) | Polish, edit by instruction, ask, write new paragraphs in the manner of a reference paper (add its `.tex`), write figures or tables (with the packages they need), or rewrite a paragraph's translation and let the paragraph follow. Jobs run in the background, and you decide what is applied. |
+| [Writing assistant](#writing-assistant) | Polish (as you ask, when you write a request), ask, write new paragraphs in the manner of a reference paper (add its `.tex`), write figures or tables (with the packages they need), or rewrite a paragraph's translation and let the paragraph follow. Jobs run in the background, and you decide what is applied. |
 | [Templates](#templates) | VLDB (PVLDB 2027), ICLR 2027 and IEEE TII built in. Import a project folder or a `.zip` as a template, export a project as one, open any LaTeX folder. |
 | [Model providers](#set-up-a-model-provider) | OpenAI-compatible Chat Completions (OpenAI, DeepSeek, Qwen, Kimi, OpenRouter, local servers such as Ollama), the OpenAI Responses API and the Anthropic Messages API, with presets, third-party services such as AnyRouter among them. Translation and the assistant can use different providers. |
 | [Key pools](#key-pools-and-third-party-apis) | Many named keys per provider, used evenly with a per-key limit, failover on rate limits, import and export to a file. |
@@ -138,7 +138,8 @@ elsewhere can be chosen in Settings, under *LaTeX*.
   PDF and open their line. A document with errors still gets its PDF.
 * **Click a sentence in the PDF.** The source of that sentence is selected,
   in the file it comes from (BiWrite opens that file if needed), and a small
-  menu offers *Polish*, *Edit…* and *Ask…* on it.
+  menu offers *Polish*, *Polish…* and *Ask…* on it (*Polish…* opens the
+  writing assistant to write a request first).
 * `⌘⌥J` (Ctrl+Alt+J) highlights the cursor's paragraph in the PDF.
 * **English and Chinese PDFs.** The *Chinese* switch builds the Chinese PDF
   from the translation with XeLaTeX and `ctex` (paragraphs not translated
@@ -182,8 +183,10 @@ paragraph at the cursor:
 * **Polish** (`⌘⇧P` polishes the paragraph at the cursor) applies the
   writing rules. It removes AI-style phrasing and dashes or semicolons that
   splice sentences, and keeps claims, numbers, citations and formulas.
-* **Edit** follows your instruction, and **Ask** answers a question about
-  the text or the whole paper (with follow-up questions).
+  With a request in the box, it changes the text as asked, by the same
+  rules.
+* **Ask** answers a question about the text or the whole paper (with
+  follow-up questions), and leaves the text as it is.
 * **Write** writes new paragraphs after the paragraph at the cursor, as your
   instruction says. Add a published paper with *+ File* under *References*
   (a `.tex` file gives its body without comments) and the new text follows

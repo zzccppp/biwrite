@@ -64,7 +64,7 @@ Each feature name below links to its section.
 \item[{\hyperref[sec:latex]{LaTeX builds and PDF navigation}}] The PDF compiles inside the app. A click on a sentence in the PDF selects it in the source, ready to polish. The paragraph at the cursor can be found in the PDF, and a build error opens its line.
 \item[{\hyperref[sec:zhpdf]{Chinese PDF}}] Once the English is translated, the Chinese PDF compiles in one step, and the Chinese PDF and a stand-alone Chinese .tex can be exported.
 \item[{\hyperref[sec:pair]{Your existing Chinese version}}] \texttt{paper\_zh.tex} or \texttt{sections\_zh/} pair with the English paragraph by paragraph. Edit either side and the matching paragraph of the other file is updated in place, with the rest unchanged.
-\item[{\hyperref[sec:assist]{Writing assistant}}] Polish, edit by instruction, ask, write new paragraphs in the manner of a reference paper, write figures, or rewrite a translation and let the paragraph follow. A reference paper can be added as its \texttt{.tex} file, and packages a figure needs are added on insert. Jobs run in the background, and you decide what is applied.
+\item[{\hyperref[sec:assist]{Writing assistant}}] Polish (as you ask, when you write a request), ask, write new paragraphs in the manner of a reference paper, write figures, or rewrite a translation and let the paragraph follow. A reference paper can be added as its \texttt{.tex} file, and packages a figure needs are added on insert. Jobs run in the background, and you decide what is applied.
 \item[{\hyperref[sec:templates]{Paper templates}}] VLDB, ICLR 2027 and IEEE TII built in. Your own projects can be imported as templates, and the open project exported.
 \item[{\hyperref[sec:provider]{APIs and key pools}}] OpenAI-compatible, OpenAI Responses and Anthropic APIs. A provider holds several keys, uses them evenly and moves to another key on rate limits.
 \item[{\hyperref[sec:log]{Request log} and \hyperref[sec:update]{updates}}] The log records the model, reasoning effort and service tier of every request. Any version published on GitHub can be installed from inside the app.
@@ -104,7 +104,7 @@ The card (\fig{f-written}) shows the new paragraphs \n{1}, their Chinese paragra
 \shot[0.8]{f-inserted}{(1) The new paragraphs on the left, (2) their Chinese on the right}
 
 \subsection{Step 4: Polish, edit and ask}
-\ui{Polish} evens out the wording, \ui{Edit} changes a paragraph as you say, and \ui{Ask} checks an argument. Section~\ref{sec:assist} has the details.
+\ui{Polish} evens out the wording, or changes a paragraph as you say when you write a request in the box, and \ui{Ask} checks an argument. Section~\ref{sec:assist} has the details.
 
 \subsection{Step 5: Figures and tables}
 Choose \ui{Figure} and describe the figure or table, for example \ui{accuracy on the four benchmarks as a table}. The card gives LaTeX ready to insert (\fig{f-table} \n{1}). The request lists the packages the document loads and asks for code that uses them first. When the code needs a package the document does not load, the card names it \n{2}. If the open file is the main file, \ui{Insert} \n{3} puts the code after the paragraph and adds the \texttt{\textbackslash usepackage} lines right before \texttt{\textbackslash begin\{document\}} (\fig{f-table-in}). In a section file, the card names the lines to add to the main file's preamble.
@@ -209,7 +209,7 @@ BiWrite finds the main file from a \texttt{\% !TEX root = …} comment, else fro
 \shot{l-compile}{(1) The PDF tab, (2) Compile, (3) the result, (4) the problem list}
 
 \subsection{From the PDF to the source}
-Click a sentence in the PDF (\fig{l-click} \n{1}) and the same sentence is selected in the source \n{2}. A small menu next to the click \n{3} offers \ui{Polish}, \ui{Edit…} and \ui{Ask…} on that sentence. If the sentence is in another file of the project (such as \texttt{sections/04\_method.tex}), BiWrite opens that file and selects it there, after asking when the open file has unsaved changes.
+Click a sentence in the PDF (\fig{l-click} \n{1}) and the same sentence is selected in the source \n{2}. A small menu next to the click \n{3} offers \ui{Polish}, \ui{Polish…} and \ui{Ask…} on that sentence. \ui{Polish} polishes by the writing rules at once, and \ui{Polish…} opens the writing assistant to write a request first. If the sentence is in another file of the project (such as \texttt{sections/04\_method.tex}), BiWrite opens that file and selects it there, after asking when the open file has unsaved changes.
 
 BiWrite checks the words under the click. Things drawn over the text, such as the line numbers in the margin of a submission or a running header, mislead SyncTeX, and then BiWrite looks the clicked words up in the open file and in the other files of the project.
 
@@ -302,9 +302,8 @@ With a pair, \ui{Chinese} in the PDF tab compiles your own Chinese main file (\t
 \begin{enumerate}
 \item Pick a task at \n{1}.
 \begin{description}[leftmargin=1em, style=nextline]
-\item[Polish] Applies the writing rules: it removes AI-style phrasing and dashes or semicolons that splice sentences, and keeps claims, numbers, citations and formulas. \cmdkey\shiftkey P polishes the paragraph at the cursor.
-\item[Edit] Follows your instruction, for example \ui{shorter, state the number of benchmarks}.
-\item[Ask] Answers a question about the selection or the whole paper, with follow-up questions.
+\item[Polish] Applies the writing rules. It removes AI-style phrasing and dashes or semicolons that splice sentences, and keeps claims, numbers, citations and formulas. With a request in the box, for example \ui{shorter, state the number of benchmarks}, it changes the text as asked, by the same rules. \cmdkey\shiftkey P polishes the paragraph at the cursor.
+\item[Ask] Answers a question about the selection or the whole paper, and leaves the text as it is.
 \item[Write] Writes new paragraphs as you ask, inserted after the paragraph, in the manner of a reference paper when you add one (Section~\ref{sec:flow}, step 3).
 \item[Figure] Writes a LaTeX figure or table from a description, inserted after the paragraph with the packages it needs (Section~\ref{sec:flow}, step 5).
 \item[Via translation] Fills the box with the paragraph's translation. Rewrite it and run, and the paragraph is revised to say the same (Section~\ref{sec:pair}).
@@ -318,12 +317,12 @@ With a pair, \ui{Chinese} in the PDF tab compiles your own Chinese main file (\t
 \shot{a-dock}{(1) Task, (2) target, (3) instruction, (4) context, (5) references, (6) Run}
 
 \subsection{Decide on the result}
-The finished card (\fig{a-result}) shows the changes as a diff \n{1} (deleted words struck out, new ones highlighted), the translation of the revision \n{2} and the reasons for the changes in Chinese and English \n{3}. \ui{Accept} \n{4} writes the revision where the text is now, even after you kept typing. If the target itself was edited meanwhile, the card says so, and \ui{Re-apply with the model} brings the revision onto the current text. \ui{Again} runs the job once more, \ui{Discard} drops it, and \cmdkey Z undoes an accepted revision. After Accept or Discard the card folds into one line. \ui{Show} opens the result again, and an opened question card takes follow-up questions about the text it put in. \ui{Revert} on an accepted card undoes that one change and leaves later edits as they are, and the card can then be accepted again. If the text it put in was edited since, nothing is overwritten and the card shows the text from before, to copy and put back by hand. \ui{Delete} takes the card off the list.
+The finished card (\fig{a-result}) shows the changes as a diff \n{1} (deleted words struck out, new ones highlighted), the translation of the revision \n{2} and the reasons for the changes in Chinese and English \n{3}. \ui{Accept} \n{4} writes the revision where the text is now, even after you kept typing. If the target itself was edited meanwhile, the card says so, and \ui{Re-apply with the model} brings the revision onto the current text. \ui{Again} runs the job once more, \ui{Keep} folds the card into one line to decide later (it can still be accepted when shown again), \ui{Discard} drops it, and \cmdkey Z undoes an accepted revision. After Accept or Discard the card folds into one line too, and \ui{Show} opens the result again. \ui{Revert} on an accepted card undoes that one change and leaves later edits as they are, and the card can then be accepted again. If the text it put in was edited since, nothing is overwritten and the card shows the text from before, to copy and put back by hand. \ui{Delete} takes the card off the list.
 
 \shot{a-result}{(1) The diff, (2) the translation, (3) the reasons, (4) Accept}
 
 \subsection{Questions}
-An answer appears in the card (\fig{a-ask} \n{1}), with a box for a follow-up question \n{2}. Writing new paragraphs and figures are shown in Section~\ref{sec:flow}, steps 3 and 5.
+An answer appears in the card (\fig{a-ask} \n{1}), with a box for a follow-up question \n{2}. A question card has no \ui{Accept} or \ui{Discard}. \ui{Delete} takes it off the list, and \ui{Keep} folds it to read later. Writing new paragraphs and figures are shown in Section~\ref{sec:flow}, steps 3 and 5.
 
 \shot{a-ask}{(1) The answer, (2) a follow-up question}
 
@@ -408,12 +407,6 @@ A provider can hold several keys, a pool. \ui{Manage keys…} in the provider's 
 
 \shot[0.8]{c-keys}{The key pool: (1) the keys, (2) requests per key and retries, (3) new keys, (4) import from and export to a file}
 
-\paragraph{Squeezing in.} A relay such as AnyRouter, when it is full, answers only requests with keys that got through a while ago. Requests with the other keys get HTTP 500, and their paragraphs fail with provider server error (HTTP 500). For AnyRouter, or a pool of two keys or more, the row \n{2} of the key pool ends with \ui{Squeeze in}. BiWrite then sends a very short translation with every key that has not got through, all at once, and tries each failed key again every few seconds until every usable key got through. A key that is invalid or out of quota, or whose request cannot succeed (a misspelt model, for example), is not tried again. \ui{Stop squeezing} stops it at any time, and so do adding or removing keys and changing the provider's address, model or API type. Requests the relay turns away cost nothing. A key that got through shows \ui{through} with the time it got through, and hovering shows when it was last answered. A key not answered for more than five minutes may have lost its place, so its state changes colour and a running squeeze tries it again. The squeeze runs in the background, so the key pool can be closed and another provider can translate meanwhile. The status bar shows the progress. When a key gets through, a reminder at the bottom right shows how long ago a key of this provider was last answered. It stays until \ui{Got it}, or until no key of this provider counts as through. While another provider is in use, \ui{Switch to it} on the reminder goes back to this one.
-
-Once the relay turned away keys that had not got through twice within five minutes, translations and the writing assistant send their requests to the keys that got through first, and wait for one of them when they are all busy. Such a key that answers HTTP 500 now and then is not paused and is asked again soon. After six failures in a row, after a failure that follows five minutes without an answer, or when the key is refused, it no longer goes first. Otherwise the keys take turns. For providers other than AnyRouter this applies only after \ui{Squeeze in} was used.
-
-\paragraph{Keeping keys alive.} A key that got through loses its place after about ten idle minutes. \ui{Keep alive} in the row \n{2} of the key pool is ticked at first. While it is ticked, BiWrite looks every 30 seconds at each provider whose relay turned keys away (AnyRouter, or a pool of two keys or more), and sends a key that got through and was not answered for four minutes a very short translation, which keeps its place. This happens whether or not \ui{Squeeze in} was used and whichever provider is in use. A key answered within the last four minutes gets no extra request. A key whose ping failed waits at least two minutes before the next one, and after repeated failures no longer counts as through. Each time costs one short translation. Unticked, nothing is sent, and the setting applies to every provider.
-
 \subsection{Separate models for translation and writing}
 The \ui{Writing assistant} section of Settings (\fig{c-assistant} \n{1}) picks the model for polishing, edits and questions. A cheap, fast model can translate while a stronger one writes. \ui{Same as translation} uses one provider for both.
 
@@ -481,7 +474,7 @@ macOS (Ctrl for \cmdkey and Alt for \optkey on Windows) & Action \\
 
 \paragraph{Where did BiWrite go after closing the window?} It hides in the tray and keeps running. The BiWrite icon in the menu bar or notification area brings the window back, and the \ui{Window} section of Settings turns this off (Section~\ref{sec:tray}).
 
-\paragraph{A third-party API often hits rate limits.} Add several keys to the pool, set \ui{Requests per key} to what the provider allows, raise \ui{Paragraphs per request} and \ui{Retries}. The request log shows each rate limit and each switch to another key. When paragraphs keep failing with provider server error (HTTP 500), use \ui{Squeeze in} in the key pool.
+\paragraph{A third-party API often hits rate limits.} Add several keys to the pool, set \ui{Requests per key} to what the provider allows, raise \ui{Paragraphs per request} and \ui{Retries}. The request log shows each rate limit and each switch to another key.
 
 \paragraph{The Chinese file does not pair.} Files pair only when at least half of their paragraphs match. Check that the two files are the same document in two languages.
 

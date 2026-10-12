@@ -513,12 +513,17 @@ pub async fn set_check_updates(
 
 /// Keep the keys that got through to a crowded relay alive, or not.
 #[tauri::command]
-pub async fn set_keep_alive(state: State<'_, AppState>, on: bool) -> CommandResult<SettingsView> {
+pub async fn set_keep_alive(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    on: bool,
+) -> CommandResult<SettingsView> {
     {
         let mut s = state.settings();
         s.keep_alive = on;
         state.persist(&s)?;
     }
+    crate::squeeze_commands::keep_alive_changed(&app, on);
     Ok(state.settings_view())
 }
 

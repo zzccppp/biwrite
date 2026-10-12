@@ -42,7 +42,8 @@
   }
   let addingSample = $state(false);
 
-  const actions: AssistAction[] = ["polish", "edit", "ask", "write", "figure", "mirror"];
+  // Polishing takes an optional instruction, so it also does what "edit" did.
+  const actions: AssistAction[] = ["polish", "ask", "write", "figure", "mirror"];
   /** The paragraph whose translation the box was last filled with. */
   let prefilled: string | null = null;
 

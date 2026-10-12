@@ -43,8 +43,9 @@ pub const STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 pub const CROWDED_AFTER: usize = 2;
 /// A key kept alive is sent a short translation after this long without an
 /// answer. Measured at AnyRouter, a key idle for four minutes kept its
-/// place and one idle for ten minutes had lost it.
-pub const KEEP_ALIVE_AFTER: Duration = Duration::from_secs(4 * 60);
+/// place and one idle for ten minutes had lost it. Three minutes leave time
+/// for a few retries before [`STALE_AFTER`].
+pub const KEEP_ALIVE_AFTER: Duration = Duration::from_secs(3 * 60);
 /// Pause between two tries of one key.
 const PROBE_GAP: Duration = Duration::from_secs(3);
 /// Longest wait for one try, and for a rate limit between tries.
@@ -278,6 +279,8 @@ pub enum SqueezeChange {
         #[serde(rename = "allThrough")]
         all_through: bool,
     },
+    /// A round of keeping keys alive went by (said by the keeper).
+    Kept,
 }
 
 pub type ChangeFn = Arc<dyn Fn(SqueezeChange) + Send + Sync>;

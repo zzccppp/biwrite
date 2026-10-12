@@ -291,7 +291,9 @@ export type SqueezeChange =
   | { kind: "started" }
   | { kind: "tried" }
   | { kind: "through"; number: number }
-  | { kind: "ended"; allThrough: boolean };
+  | { kind: "ended"; allThrough: boolean }
+  /** A round of keeping keys alive went by. */
+  | { kind: "kept" };
 
 export type SqueezeEvent = SqueezeChange & {
   providerId: string;
@@ -299,6 +301,8 @@ export type SqueezeEvent = SqueezeChange & {
   running: boolean;
   through: number;
   total: number;
+  /** Keeping alive is on and the relay turned keys away: the keys through are kept alive. */
+  keeping: boolean;
 };
 
 // ── Request log ──────────────────────────────────────────────────────

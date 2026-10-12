@@ -170,8 +170,8 @@ export const messages = {
     zh: "把光标放进一个已翻译的段落（不要选中文字），即可通过译文修改它。",
   },
   "assist.placeholder.polish": {
-    en: "Optional: what to pay attention to",
-    zh: "可选：额外的要求",
+    en: "Optional: how to change it, for example shorter, or state the dataset count",
+    zh: "可选：想怎么改，例如再简洁一些、写明数据集个数",
   },
   "assist.references": { en: "References to imitate", zh: "参照样例" },
   "assist.addText": { en: "+ Text", zh: "+ 文本" },
@@ -217,6 +217,8 @@ export const messages = {
   "assist.applied": { en: "Applied. ⌘Z undoes it.", zh: "已应用，⌘Z 可撤销。" },
   "assist.discarded": { en: "Discarded.", zh: "已放弃。" },
   "assist.show": { en: "Show", zh: "查看" },
+  "assist.keep": { en: "Keep", zh: "保留" },
+  "assist.kept": { en: "Kept for later.", zh: "已保留。" },
   "assist.revert": { en: "Revert", zh: "还原" },
   "assist.revertEdited": {
     en: "The text it put in was edited since, so it was not reverted. The card shows the text from before, to copy and put back by hand.",
@@ -333,7 +335,7 @@ export const messages = {
   "pdf.elsewhere": { en: "{file}, line {line}", zh: "{file} 第 {line} 行" },
   "pdf.openFile": { en: "Open", zh: "打开" },
   "pdf.polish": { en: "Polish", zh: "润色" },
-  "pdf.edit": { en: "Edit…", zh: "按指令改…" },
+  "pdf.edit": { en: "Polish…", zh: "润色…" },
   "pdf.ask": { en: "Ask…", zh: "提问…" },
   "pdf.noSource": { en: "No source line here.", zh: "这里没有对应的源码。" },
 
@@ -534,6 +536,7 @@ export const messages = {
   "squeeze.use": { en: "Switch to it", zh: "切换过去" },
   "squeeze.dismiss": { en: "Got it", zh: "知道了" },
   "squeeze.status": { en: "Squeezing {through}/{total}", zh: "挤一挤 {through}/{total}" },
+  "squeeze.keeping": { en: "Keeping {through}/{total} alive", zh: "保活 {through}/{total}" },
   "squeeze.keepAlive": { en: "Keep alive", zh: "持续保活" },
   "keys.import": { en: "Import from file…", zh: "从文件导入…" },
   "keys.exported": {
