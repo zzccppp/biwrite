@@ -32,6 +32,10 @@ pub enum CommandError {
     /// lines no longer map to the editor: it is built again first.
     #[error("stale pdf")]
     StalePdf,
+    /// The file changed on disk since it was read or written, and saving
+    /// would write over that: the author decides first.
+    #[error("changed on disk")]
+    ChangedOnDisk,
     /// Provider errors are already redacted at the source.
     #[error(transparent)]
     Provider(#[from] TranslateError),

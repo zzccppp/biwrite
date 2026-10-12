@@ -468,10 +468,33 @@ export const messages = {
     zh: "已保存 {name}。{mirror} 将在剩余 {n} 段译完后写入。",
   },
   "doc.mirrorWritten": { en: "Saved {mirror} ({n} paragraphs changed).", zh: "已保存 {mirror}（改动 {n} 段）。" },
-  "doc.mirrorChangedOnDisk": {
-    en: "{mirror} changed on disk since it was opened, so it was not overwritten. Reopen the document to pair it with the new version.",
-    zh: "{mirror} 在打开后被其他程序修改过，因此没有覆盖。请重新打开文档，与新版本配对。",
+  "disk.changed.document": {
+    en: "{name} changed on disk. Load the latest version?",
+    zh: "{name} 已在磁盘上被修改。要读入最新版本吗？",
   },
+  "disk.changed.mirror": {
+    en: "The paired file {mirror} changed on disk. Load the latest version?",
+    zh: "配对文件 {mirror} 已在磁盘上被修改。要读入最新版本吗？",
+  },
+  "disk.changed.both": {
+    en: "{name} and its paired file {mirror} changed on disk. Load the latest versions?",
+    zh: "{name} 和配对文件 {mirror} 都已在磁盘上被修改。要读入最新版本吗？",
+  },
+  "disk.load": { en: "Load", zh: "读入" },
+  "disk.loadDiscard": { en: "Load (discard unsaved changes)", zh: "读入（放弃未保存的修改）" },
+  "disk.ignore": { en: "Ignore", zh: "忽略" },
+  "disk.loaded": { en: "Loaded {name} from disk.", zh: "已从磁盘读入 {name}。" },
+  "disk.saveRefused": {
+    en: "{name} changed on disk since it was opened or last saved. Saving replaces that version.",
+    zh: "{name} 在打开或上次保存后已在磁盘上被修改，保存会覆盖那个版本。",
+  },
+  "disk.overwrite": { en: "Overwrite", zh: "覆盖" },
+  "disk.saveAs": { en: "Save As…", zh: "另存为…" },
+  "disk.mirrorRefused": {
+    en: "The paired file {mirror} changed on disk, so it was not written.",
+    zh: "配对文件 {mirror} 已在磁盘上被修改，因此没有写入。",
+  },
+  "disk.notNow": { en: "Not now", zh: "暂不写入" },
   "doc.mirrorStructure": {
     en: "{mirror} was not written: the changes would not fit its structure (a translation that adds a heading or a list item, or a new paragraph with no place of its own). Edit that paragraph, or update {mirror} by hand and reopen the document.",
     zh: "{mirror} 没有写入：改动放不进它的结构（某段译文多出标题或列表项，或新段落找不到合适的位置）。请修改该段，或手动更新 {mirror} 后重新打开文档。",

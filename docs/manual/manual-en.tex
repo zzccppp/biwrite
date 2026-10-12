@@ -181,6 +181,8 @@ In a mixed document the judgment can be wrong, and you can set it right. When th
 \subsection{Save and Save As}
 \ui{Save} (\fig{w-save} \n{1}, \cmdkey S) overwrites the file. \ui{Save As} \n{2} (\cmdkey\shiftkey S) saves under a new name and suggests one not taken yet, for example \texttt{paper-2.tex}. The original stays as it was.
 
+When another program changes the open file or its paired file on disk (another editor, git, a sync service), BiWrite notices when its window gains focus and asks whether to load the latest version. \ui{Load} puts it in; with unsaved changes the button reads \ui{Load (discard unsaved changes)}. A paired file is paired again, and the document keeps your edits. \ui{Ignore} changes nothing, and that version is not asked about again. Saving never overwrites a change made elsewhere without asking: it offers \ui{Overwrite}, \ui{Save As…} and \ui{Cancel}. A paired file changed elsewhere is not written until you choose \ui{Overwrite}.
+
 \shot{w-save}{(1) Save, (2) Save As}
 
 \subsection{Glossary}
@@ -201,7 +203,7 @@ BiWrite finds the main file from a \texttt{\% !TEX root = …} comment, else fro
 \subsection{Compile the English PDF}
 \begin{enumerate}
 \item Click the \ui{PDF} tab (\fig{l-compile} \n{1}).
-\item Click \ui{Compile} \n{2} or press \cmdkey B (Ctrl+B on Windows). Unsaved edits are saved first, since the PDF comes from the files on disk.
+\item Click \ui{Compile} \n{2} or press \cmdkey B (Ctrl+B on Windows). The PDF comes from the files as saved on disk, so save first: unsaved edits show in the PDF once they are saved.
 \item The PDF appears. \n{3} shows the time taken and the numbers of errors and warnings, and the problem list \n{4} links each one to its line.
 \end{enumerate}
 \ui{Compile after saving a .tex file} is on by default, so every save compiles again. A document with errors still gets its PDF, with the errors listed.

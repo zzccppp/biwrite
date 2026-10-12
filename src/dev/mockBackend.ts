@@ -128,6 +128,16 @@ const state = {
   paired: false,
   /** Saves asked for (Save, Save As), the only writes of the document. */
   saves: 0,
+  /** Changes made on disk elsewhere (for UI tests): the document's text
+   * there, and whether the paired file changed; with the versions ignored. */
+  disk: { document: null as string | null, mirror: false },
+  ignored: { document: null as string | null, mirror: false },
+  /** `overwrite` of each write of the paired file asked for. */
+  mirrorWrites: [] as boolean[],
+  /** Writes of the paired file still to be put off till the next save. */
+  deferMirror: 0,
+  /** `overwrite` and `overwriteMirror` of each Save. */
+  saveArgs: [] as { overwrite: boolean; overwriteMirror: boolean }[],
   /** Copies into a new folder asked for, with the dialog's title. */
   projectCopies: [] as { kind: "save" | "export"; title: string }[],
   revision: 1,
@@ -740,13 +750,60 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.paired = false;
     return null;
   },
+  check_disk: () => {
+    const document = state.disk.document !== null && state.disk.document !== state.ignored.document;
+    const mirror = state.paired && state.disk.mirror && !state.ignored.mirror;
+    return { document, mirror, documentStamp: document ? "d" : "", mirrorStamp: mirror ? "m" : "" };
+  },
+  ignore_disk: (a) => {
+    const which = a.which as { document: boolean; mirror: boolean };
+    if (which.document) state.ignored.document = state.disk.document;
+    if (which.mirror) state.ignored.mirror = state.disk.mirror;
+    return null;
+  },
+  reload_document: () => state.disk.document ?? state.text,
+  adopt_disk: (a) => {
+    if (state.disk.document !== null && state.disk.document !== String(a.text)) return false;
+    state.text = String(a.text);
+    state.disk.document = null;
+    state.ignored.document = null;
+    return true;
+  },
+  reopen_file: () => {
+    if (state.disk.document !== null) state.text = state.disk.document;
+    state.disk = { document: null, mirror: false };
+    state.ignored = { document: null, mirror: false };
+    state.direction = state.home;
+    return session();
+  },
+  reload_mirror: (a) => {
+    if (!state.paired) return null;
+    state.disk.mirror = false;
+    state.ignored.mirror = false;
+    state.text = String(a.text);
+    return session();
+  },
   save_file: (a) => {
+    state.saveArgs.push({ overwrite: Boolean(a.overwrite), overwriteMirror: Boolean(a.overwriteMirror) });
+    if (!a.overwrite && state.disk.document !== null) throw new Error("changed on disk");
+    state.disk.document = null;
+    state.ignored.document = null;
     state.saves++;
     state.text = String(a.text);
     const view = session();
-    return { path: view.path, name: view.name, suggestedMode: view.snapshot.mode, mirror: null, otherLanguage: view.otherLanguage };
+    // A paired file changed elsewhere is not written over, unless asked to.
+    const refused = state.disk.mirror && !a.overwriteMirror;
+    if (state.paired && !refused) state.disk.mirror = false;
+    const mirror = !state.paired
+      ? null
+      : refused
+        ? { name: "paper_zh.tex", written: false, pending: 0, changed: 0, leftOut: 0, problem: "changedOnDisk", deferred: false, behind: true }
+        : { name: "paper_zh.tex", written: true, pending: 0, changed: 1, leftOut: 0, problem: null, deferred: false, behind: false };
+    return { path: view.path, name: view.name, suggestedMode: view.snapshot.mode, mirror, otherLanguage: view.otherLanguage };
   },
   save_file_as: (a) => {
+    state.disk.document = null;
+    state.ignored.document = null;
     state.saves++;
     state.text = String(a.text);
     const view = session();
@@ -771,7 +828,20 @@ const handlers: Record<string, (args: Args) => unknown> = {
       exported: null,
     };
   },
-  write_mirror: () => ({ name: "paper_zh.tex", written: true, pending: 0, changed: 1 }),
+  write_mirror: (a) => {
+    state.mirrorWrites.push(Boolean(a.overwrite));
+    if (state.deferMirror > 0) {
+      // The document was edited since it was saved: written with the next save.
+      state.deferMirror--;
+      return { name: "paper_zh.tex", written: false, pending: 0, changed: 0, leftOut: 0, problem: null, deferred: true, behind: true };
+    }
+    if (!a.overwrite && state.disk.mirror) {
+      return { name: "paper_zh.tex", written: false, pending: 0, changed: 0, problem: "changedOnDisk", behind: true };
+    }
+    state.disk.mirror = false;
+    state.ignored.mirror = false;
+    return { name: "paper_zh.tex", written: true, pending: 0, changed: 1 };
+  },
   export_api_keys: () => "/Users/me/Desktop/AnyRouter-keys.txt",
   import_api_keys: () => state.settings,
   swap_languages: (a) => {

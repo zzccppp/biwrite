@@ -459,6 +459,33 @@ mixed line endings). Otherwise it restores the BOM and the dominant line ending.
 Saves are atomic: a temp file in the same directory, fsync, rename. Symlinks
 resolve to their target and permissions are preserved.
 
+Files changed on disk by other programs (`disk_commands`): the document
+(`FileState::file`) and its paired file (`PairState::file`) are what the app
+last read or wrote. When the window gains focus the frontend asks
+`check_disk`. If a file changed, a bar asks whether to load it:
+* the document in place while its own language is edited (`reload_document`
+  reads it; the frontend replaces only the stretch that differs, so
+  translations of unchanged paragraphs stay; `adopt_disk` then makes it the
+  file's known text if the disk still reads so; a pair's file follows once
+  translated);
+* the paired file by pairing again as saved, the unsaved edits on top
+  (`reload_mirror`). Saved paragraphs whose translations the paired file
+  lacked (`pairing::behind_paragraphs`: a refused write) are translated
+  afresh and never left unpaired (`load_paired_except`). Nothing changes if
+  the two no longer pair;
+* both, or a swapped document, by opening it again (`reopen_file`).
+`ignore_disk` remembers the bytes not loaded (`ignored`), only if they are
+the version reported (`check_disk` stamps it), so that version is not asked
+about again; it still counts as changed for saving. A save over a
+change made elsewhere is refused (`CommandError::ChangedOnDisk`), and the
+frontend offers Overwrite (`save_file` with `overwrite`), Save As or Cancel.
+A paired file's write is refused likewise (`MirrorProblem::ChangedOnDisk`)
+until `write_mirror` with `overwrite`. A file gone is not a change (saving
+puts it back); one no longer UTF-8 is; a write of ours that landed though it
+reported a failure is not. Texts are compared after decoding, so a change of
+line endings or BOM alone is no change (a save writes the app's back). Builds map PDF clicks against the file
+as TeX read it from disk (`latex_commands::as_on_disk`).
+
 ## Version 0.2
 
 * **LaTeX** (`biwrite-latex`, `src-tauri/src/latex_commands.rs`,
@@ -490,8 +517,9 @@ resolve to their target and permissions are preserved.
     Chinese), so a same-language copy is never written into. A file is
     never its own counterpart (`same_file`, through links).
   * The mirror is written only as it was read: if it changed on disk, it is
-    not overwritten (`MirrorProblem::ChangedOnDisk`), and swapping onto it
-    is refused. A patch must segment as planned (`pair::patch_checked`),
+    not overwritten (`MirrorProblem::ChangedOnDisk`) unless the author
+    chooses to, and swapping onto it is refused until the change is loaded
+    or ignored (see "File round-trip"). A patch must segment as planned (`pair::patch_checked`),
     else nothing is written (`MirrorProblem::Structure`). A new paragraph
     goes next to a paired paragraph or heading it sits next to in the
     document (only blank lines between, other new paragraphs aside), right

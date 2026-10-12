@@ -74,6 +74,9 @@ pub(crate) async fn open_path(state: &AppState, path: PathBuf) -> CommandResult<
 
 /// Save to the current path (asks for one if the document is untitled).
 /// `text` is the editor's, for `document` (see [`AppState::sync_text`]).
+/// A file changed on disk since it was read is not written over unless
+/// `overwrite` ([`CommandError::ChangedOnDisk`]), nor its paired file unless
+/// `overwrite_mirror` (`MirrorProblem::ChangedOnDisk`).
 #[tauri::command]
 pub async fn save_file(
     app: AppHandle,
@@ -81,6 +84,8 @@ pub async fn save_file(
     state: State<'_, AppState>,
     text: String,
     document: u64,
+    overwrite: bool,
+    overwrite_mirror: bool,
 ) -> CommandResult<Option<SavedView>> {
     let _one_at_a_time = state.save_lock.lock().await;
     state.sync_text(document, &text)?;
@@ -94,7 +99,11 @@ pub async fn save_file(
             None => return Ok(None),
         },
     };
-    save_to(&window, &state, path, own, None, other_language)
+    let over = Overwrite {
+        document: overwrite,
+        mirror: overwrite_mirror,
+    };
+    save_to(&window, &state, path, own, None, other_language, over)
         .await
         .map(Some)
 }
@@ -126,9 +135,22 @@ pub async fn save_file_as(
             _ => None,
         }
     };
-    save_to(&window, &state, path, own, mirror_to, other_language)
+    // Chosen in the dialog, which asked before replacing a file.
+    let over = Overwrite {
+        document: true,
+        mirror: false,
+    };
+    save_to(&window, &state, path, own, mirror_to, other_language, over)
         .await
         .map(Some)
+}
+
+/// What a save may write over though it changed on disk elsewhere (the
+/// author chose to): the document, and its paired file.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Overwrite {
+    pub document: bool,
+    pub mirror: bool,
 }
 
 /// The open file's own text, what saving writes: the editor's, or, while
@@ -156,8 +178,9 @@ async fn save_to(
     text: String,
     mirror_to: Option<PathBuf>,
     other_language: usize,
+    over: Overwrite,
 ) -> CommandResult<SavedView> {
-    let saved = write_document(state, path, text, mirror_to).await;
+    let saved = write_document_with(state, path, text, mirror_to, over).await;
     refresh_title(window, state);
     saved.map(|saved| SavedView {
         other_language,
@@ -167,13 +190,43 @@ async fn save_to(
 
 /// Write the document's own `text` to `path` (and the paired file to
 /// `mirror_to`, or where it is); [`save_to`] without the window title. The
-/// caller holds `save_lock`, so the document can't change meanwhile.
+/// caller holds `save_lock`, so the document can't change meanwhile. Not
+/// over the file if it changed on disk since it was read or written.
 pub(crate) async fn write_document(
     state: &AppState,
     path: PathBuf,
     text: String,
     mirror_to: Option<PathBuf>,
 ) -> CommandResult<SavedView> {
+    write_document_with(state, path, text, mirror_to, Overwrite::default()).await
+}
+
+/// [`write_document`], over changes made on disk elsewhere as `over` says.
+pub(crate) async fn write_document_with(
+    state: &AppState,
+    path: PathBuf,
+    text: String,
+    mirror_to: Option<PathBuf>,
+    over: Overwrite,
+) -> CommandResult<SavedView> {
+    // The file as the app knows it, when it is the one written.
+    let known = {
+        let fs = state.file();
+        (fs.path.as_ref() == Some(&path)).then(|| fs.file.text().to_owned())
+    };
+    // Ours already (a write that reported a failure after landing) is no
+    // change made elsewhere either.
+    if let Some(known) = known
+        && !over.document
+        && crate::disk_commands::changed_on_disk(&path, &known, None).await
+        && crate::disk_commands::changed_on_disk(&path, &text, None).await
+    {
+        log::warn!(
+            "{} changed on disk; not overwritten",
+            display_name(Some(&path))
+        );
+        return Err(CommandError::ChangedOnDisk);
+    }
     let note = state.doc_note();
     let other_language = state.left_in_other_language();
     // Only the English source is written; unedited text yields the original bytes.
@@ -184,6 +237,7 @@ pub(crate) async fn write_document(
         fs.file = fs.file.saved(text, bytes);
         fs.path = Some(path.clone());
         fs.dirty = false;
+        fs.ignored = None;
     }
     // Keep the document note when an untitled draft is saved or renamed;
     // otherwise use the note stored for the new path.
@@ -195,7 +249,7 @@ pub(crate) async fn write_document(
     log::info!("saved {}", display_name(Some(&path)));
     let mirror = match mirror_to {
         Some(dest) => pairing::save_mirror_as(state, dest).await?,
-        None => pairing::save_mirror(state).await?,
+        None => pairing::save_mirror_with(state, over.mirror).await?,
     };
     Ok(SavedView {
         name: display_name(Some(&path)),

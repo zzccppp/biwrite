@@ -470,7 +470,10 @@ async fn a_waiting_paired_file_follows_the_saved_text() {
     state.engine.update(later.clone());
     state.engine.set_auto_translate(true);
     settle(&state).await;
-    let done = pairing::write_mirror(state.clone()).await.unwrap().unwrap();
+    let done = pairing::write_mirror(state.clone(), false)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!done.written, "not with edits that aren't saved");
     assert_eq!(std::fs::read_to_string(&zh_path).unwrap(), ZH);
     assert!(state.is_dirty());

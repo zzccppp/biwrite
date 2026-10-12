@@ -2,6 +2,7 @@
 
 mod assist_commands;
 mod commands;
+mod disk_commands;
 mod error;
 mod files;
 mod glossary_commands;
@@ -24,6 +25,8 @@ mod storage_commands;
 mod tray;
 mod updater;
 
+#[cfg(test)]
+mod disk_tests;
 #[cfg(test)]
 mod home_tests;
 #[cfg(test)]
@@ -185,6 +188,12 @@ pub fn run() {
             commands::continue_translation,
             commands::open_link,
             commands::open_manual,
+            disk_commands::check_disk,
+            disk_commands::ignore_disk,
+            disk_commands::reload_document,
+            disk_commands::adopt_disk,
+            disk_commands::reopen_file,
+            disk_commands::reload_mirror,
             settings_commands::get_settings,
             settings_commands::save_provider,
             settings_commands::delete_provider,

@@ -89,6 +89,17 @@ export interface Fill {
   new: string;
 }
 
+/** Which open files changed on disk since the app last read or wrote them. */
+export interface DiskView {
+  /** The open document. */
+  document: boolean;
+  /** Its paired file. */
+  mirror: boolean;
+  /** Stamps of the versions reported: ignoring one never ignores a later one. */
+  documentStamp: string;
+  mirrorStamp: string;
+}
+
 export interface SavedView {
   path: string;
   name: string;

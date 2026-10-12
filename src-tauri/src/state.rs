@@ -37,6 +37,11 @@ pub struct FileState {
     /// language (after a swap), saving writes the file's language composed
     /// from the translations.
     pub home: Direction,
+    /// The bytes the file had on disk, changed elsewhere, when the author
+    /// chose not to load them: that version is not reported again (saving
+    /// still asks before writing over it). `file` is what the app last read
+    /// or wrote.
+    pub ignored: Option<Vec<u8>>,
 }
 
 impl FileState {

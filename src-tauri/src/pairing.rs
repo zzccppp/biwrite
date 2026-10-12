@@ -41,6 +41,9 @@ pub struct PairState {
     /// The file is on disk. Not after a Save As whose mirror couldn't be
     /// written: it is still to be created there (and nothing else may be).
     pub exists: bool,
+    /// The bytes it had on disk, changed elsewhere, when the author chose
+    /// not to load them (see [`crate::state::FileState::ignored`]).
+    pub ignored: Option<Vec<u8>>,
 }
 
 impl PairState {
@@ -226,6 +229,30 @@ pub fn load_paired(
     mirror_path: PathBuf,
     mirror: TextFile,
 ) -> CommandResult<(biwrite_engine::Snapshot, PairState)> {
+    load_paired_except(
+        state,
+        path,
+        text,
+        mode,
+        mirror_path,
+        mirror,
+        &HashSet::new(),
+    )
+}
+
+/// [`load_paired`], but the paragraphs of `text` in `fresh` (by their
+/// text) take no translation from the mirror and are never left unpaired:
+/// they are translated afresh and go into the mirror (see
+/// [`behind_paragraphs`]). The engine is loaded only if they pair up.
+pub fn load_paired_except(
+    state: &AppState,
+    path: &Path,
+    text: &str,
+    mode: Mode,
+    mirror_path: PathBuf,
+    mirror: TextFile,
+    fresh: &HashSet<String>,
+) -> CommandResult<(biwrite_engine::Snapshot, PairState)> {
     let other = mirror.text().to_owned();
     let direction = match chinese_of_two(text, &other, mode) {
         Some(true) => Direction::ZhEn,
@@ -249,9 +276,14 @@ pub fn load_paired(
         )));
     }
     let (ua, ub) = (units(text, mode), units(&other, mode));
+    let is_fresh = |i: usize| {
+        ua.get(i)
+            .is_some_and(|u| fresh.contains(&text[u.content.clone()]))
+    };
     let known: Vec<(usize, String)> = pairing
         .pairs
         .iter()
+        .filter(|(i, _)| !is_fresh(*i))
         .map(|(i, j)| (ua[*i].segment, other[ub[*j].content.clone()].to_owned()))
         .collect();
     let snapshot = state
@@ -269,8 +301,9 @@ pub fn load_paired(
         .collect();
     let unpaired = unit_ids
         .iter()
-        .filter(|id| !links.contains_key(id))
-        .copied()
+        .enumerate()
+        .filter(|(i, id)| !links.contains_key(id) && !is_fresh(*i))
+        .map(|(_, id)| *id)
         .collect();
     log::info!(
         "paired {} with {}: {} of {} paragraphs",
@@ -289,6 +322,7 @@ pub fn load_paired(
             unpaired,
             behind: false,
             exists: true,
+            ignored: None,
         },
     ))
 }
@@ -339,6 +373,7 @@ pub fn open(
         dirty: false,
         pair,
         home: snapshot.direction,
+        ignored: None,
     };
     snapshot
 }
@@ -351,6 +386,27 @@ pub fn view(pair: &PairState, units_total: usize) -> PairView {
         units: units_total,
         dirty: pair.unsaved(),
     }
+}
+
+/// The paragraphs of the open document (by their text) whose translations
+/// the mirror lacks: linked to a unit that reads otherwise, new, or with
+/// their translation on its way. Paired again with the mirror as changed
+/// elsewhere, they are translated afresh instead of taking its text, so a
+/// saved edit the mirror was refused still reaches it.
+pub fn behind_paragraphs(state: &AppState, pair: &PairState) -> HashSet<String> {
+    let mode = state.engine.mode();
+    let (text, current) = state.engine.text_and_translations();
+    let ua = units(&text, mode);
+    let ub = units(&pair.text, mode);
+    current
+        .iter()
+        .enumerate()
+        .filter(|(_, (id, translation))| match pair.links.get(id) {
+            Some(&j) => ub.get(j).map(|u| &pair.text[u.content.clone()]) != translation.as_deref(),
+            None => !pair.unpaired.contains(id),
+        })
+        .filter_map(|(k, _)| ua.get(k).map(|u| text[u.content.clone()].to_owned()))
+        .collect()
 }
 
 /// The edits that bring the mirror in line with the open document's
@@ -603,7 +659,17 @@ fn translate_held_for_mirror(state: &AppState) {
 
 /// Write the mirror if its translations are ready and it is as it was read
 /// (changes made to it elsewhere are never overwritten).
+#[cfg(test)]
 pub async fn save_mirror(state: &AppState) -> CommandResult<Option<MirrorSaved>> {
+    save_mirror_with(state, false).await
+}
+
+/// [`save_mirror`], over changes made to it elsewhere if `overwrite` (the
+/// author chose to).
+pub async fn save_mirror_with(
+    state: &AppState,
+    overwrite: bool,
+) -> CommandResult<Option<MirrorSaved>> {
     translate_held_for_mirror(state);
     let (path, mut saved, text, links, bytes, expected) = {
         let mut guard = state.file();
@@ -654,13 +720,16 @@ pub async fn save_mirror(state: &AppState) -> CommandResult<Option<MirrorSaved>>
         }
     };
     let on_disk = files::read_text_file(path.clone()).await;
-    let as_expected = match (&expected, on_disk) {
-        (Some(expected), Ok(disk)) => disk.text() == expected,
-        (None, Err(_)) => !path.exists(),
-        // Ours already, from a write that reported a failure after landing.
-        (None, Ok(disk)) => disk.text() == text,
-        _ => false,
-    };
+    let as_expected = overwrite
+        || match (&expected, on_disk) {
+            // As read, or ours already, from a write that reported a failure
+            // after landing.
+            (Some(expected), Ok(disk)) => disk.text() == expected || disk.text() == text,
+            (None, Err(_)) => !path.exists(),
+            // Ours already, from a write that reported a failure after landing.
+            (None, Ok(disk)) => disk.text() == text,
+            _ => false,
+        };
     if !as_expected {
         log::warn!("{} changed on disk; not overwritten", saved.name);
         set_behind(state, &path, true);
@@ -680,6 +749,7 @@ pub async fn save_mirror(state: &AppState) -> CommandResult<Option<MirrorSaved>>
             pair.links = links;
             pair.behind = false;
             pair.exists = true;
+            pair.ignored = None;
         }
     }
     log::info!(
@@ -788,6 +858,7 @@ pub async fn save_mirror_as(state: &AppState, dest: PathBuf) -> CommandResult<Op
             pair.path = dest.clone();
             pair.behind = true;
             pair.exists = false;
+            pair.ignored = None;
         }
         return Err(e);
     }
@@ -799,6 +870,7 @@ pub async fn save_mirror_as(state: &AppState, dest: PathBuf) -> CommandResult<Op
             pair.text = text;
             pair.behind = behind;
             pair.exists = true;
+            pair.ignored = None;
             if let Some(links) = links {
                 pair.links = links;
             }
@@ -896,10 +968,15 @@ pub async fn close_mirror(state: tauri::State<'_, AppState>) -> CommandResult<()
 /// Write the mirror now (after its translations arrived), unless the
 /// document was edited since it was saved: the mirror follows the saved
 /// document, and is written with the next save instead (`deferred`).
+/// Over changes made to it elsewhere only if `overwrite` (the author chose
+/// to after a write was refused).
 #[tauri::command]
-pub async fn write_mirror(state: tauri::State<'_, AppState>) -> CommandResult<Option<MirrorSaved>> {
+pub async fn write_mirror(
+    state: tauri::State<'_, AppState>,
+    overwrite: bool,
+) -> CommandResult<Option<MirrorSaved>> {
     let _one_at_a_time = state.save_lock.lock().await;
-    save_mirror(&state).await
+    save_mirror_with(&state, overwrite).await
 }
 
 /// Swap in a pair: the mirror (with the current translations) becomes the
@@ -915,18 +992,25 @@ pub fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<Session
     let mode = state.engine.mode();
     // The mirror becomes the edited document and is saved as such: not
     // over changes made to it elsewhere.
-    let (mirror_path, kept) = {
+    let (mirror_path, kept, ignored) = {
         let fs = state.file();
         let pair = fs.pair.as_ref().ok_or_else(|| fail("no pair"))?;
-        (pair.path.clone(), pair.file.text().to_owned())
+        (
+            pair.path.clone(),
+            pair.file.text().to_owned(),
+            pair.ignored.clone(),
+        )
     };
-    let on_disk = std::fs::read(&mirror_path)
-        .ok()
-        .and_then(|bytes| TextFile::decode(bytes).ok());
-    if on_disk.is_none_or(|disk| disk.text() != kept) {
+    let bytes = std::fs::read(&mirror_path).ok();
+    // A version changed elsewhere that the author chose not to load: the
+    // app's version becomes the edited document (and saving it asks before
+    // writing over that change).
+    let ignored = bytes.is_some() && bytes == ignored;
+    let on_disk = bytes.and_then(|bytes| TextFile::decode(bytes).ok());
+    if !ignored && on_disk.is_none_or(|disk| disk.text() != kept) {
         return Err(fail(format!(
-            "{} changed on disk since it was opened. Reopen the document to pair it with \
-             the new version.",
+            "{} changed on disk since it was opened. Load it again, or ignore the change, \
+             before swapping.",
             display_name(Some(&mirror_path))
         )));
     }
@@ -1014,8 +1098,10 @@ pub fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<Session
         let old_pair = fs.pair.take().ok_or_else(|| fail("no pair"))?;
         let old_path = fs.path.take();
         let old_file = std::mem::take(&mut fs.file);
+        let old_ignored = fs.ignored.take();
         fs.path = Some(old_pair.path);
         fs.file = old_pair.file;
+        fs.ignored = old_pair.ignored;
         fs.home = direction;
         // Unsaved edits of the side swapped away live on in the pair.
         fs.dirty = new_text != fs.file.text() || text != old_file.text();
@@ -1027,6 +1113,7 @@ pub fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<Session
             unpaired,
             behind,
             exists: true,
+            ignored: old_ignored,
         });
         fs.dirty
     };

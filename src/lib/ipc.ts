@@ -13,6 +13,7 @@ import type {
   CacheView,
   ClearedView,
   Direction,
+  DiskView,
   ExportView,
   Fill,
   GlossaryEntry,
@@ -51,9 +52,25 @@ import type {
 
 export const ipc = {
   getSession: () => invoke<SessionView>("get_session"),
+  /** Which open files changed on disk elsewhere; `null` if `document` is no longer open. */
+  checkDisk: (document: number) => invoke<DiskView | null>("check_disk", { document }),
+  /** Don't load those versions: not reported again (saving still asks). */
+  ignoreDisk: (document: number, which: DiskView) => invoke<void>("ignore_disk", { document, which }),
+  /** The document's text on disk, to put in the editor (own language edited); nothing changes until `adoptDisk`. */
+  reloadDocument: (document: number) => invoke<string | null>("reload_document", { document }),
+  /** The editor holds `text` from `reloadDocument`: it becomes the file's known text if the disk still reads so. */
+  adoptDisk: (document: number, text: string) => invoke<boolean>("adopt_disk", { document, text }),
+  /** Open the document again from disk, with its paired file. */
+  reopenFile: (document: number) => invoke<SessionView | null>("reopen_file", { document }),
+  /** Pair again with the paired file as on disk; the editor keeps `text`. */
+  reloadMirror: (text: string, document: number) =>
+    invoke<SessionView | null>("reload_mirror", { text, document }),
   openFile: () => invoke<SessionView | null>("open_file"),
   // `document` (Snapshot.document) says which document `text` is for.
-  saveFile: (text: string, document: number) => invoke<SavedView | null>("save_file", { text, document }),
+  /** `overwrite`: also over a version changed on disk elsewhere (else refused, see `isChangedOnDisk`);
+   * `overwriteMirror`: the paired file too (else its write is refused). */
+  saveFile: (text: string, document: number, overwrite = false, overwriteMirror = false) =>
+    invoke<SavedView | null>("save_file", { text, document, overwrite, overwriteMirror }),
   saveFileAs: (text: string, document: number) => invoke<SavedView | null>("save_file_as", { text, document }),
   /** Save As into a new folder with the files the paper builds with. `title` heads the folder dialog. */
   saveProjectAs: (text: string, document: number, title: string) =>
@@ -211,8 +228,8 @@ export const pairIpc = {
   /** Pair with a file the user picks (its paragraphs become the translations). */
   importMirror: (text: string, document: number) => invoke<SessionView | null>("import_mirror", { text, document }),
   close: () => invoke<void>("close_mirror"),
-  /** Write the paired file once its translations arrived. */
-  write: () => invoke<MirrorSaved | null>("write_mirror"),
+  /** Write the paired file once its translations arrived (`overwrite`: also over changes made to it elsewhere). */
+  write: (overwrite = false) => invoke<MirrorSaved | null>("write_mirror", { overwrite }),
 };
 
 /** Updates from BiWrite's GitHub releases (pre-releases are branch builds). */
@@ -260,6 +277,11 @@ export function errorMessage(err: unknown): string {
   if (typeof err === "string") return err;
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/** The file changed on disk since it was read or saved, so the save was refused (`CommandError::ChangedOnDisk`). */
+export function isChangedOnDisk(err: unknown): boolean {
+  return errorMessage(err) === "changed on disk";
 }
 
 /** The PDF was built before a pairing, an unpairing or a swap without a pair (`CommandError::StalePdf`). */

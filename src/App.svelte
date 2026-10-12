@@ -25,11 +25,24 @@
   import TranslationPane from "./lib/components/TranslationPane.svelte";
   import { SourceEditor } from "./lib/editor/editor";
   import { count, language, t } from "./lib/i18n.svelte";
-  import { assistIpc, errorMessage, ipc, isStalePdf, latexIpc, logIpc, pairIpc, settingsIpc, subscribe, updateIpc } from "./lib/ipc";
+  import {
+    assistIpc,
+    errorMessage,
+    ipc,
+    isChangedOnDisk,
+    isStalePdf,
+    latexIpc,
+    logIpc,
+    pairIpc,
+    settingsIpc,
+    subscribe,
+    updateIpc,
+  } from "./lib/ipc";
   import { LatexStore } from "./lib/latex.svelte";
   import { RequestLogStore } from "./lib/requestLog.svelte";
   import { ScrollSync, type Side } from "./lib/scrollSync";
   import { anchorsAgree, type Bounds, placeOf, samePlace, sentenceAtCursor } from "./lib/sentences";
+  import { differingStretches } from "./lib/stretch";
   import { Session } from "./lib/session.svelte";
   import { applyTheme, loadTheme, nextTheme, type ThemePref } from "./lib/theme";
   import type {
@@ -39,6 +52,7 @@
     Direction,
     Fill,
     IssueView,
+    DiskView,
     MirrorSaved,
     Mode,
     PdfBox,
@@ -219,6 +233,34 @@
   let pendingFills: Fill[] = [];
   /** A fill is being put in: not an edit that makes the file dirty. */
   let applyingFill = false;
+  /** The document's text on disk is being put in: not an edit either. */
+  let loadingDisk = false;
+  /** Files are being loaded from disk: saving and swapping wait. */
+  let reloading = false;
+  /** An open file changed on disk elsewhere: `changed` asks whether to load
+   * the versions there (`which`); `save`, the document's save was refused
+   * over such a change; `mirror`, the paired file's write was. */
+  let diskAlert = $state<{ kind: "changed"; which: DiskView } | { kind: "save" } | { kind: "mirror"; name: string } | null>(
+    null,
+  );
+  let checkingDisk = false;
+  let diskBar = $state<HTMLElement | null>(null);
+
+  /** Answer the question about files on disk with nothing: Ignore, Cancel, Not now. */
+  function dismissDisk(): void {
+    const alert = diskAlert;
+    if (alert?.kind === "changed") {
+      void ignoreDisk(alert.which);
+      return;
+    }
+    diskAlert = null;
+    editor?.focus();
+  }
+
+  // Asked right after the author's own save: the answer takes the keys.
+  $effect(() => {
+    if (diskAlert && diskAlert.kind !== "changed") diskBar?.querySelector("button")?.focus();
+  });
 
   /** "English" or "Chinese" (in the interface language), for the source of `direction`. */
   function langName(direction: Direction): string {
@@ -310,7 +352,7 @@
     session.noteEdit(update.changes);
     assist.map(update.changes);
     unsent = unsent.compose(update.changes);
-    if (!session.dirty && !applyingFill) setDirty(true);
+    if (!session.dirty && !applyingFill && !loadingDisk) setDirty(true);
     highlightTick++;
     clearTimeout(timer);
     timer = setTimeout(flush, DEBOUNCE_MS);
@@ -407,19 +449,27 @@
 
   // ── Files ────────────────────────────────────────────────────────
 
-  function loadView(view: SessionView): void {
+  /** Show `view`. `keep`: the same text paired anew, so the editor (cursor,
+   * scroll, undo, assistant cards) stays as it is. */
+  function loadView(view: SessionView, keep = false): void {
     if (!editor) return;
     epoch++;
     swapWhenReady = false;
     swapNowNext = false;
     mirrorWaiting = false;
+    // Asked about the files of the document before.
+    diskAlert = null;
+    mirrorOverwrite = false;
     clearTimeout(timer);
     timer = undefined;
     resend = false;
     pendingMode = null;
-    editor.setDocument(view.text, view.snapshot.mode, view.snapshot.direction);
-    assist.newDocument();
-    selection = { from: 0, to: 0 };
+    const same = keep && editor.text() === view.text;
+    if (!same) {
+      editor.setDocument(view.text, view.snapshot.mode, view.snapshot.direction);
+      assist.newDocument();
+      selection = { from: 0, to: 0 };
+    }
     savedDoc = view.dirty ? null : editor.doc;
     unsent = ChangeSet.empty(editor.doc.length);
     session.load(view);
@@ -427,7 +477,7 @@
     const waiting = pendingFills;
     pendingFills = [];
     if (waiting.length > 0) applyFills(waiting, false);
-    if (rightPane) rightPane.scrollTop = 0;
+    if (rightPane && !same) rightPane.scrollTop = 0;
     pdfMenu = null;
     editor.focus();
     void refreshSettings(); // the document note follows the file
@@ -463,9 +513,10 @@
     }
   }
 
-  /** Save, or Save As (`true`), or Save As into a new folder with the paper's files (`"project"`). */
-  async function save(as: boolean | "project"): Promise<void> {
-    if (!editor || saving) return;
+  /** Save, or Save As (`true`), or Save As into a new folder with the paper's files (`"project"`).
+   * `overwrite`: also over a version changed on disk elsewhere (else the author is asked). */
+  async function save(as: boolean | "project", overwrite = false): Promise<void> {
+    if (!editor || saving || reloading) return;
     // The editor's text is for the document being swapped out.
     if (swapping) {
       session.flash(t("doc.busySwapping"));
@@ -486,9 +537,18 @@
         copy = await ipc.saveProjectAs(text, session.document, t("dialog.saveProject"));
         saved = copy?.saved ?? null;
       } else {
-        saved = as ? await ipc.saveFileAs(text, session.document) : await ipc.saveFile(text, session.document);
+        saved = as
+          ? await ipc.saveFileAs(text, session.document)
+          : await ipc.saveFile(text, session.document, overwrite, mirrorOverwrite);
       }
       if (!saved || sentEpoch !== epoch) return;
+      // Saved: what was asked about the save, or the paired file now
+      // written, is over (a refusal asks again below).
+      if (diskAlert?.kind === "save") diskAlert = null;
+      if (saved.mirror?.written || !saved.mirror?.behind) {
+        mirrorOverwrite = false;
+        if (diskAlert?.kind === "mirror") diskAlert = null;
+      }
       savedDoc = doc;
       session.path = saved.path;
       session.name = saved.name;
@@ -506,10 +566,144 @@
         if (settings?.latex.compileOnSave && latex.ready && !compiling) void compile(latex.lang);
         else if (moved && showPdf) ensurePdf(latex.lang);
       }
+      // What was asked about the document on disk may be over now.
+      if (diskAlert?.kind === "changed") setTimeout(() => void checkDisk(), 0);
+    } catch (err) {
+      // Changed on disk elsewhere: overwrite, save as, or leave it.
+      if (isChangedOnDisk(err)) diskAlert = { kind: "save" };
+      else fail(err);
+    } finally {
+      saving = false;
+    }
+  }
+
+  // ── Files changed on disk elsewhere ──────────────────────────────
+
+  /** Whether the open files changed on disk (when the window gains focus):
+   * if so, the author is asked whether to load them. */
+  async function checkDisk(): Promise<void> {
+    if (!editor || checkingDisk || session.path === null) return;
+    if (reloading || opening || saving || swapping || exporting) {
+      // Looked at once that is done.
+      setTimeout(() => void checkDisk(), 1000);
+      return;
+    }
+    checkingDisk = true;
+    const sentEpoch = epoch;
+    try {
+      const disk = await ipc.checkDisk(session.document);
+      if (!disk || sentEpoch !== epoch) return;
+      // A refused save or write is being asked about.
+      if (diskAlert && diskAlert.kind !== "changed") return;
+      const next = disk.document || disk.mirror ? { kind: "changed" as const, which: disk } : null;
+      // Unchanged: not announced again.
+      if (JSON.stringify(next) !== JSON.stringify(diskAlert)) diskAlert = next;
+    } catch {
+      // Looked at again the next time the window gains focus.
+    } finally {
+      checkingDisk = false;
+    }
+  }
+
+  /** How loading `which` goes: the document in place (its own language
+   * edited), the paired file alone (the editor keeps its text), or both by
+   * opening the document again. */
+  function loadWay(which: DiskView): "document" | "mirror" | "reopen" {
+    if (which.document && !which.mirror && !session.swapped) return "document";
+    if (which.mirror && !which.document) return "mirror";
+    return "reopen";
+  }
+
+  /** Whether loading `which` lets unsaved changes go. */
+  function loadLoses(which: DiskView): boolean {
+    const pair = !!session.pair?.dirty;
+    const way = loadWay(which);
+    if (way === "document") return session.dirty;
+    if (way === "mirror") return pair;
+    return session.dirty || pair;
+  }
+
+  function diskChanged(which: DiskView): string {
+    const mirror = session.pair?.name ?? "";
+    if (which.document && which.mirror) return t("disk.changed.both", { name: session.name, mirror });
+    if (which.mirror) return t("disk.changed.mirror", { mirror });
+    return t("disk.changed.document", { name: session.name });
+  }
+
+  /** Load the versions on disk of `which`. */
+  async function loadFromDisk(which: DiskView): Promise<void> {
+    if (!editor || reloading) return;
+    if (swapping || saving) {
+      session.flash(t(swapping ? "doc.busySwapping" : "doc.busySaving"));
+      return;
+    }
+    diskAlert = null;
+    reloading = true;
+    // Typing meanwhile would be lost.
+    editor.setEditable(false);
+    const way = loadWay(which);
+    const sentEpoch = epoch;
+    try {
+      await settleEdits();
+      if (!editor || sentEpoch !== epoch) return;
+      if (way === "document") {
+        const text = await ipc.reloadDocument(session.document);
+        if (text === null || !editor || sentEpoch !== epoch) return;
+        putSaved(text);
+        await settleEdits();
+        // Changed again meanwhile: asked about that version.
+        if (!(await ipc.adoptDisk(session.document, text))) setTimeout(() => void checkDisk(), 0);
+        else session.flash(t("disk.loaded", { name: session.name }));
+        return;
+      }
+      const view =
+        way === "mirror"
+          ? await ipc.reloadMirror(editor.text(), session.document)
+          : await ipc.reopenFile(session.document);
+      if (!view || sentEpoch !== epoch) return;
+      latex.outdate();
+      loadView(view, way === "mirror");
+      // Paragraphs the paired file lacks go in once translated.
+      if (view.pair?.dirty) mirrorWaiting = true;
+      session.flash(t("disk.loaded", { name: way === "mirror" ? (view.pair?.name ?? view.name) : view.name }));
     } catch (err) {
       fail(err);
     } finally {
-      saving = false;
+      reloading = false;
+      editor?.setEditable(true);
+      editor?.focus();
+    }
+  }
+
+  /** Put `text`, the file's text on disk, in the editor as its saved text,
+   * changing only the stretch that differs (the rest keeps its place). */
+  function putSaved(text: string): void {
+    if (!editor) return;
+    const before = savedDoc?.toString() ?? null;
+    const changes = differingStretches(editor.text(), text);
+    if (changes.length > 0) {
+      loadingDisk = true;
+      try {
+        editor.view.dispatch({ changes, userEvent: "input.reload" });
+      } finally {
+        loadingDisk = false;
+      }
+    }
+    savedDoc = editor.doc;
+    refreshDirty();
+    // The paired file follows the document as saved: written once the
+    // paragraphs that changed are translated.
+    if (session.pair && before !== text) mirrorWaiting = true;
+  }
+
+  /** Leave the versions on disk of `which` as they are: not asked about again. */
+  async function ignoreDisk(which: DiskView): Promise<void> {
+    diskAlert = null;
+    editor?.focus();
+    try {
+      await ipc.ignoreDisk(session.document, which);
+    } catch (err) {
+      fail(err);
     }
   }
 
@@ -602,7 +796,7 @@
 
   /** Swap languages: edit the translation, read the original on the right. */
   async function swapLanguages(): Promise<void> {
-    if (!editor || swapping) return;
+    if (!editor || swapping || reloading) return;
     // A save records its file when it ends: not on the document swapped in.
     if (saving) {
       session.flash(t("doc.busySaving"));
@@ -693,6 +887,8 @@
       }
     } catch (err) {
       fail(err);
+      // Refused over a paired file changed elsewhere, say: ask about it.
+      setTimeout(() => void checkDisk(), 0);
     } finally {
       swapping = false;
       editor?.setEditable(true);
@@ -860,7 +1056,10 @@
 
   /** Problems and left-out paragraphs of a paired-file write, after `notes`, as a sticky message. */
   function mirrorProblems(mirror: MirrorSaved | null, notes: string[] = []): void {
-    if (mirror?.problem === "changedOnDisk") notes.push(t("doc.mirrorChangedOnDisk", { mirror: mirror.name }));
+    // Changed elsewhere: overwrite it or not (asked).
+    if (mirror?.problem === "changedOnDisk" && diskAlert?.kind !== "save") {
+      diskAlert = { kind: "mirror", name: mirror.name };
+    }
     if (mirror?.problem === "structure") notes.push(t("doc.mirrorStructure", { mirror: mirror.name }));
     if (mirror && mirror.leftOut > 0) notes.push(t("doc.mirrorLeftOut", { mirror: mirror.name, n: mirror.leftOut }));
     if (notes.length > 0) session.error = notes.join(" ");
@@ -916,9 +1115,15 @@
 
   /** A write of the paired file is on its way (not reactive: no effect loop). */
   let mirrorWriting = false;
+  /** The author chose to write the paired file over changes made to it
+   * elsewhere: holds until it is written (with the next save, if the write
+   * is put off till then). */
+  let mirrorOverwrite = false;
   /** Asked again while it was: try once more when it is done. */
   let mirrorAgain = false;
 
+  /** Write the paired file; over changes made to it elsewhere while
+   * `mirrorOverwrite` (the author chose to). */
   async function writeMirror(): Promise<void> {
     if (mirrorWriting) {
       mirrorAgain = true;
@@ -926,7 +1131,8 @@
     }
     mirrorWriting = true;
     try {
-      const done = await pairIpc.write();
+      const done = await pairIpc.write(mirrorOverwrite);
+      if (done?.written) mirrorOverwrite = false;
       if (session.pair && done) session.pair = { ...session.pair, dirty: done.behind };
       // Still waiting (translations, or a save of later edits): tried again
       // when the paragraphs change.
@@ -971,6 +1177,8 @@
       await pairIpc.close();
       session.pair = null;
       mirrorWaiting = false;
+      mirrorOverwrite = false;
+      if (diskAlert?.kind === "mirror" || (diskAlert?.kind === "changed" && diskAlert.which.mirror)) diskAlert = null;
       latex.outdate();
       if (showPdf) ensurePdf(latex.lang);
       // A save that marked the pair as waiting no longer applies.
@@ -1626,7 +1834,8 @@
   });
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onfocus={() => void checkDisk()} />
+<svelte:document onvisibilitychange={() => document.visibilityState === "visible" && void checkDisk()} />
 
 <div class="app">
   <Toolbar
@@ -1778,6 +1987,50 @@
     </div>
   {/if}
 
+  {#if diskAlert}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="disk-alert" role="alert" bind:this={diskBar} onkeydown={(e) => e.key === "Escape" && dismissDisk()}>
+      {#if diskAlert.kind === "changed"}
+        {@const which = diskAlert.which}
+        <span>{diskChanged(which)}</span>
+        <button class="btn primary" onclick={() => loadFromDisk(which)}>
+          {t(loadLoses(which) ? "disk.loadDiscard" : "disk.load")}
+        </button>
+        <button class="btn" onclick={() => ignoreDisk(which)}>{t("disk.ignore")}</button>
+      {:else if diskAlert.kind === "save"}
+        <span>{t("disk.saveRefused", { name: session.name })}</span>
+        <button
+          class="btn primary"
+          onclick={() => {
+            diskAlert = null;
+            void save(false, true);
+          }}>{t("disk.overwrite")}</button
+        >
+        <button
+          class="btn"
+          onclick={() => {
+            diskAlert = null;
+            void save(true);
+          }}>{t("disk.saveAs")}</button
+        >
+        <button class="btn" onclick={dismissDisk}>{t("common.cancel")}</button>
+      {:else}
+        <span>{t("disk.mirrorRefused", { mirror: diskAlert.name })}</span>
+        <button
+          class="btn primary"
+          onclick={() => {
+            diskAlert = null;
+            mirrorOverwrite = true;
+            mirrorWaiting = true;
+            editor?.focus();
+            void writeMirror();
+          }}>{t("disk.overwrite")}</button
+        >
+        <button class="btn" onclick={dismissDisk}>{t("disk.notNow")}</button>
+      {/if}
+    </div>
+  {/if}
+
   <StatusBar
     {session}
     squeezing={squeezeLabel}
@@ -1858,6 +2111,26 @@
     padding: 9px 12px;
     background: var(--paper);
     border: 1px solid #3f8f5a;
+    border-radius: 6px;
+    box-shadow: 0 12px 32px -18px rgba(0, 0, 0, 0.45);
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  .disk-alert {
+    position: fixed;
+    top: 56px;
+    left: 50%;
+    transform: translateX(-50%);
+    /* Under dialogs and panels (50). */
+    z-index: 40;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    max-width: min(720px, calc(100vw - 32px));
+    padding: 9px 12px;
+    background: var(--paper);
+    border: 1px solid var(--accent);
     border-radius: 6px;
     box-shadow: 0 12px 32px -18px rgba(0, 0, 0, 0.45);
     font-size: 13.5px;

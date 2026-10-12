@@ -240,6 +240,15 @@ pub(crate) struct Project {
     dir: PathBuf,
 }
 
+/// The text of the file at `path` as it is on disk, else (unreadable)
+/// `known`, what the app last read or wrote of it.
+pub(crate) fn as_on_disk(path: &Path, known: &str) -> String {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| biwrite_core::TextFile::decode(bytes).ok())
+        .map_or_else(|| known.to_owned(), |file| file.text().to_owned())
+}
+
 fn is_tex(path: &Path) -> bool {
     path.extension()
         .is_some_and(|x| x.eq_ignore_ascii_case("tex"))
@@ -512,7 +521,9 @@ pub async fn latex_compile(
             },
             p.path.clone(),
             Basis {
-                compiled: p.saved.clone(),
+                // What TeX reads: the file as it is on disk now, changed
+                // elsewhere perhaps since the app read or wrote it.
+                compiled: as_on_disk(&p.path, &p.saved),
                 editor: text,
                 same_language: lang == source_lang(direction),
                 mode: Mode::Latex,
@@ -1398,6 +1409,7 @@ mod tests {
             unpaired: Default::default(),
             behind: false,
             exists: true,
+            ignored: None,
         });
         assert!(current(Lang::En) && !current(Lang::Zh));
         set(Lang::Zh, Source::Files, Direction::EnZh);
@@ -1484,6 +1496,7 @@ mod tests {
             unpaired: Default::default(),
             behind: false,
             exists: true,
+            ignored: None,
         });
         assert!(build_is_current(&state, Lang::En));
         std::fs::remove_dir_all(&dir).unwrap();
