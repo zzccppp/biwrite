@@ -397,7 +397,7 @@ Folder & What goes there & How BiWrite uses it \\
 
 \section{Request log}
 \label{sec:log}
-The log button at the right of the toolbar (\cmdkey\shiftkey L) opens the request log (\fig{g-log}). \n{1} filters the records, pauses recording, clears the log and opens the log file. Each row of the table \n{2} is one request, with the model, reasoning effort and service tier that were sent and the ones the server declared, marked where they differ. A click on a row shows its details (\fig{g-details} \n{1}): the HTTP status, time to the first token, duration, input and output tokens (cached and reasoning tokens included), the key used (its name and last characters), and notes on retries and failover. The log never holds document text or keys.
+The log button at the right of the toolbar (\cmdkey\shiftkey L) opens the request log (\fig{g-log}). \n{1} filters the records, pauses recording, clears the log and opens the log file. Each row of the table \n{2} is one request, with the model, reasoning effort and service tier that were sent and the ones the server declared, marked where they differ. A click on a row shows its details (\fig{g-details} \n{1}): the HTTP status, time to the first token, duration, input and output tokens (cached and reasoning tokens included), the key used (its name and last characters), and notes on retries and failover, followed by the system prompt, the message sent and the reply, each kept up to 20,000 characters. The log stays on this computer and never holds keys.
 
 \shot[0.8]{g-log}{(1) Filters and actions, (2) the requests}
 \shot[0.95]{g-details}{(1) The details of one request}

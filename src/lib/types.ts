@@ -392,6 +392,11 @@ export interface RequestRecord {
   promptChars: number;
   outputChars: number;
   notes: string[];
+  /** What was sent and what came back (cut at 20,000 characters, keys
+   * masked). */
+  system: string;
+  user: string;
+  output: string;
 }
 
 export interface LogView {

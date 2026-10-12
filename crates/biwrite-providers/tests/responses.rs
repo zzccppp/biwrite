@@ -193,11 +193,12 @@ async fn streams_text_with_the_codex_compatible_request_shape() {
     assert!(rec.first_token_ms.is_some() && rec.duration_ms.is_some());
     let key = rec.key.as_ref().unwrap();
     assert_eq!((key.number, key.count, key.tail.as_str()), (1, 1, "AAAA"));
+    // What was sent and what came back are kept, the key never.
+    assert!(rec.system.contains("academic English"), "{}", rec.system);
+    assert!(rec.user.contains("Placeholder"), "{}", rec.user);
+    assert_eq!(rec.output, "占位符保护。");
     let json = serde_json::to_string(rec).unwrap();
-    assert!(
-        !json.contains(KEY_A) && !json.contains("Placeholder"),
-        "{json}"
-    );
+    assert!(!json.contains(KEY_A), "{json}");
 }
 
 #[tokio::test]

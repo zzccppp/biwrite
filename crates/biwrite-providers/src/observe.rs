@@ -2,8 +2,10 @@
 //! HTTP request asked for (model, reasoning effort, service tier) next to what
 //! the response declared, with status, timing and token counts.
 //!
-//! Records hold metadata only. Prompts, outputs and API keys never enter one.
-//! A key is identified by its position in the pool and its last characters.
+//! A record also keeps what was sent (the system prompt and the user's
+//! message) and the text that came back, each cut at [`TEXT_MAX`] characters
+//! with key-shaped strings masked. API keys never enter one: a key is
+//! identified by its position in the pool and its last characters.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,6 +60,21 @@ pub enum RecordState {
     Cancelled,
 }
 
+/// Most characters of a prompt or an output kept in a record.
+pub const TEXT_MAX: usize = 20_000;
+
+/// `text` for a record: key-shaped strings masked, cut at [`TEXT_MAX`]
+/// characters with a note of how many more there were.
+pub fn clip(text: &str) -> String {
+    let text = crate::http::redact(text, "");
+    let total = text.chars().count();
+    if total <= TEXT_MAX {
+        return text;
+    }
+    let kept: String = text.chars().take(TEXT_MAX).collect();
+    format!("{kept}\n[{} more characters not kept]", total - TEXT_MAX)
+}
+
 /// One HTTP request to a model.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +106,12 @@ pub struct RequestRecord {
     pub prompt_chars: usize,
     /// Size of the output text, in characters.
     pub output_chars: usize,
+    /// What was sent: the system prompt and the user's message (see
+    /// [`clip`]).
+    pub system: String,
+    pub user: String,
+    /// The text that came back (see [`clip`]).
+    pub output: String,
     /// Events worth knowing, e.g. a parameter dropped after a rejection.
     pub notes: Vec<String>,
 }
@@ -189,6 +212,11 @@ impl Tap {
         u.reasoning_tokens = usage.reasoning_tokens.or(u.reasoning_tokens);
     }
 
+    /// The text that came back.
+    pub fn output(&mut self, text: &str) {
+        self.record.output = clip(text);
+    }
+
     pub fn note(&mut self, note: impl Into<String>) {
         self.record.notes.push(note.into());
     }
@@ -287,5 +315,20 @@ mod tests {
             "127.0.0.1:8080/v1/chat/completions"
         );
         assert_eq!(endpoint_label("not a url"), "");
+    }
+
+    #[test]
+    fn texts_kept_in_a_record_are_masked_and_cut() {
+        let key = format!("sk-{}", "a".repeat(40));
+        assert_eq!(clip(&format!("use {key} here")), "use [redacted] here");
+        let long = "x".repeat(TEXT_MAX + 5);
+        let kept = clip(&long);
+        assert!(kept.starts_with(&"x".repeat(TEXT_MAX)));
+        assert!(
+            kept.ends_with("[5 more characters not kept]"),
+            "{}",
+            &kept[TEXT_MAX..]
+        );
+        assert_eq!(clip("short"), "short");
     }
 }

@@ -588,6 +588,9 @@ export function fakeRecord(over: Partial<RequestRecord> = {}): RequestRecord {
     promptChars: 420,
     outputChars: 18,
     notes: [],
+    system: "You translate academic English into Chinese for the author.",
+    user: "<source>\nGraph neural networks can learn new tasks from a few examples in context.\n</source>",
+    output: "图神经网络可以从上下文中的少量示例学习新任务。",
     ...over,
   };
 }

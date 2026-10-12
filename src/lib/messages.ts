@@ -1153,6 +1153,9 @@ export const messages = {
   },
   "log.error": { en: "Error", zh: "错误" },
   "log.notes": { en: "Notes", zh: "备注" },
+  "log.system": { en: "System prompt", zh: "系统提示" },
+  "log.user": { en: "Sent", zh: "发送内容" },
+  "log.output": { en: "Reply", zh: "回复" },
   "log.empty": {
     en: "No requests yet. Translations and assistant requests appear here as they are sent.",
     zh: "还没有请求。翻译请求和写作助手的请求发出后显示在这里。",
@@ -1163,7 +1166,7 @@ export const messages = {
   },
   "log.noMatch": { en: "No request matches.", zh: "没有匹配的请求。" },
   "log.summary": {
-    en: "Mean {mean} · {in} in ({cached} cached) · {out} out ({reasoning} reasoning). Declared values are what the server reports, which can differ from what actually ran. Records hold no text and no keys.",
-    zh: "平均耗时 {mean} · 输入 {in}（缓存 {cached}）· 输出 {out}（推理 {reasoning}）。声明值由服务器报告，可能与实际运行的不同。记录中不含文本和密钥。",
+    en: "Mean {mean} · {in} in ({cached} cached) · {out} out ({reasoning} reasoning). Declared values are what the server reports, which can differ from what actually ran. Records keep the prompts and replies on this computer, never the keys.",
+    zh: "平均耗时 {mean} · 输入 {in}（缓存 {cached}）· 输出 {out}（推理 {reasoning}）。声明值由服务器报告，可能与实际运行的不同。提示词和回复只记录在本机，不记录密钥。",
   },
 } as const;

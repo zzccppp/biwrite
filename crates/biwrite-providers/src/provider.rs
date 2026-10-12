@@ -22,7 +22,7 @@ use crate::clean::{clean_output, strip_reasoning};
 use crate::config::{ProviderConfig, ProviderKind, WireApi};
 use crate::http::{Core, error_from_response, invalid, send};
 use crate::keys::{Failover, KeyFn, KeyStatus, Lease};
-use crate::observe::{Declared, RequestObserver, RequestRecord, Tap, endpoint_label};
+use crate::observe::{Declared, RequestObserver, RequestRecord, Tap, clip, endpoint_label};
 use crate::prompt::{self, PromptSource};
 use crate::squeeze::SqueezeBoard;
 use crate::{anthropic, openai, responses};
@@ -239,6 +239,8 @@ impl HttpProvider {
                     key: Some(lease.key_use()),
                     request: body.declared.clone(),
                     prompt_chars: system.chars().count() + user.chars().count(),
+                    system: crate::http::redact(&clip(system), &lease.key),
+                    user: crate::http::redact(&clip(user), &lease.key),
                     notes: if images.is_empty() {
                         Vec::new()
                     } else {
@@ -252,6 +254,7 @@ impl HttpProvider {
                 .await;
             let err = match result {
                 Ok(streamed) => {
+                    tap.output(&streamed.text);
                     tap.finish(&Ok::<(), TranslateError>(()), streamed.text.chars().count());
                     self.core.keys.succeeded(&lease);
                     return Ok(streamed);

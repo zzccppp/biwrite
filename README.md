@@ -168,7 +168,7 @@ BiWrite 支持 OpenAI 兼容的 Chat Completions 接口、OpenAI Responses 接�
 
 ## 请求日志
 
-**日志**（`⌘⇧L`）列出每次请求发出的模型、推理强度和服务等级，以及服务端声明的实际值（不一致时标出），还有 HTTP 状态、首字延迟、总耗时、token（含缓存和推理 token）、所用密钥（只显示名称和末尾几位）以及重试和换号的说明。日志可以暂停、清空和保存到文件，不记录正文和密钥。
+**日志**（`⌘⇧L`）列出每次请求发出的模型、推理强度和服务等级，以及服务端声明的实际值（不一致时标出），还有 HTTP 状态、首字延迟、总耗时、token（含缓存和推理 token）、所用密钥（只显示名称和末尾几位）以及重试和换号的说明，还有发给接口的系统提示、发送内容和收到的回复。日志可以暂停、清空和保存到文件，只存在本机，不记录密钥。
 
 ## 版本更新
 
@@ -535,8 +535,9 @@ retries.
 service tier that were sent and the ones the server declared (differences
 are marked), the HTTP status, time to first token, duration, tokens with
 cached and reasoning tokens, the key used (by name and the last characters
-only), and notes on retries and failover. The log can be paused, cleared and
-kept on disk. It never holds request text or keys.
+only), notes on retries and failover, and the system prompt, the message
+sent and the reply. The log can be paused, cleared and kept on disk, stays
+on this computer and never holds keys.
 
 ## Updates
 

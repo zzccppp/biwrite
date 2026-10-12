@@ -166,6 +166,18 @@
       <dt>{i === 0 ? t("log.notes") : ""}</dt>
       <dd>{note}</dd>
     {/each}
+    {#if r.system}
+      <dt>{t("log.system")}</dt>
+      <dd><pre class="text">{r.system}</pre></dd>
+    {/if}
+    {#if r.user}
+      <dt>{t("log.user")}</dt>
+      <dd><pre class="text">{r.user}</pre></dd>
+    {/if}
+    {#if r.output}
+      <dt>{t("log.output")}</dt>
+      <dd><pre class="text">{r.output}</pre></dd>
+    {/if}
   </dl>
 {/snippet}
 
@@ -557,6 +569,19 @@
   }
   .details dd {
     margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .details .text {
+    margin: 0;
+    max-height: 260px;
+    overflow: auto;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: var(--paper-2);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
   .empty {

@@ -23,6 +23,9 @@ function record(id: number, over: Partial<RequestRecord> = {}): RequestRecord {
     promptChars: 300,
     outputChars: 30,
     notes: [],
+    system: "",
+    user: "",
+    output: "",
     ...over,
   };
 }

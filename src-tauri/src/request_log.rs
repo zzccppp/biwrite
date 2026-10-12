@@ -1,7 +1,8 @@
 //! The request log behind the Log panel: every model request as metadata,
 //! namely the model, reasoning effort and service tier it asked for, what the
-//! response declared, status, timing and token counts. Prompts, outputs and
-//! keys are never part of a record (see `biwrite_providers::RequestRecord`).
+//! response declared, status, timing and token counts, and the prompt sent and
+//! the text that came back (cut, keys masked). Keys are never part of a
+//! record (see `biwrite_providers::RequestRecord`).
 //!
 //! Recording can be paused. While paused, new requests are not recorded, and
 //! requests recorded before the pause still get their outcome. The newest
@@ -21,7 +22,7 @@ use serde::{Deserialize, Serialize};
 /// Records kept in memory.
 const MAX_RECORDS: usize = 500;
 /// The log file is moved to `requests.jsonl.1` at this size.
-const MAX_FILE_BYTES: u64 = 5_000_000;
+const MAX_FILE_BYTES: u64 = 20_000_000;
 
 /// Receives every recorded change (the app forwards it to the webview).
 pub trait LogSink: Send + Sync {

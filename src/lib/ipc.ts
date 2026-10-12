@@ -280,7 +280,7 @@ export const updateIpc = {
     listen<UpdateProgress>("update-progress", (e) => handler(e.payload)),
 };
 
-/** Request log (metadata of model requests, no text, no keys). */
+/** Request log (model requests with their prompts and replies, no keys). */
 export const logIpc = {
   get: () => invoke<LogView>("get_request_log"),
   set: (settings: LogSettings) => invoke<LogView>("set_request_log", { settings }),
