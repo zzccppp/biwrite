@@ -29,6 +29,9 @@ use crate::{anthropic, openai, responses};
 
 /// Purpose of translation requests (part of every record).
 pub const TRANSLATE: &str = "translate";
+/// The purpose of a short translation that keeps a key's place at a
+/// crowded relay (see [`crate::squeeze::ping`]).
+pub const KEEP_ALIVE: &str = "keep-alive";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Wire {
@@ -128,6 +131,12 @@ impl HttpProvider {
     /// keys that get through (see [`crate::squeeze`]).
     pub fn join_board(&self, board: Arc<SqueezeBoard>) {
         self.core.keys.join_board(board);
+    }
+
+    /// [`Self::join_board`] for pings and the tries of a squeeze: their
+    /// requests are not the author's use of the keys.
+    pub(crate) fn join_board_quietly(&self, board: Arc<SqueezeBoard>) {
+        self.core.keys.join_board_quietly(board);
     }
 
     /// The keys changed: read them from `keys` before the next request.
@@ -328,6 +337,15 @@ impl HttpProvider {
             text: cleaned,
             usage: out.usage,
         })
+    }
+
+    /// Translate `req` to keep a key's place: as [`Self::translate_one`],
+    /// reported as [`KEEP_ALIVE`] rather than a translation.
+    pub(crate) async fn keep_alive(&self, req: &TranslationRequest) -> Result<(), TranslateError> {
+        let messages = prompt::build(req, self.core.prompts.system_prompt(req.direction));
+        self.exchange(KEEP_ALIVE, &messages.system, &messages.user, &[], &|_| {})
+            .await
+            .map(|_| ())
     }
 
     async fn translate_many(

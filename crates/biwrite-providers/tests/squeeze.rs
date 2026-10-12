@@ -13,20 +13,24 @@ use std::time::Duration;
 
 use biwrite_engine::{TranslationRequest, Translator};
 use biwrite_providers::{
-    DefaultPrompts, Effort, NoObserver, ProviderConfig, ProviderKind, Squeeze, SqueezeBoard,
-    SqueezeChange, WireApi, build_http, key_fingerprint,
+    DefaultPrompts, Effort, KEEP_ALIVE, NoObserver, ProviderConfig, ProviderKind, RequestObserver,
+    RequestRecord, Squeeze, SqueezeBoard, SqueezeChange, WireApi, build_http, key_fingerprint,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
 /// Keys the relay answers. A key in `after` is answered from its n-th
-/// request on, and a key in `refused` is invalid. With `no_model` every
-/// request is answered that the model does not exist.
+/// request on, and a key in `refused` is invalid. A key in `cut_off` is
+/// answered with an output cut off by its limit, one in `filtered` with the
+/// content filter's refusal. With `no_model` every request is answered that
+/// the model does not exist.
 #[derive(Default)]
 struct Rules {
     through: HashSet<String>,
     after: HashMap<String, usize>,
     refused: HashSet<String>,
+    cut_off: HashSet<String>,
+    filtered: HashSet<String>,
     no_model: bool,
 }
 
@@ -73,19 +77,26 @@ impl Relay {
                             Err((404, "model not found"))
                         } else if rules.refused.contains(&key) {
                             Err((401, "invalid token"))
+                        } else if rules.cut_off.contains(&key) {
+                            Ok("length")
+                        } else if rules.filtered.contains(&key) {
+                            Ok("content_filter")
                         } else if rules.through.contains(&key)
                             || rules.after.get(&key).is_some_and(|&m| n >= m)
                         {
-                            Ok(())
+                            Ok("stop")
                         } else {
                             Err((500, "the model is at capacity, try again later"))
                         }
                     };
                     let response = match answer {
-                        Ok(()) => {
+                        Ok(finish) => {
+                            let last = format!(
+                                r#"data: {{"choices":[{{"index":0,"delta":{{}},"finish_reason":"{finish}"}}]}}"#
+                            );
                             let body = [
                                 r#"data: {"choices":[{"index":0,"delta":{"content":"早上好。"}}]}"#,
-                                r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+                                last.as_str(),
                                 "data: [DONE]",
                             ]
                             .map(|e| format!("{e}\n\n"))
@@ -151,6 +162,10 @@ fn keys() -> Vec<String> {
 type Changes = Arc<Mutex<Vec<SqueezeChange>>>;
 
 fn start(relay: &Relay, board: &Arc<SqueezeBoard>) -> (Arc<Squeeze>, Changes) {
+    start_as(relay, board, false)
+}
+
+fn start_as(relay: &Relay, board: &Arc<SqueezeBoard>, unattended: bool) -> (Arc<Squeeze>, Changes) {
     let changes: Changes = Arc::default();
     let sink = Arc::clone(&changes);
     let squeeze = Squeeze::start(
@@ -160,6 +175,7 @@ fn start(relay: &Relay, board: &Arc<SqueezeBoard>) -> (Arc<Squeeze>, Changes) {
         Arc::new(DefaultPrompts),
         Arc::new(move |c| sink.lock().unwrap().push(c)),
         &tokio::runtime::Handle::current(),
+        unattended,
     )
     .unwrap();
     (squeeze, changes)
@@ -200,8 +216,14 @@ async fn a_squeeze_goes_on_until_every_usable_key_got_through() {
     assert!(board.is_through(&key_fingerprint(B)));
     assert!(board.is_through(&key_fingerprint(C)));
     assert!(!board.is_through(&key_fingerprint(A)));
+    assert!(
+        board.used_within(Duration::from_secs(3600)),
+        "got through for the author: kept alive"
+    );
     let progress = squeeze.progress();
     assert!(progress[0].refused, "an invalid key is not tried again");
+    assert!(board.gave_up(&key_fingerprint(A)), "nor squeezed back in");
+    assert!(!board.gave_up(&key_fingerprint(B)));
     assert_eq!(progress[0].tries, 1);
     assert_eq!(progress[1].tries, 1);
     assert_eq!(progress[2].tries, 3, "the third try got through");
@@ -232,6 +254,10 @@ async fn stopping_a_squeeze_sends_nothing_more() {
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert_eq!(relay.seen.lock().unwrap().len(), sent);
     assert!(board.through().is_empty());
+    assert!(
+        !board.used_within(Duration::from_secs(3600)),
+        "tries are no use of the keys"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -346,16 +372,19 @@ async fn a_request_the_relay_cannot_serve_is_not_tried_forever() {
 async fn a_ping_keeps_a_key_that_got_through_answered_and_notes_keys_turned_away() {
     let relay = Relay::start().await;
     relay.rules.lock().unwrap().through.insert(C.into());
-    let board = SqueezeBoard::new();
+    let board = SqueezeBoard::for_relay();
     let config = config(&relay.base);
-    let ping = |key: &str| {
+    let log = Arc::new(Purposes::default());
+    let ping_on = |board: &Arc<SqueezeBoard>, key: &str| {
         biwrite_providers::ping(
             &config,
             key.to_owned(),
-            Arc::clone(&board),
+            Arc::clone(board),
             Arc::new(DefaultPrompts),
+            log.clone(),
         )
     };
+    let ping = |key: &str| ping_on(&board, key);
     ping(C).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     let idle = board.idle(&key_fingerprint(C)).unwrap();
@@ -372,4 +401,72 @@ async fn a_ping_keeps_a_key_that_got_through_answered_and_notes_keys_turned_away
     assert!(board.was_crowded());
     assert!(!board.is_through(&key_fingerprint(A)));
     assert_eq!(relay.requests_with(C), 2);
+    // Pings are no use of the keys by the author, and are logged as what
+    // they are.
+    assert!(!board.used_within(Duration::from_secs(3600)));
+    let purposes = log.0.lock().unwrap().clone();
+    assert!(!purposes.is_empty());
+    assert!(purposes.iter().all(|p| p == KEEP_ALIVE), "{purposes:?}");
+    // An ordinary pool's server errors never make it a crowded relay.
+    let ordinary = SqueezeBoard::new();
+    assert!(ping_on(&ordinary, A).await.is_err());
+    assert!(ping_on(&ordinary, B).await.is_err());
+    assert!(!ordinary.was_crowded());
+}
+
+/// A relay that answers a key, though with an output cut off by its limit
+/// or declined by its content filter, let the key through: the squeeze does
+/// not ask it again every few seconds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_answered_with_an_unusable_output_got_through() {
+    let relay = Relay::start().await;
+    {
+        let mut rules = relay.rules.lock().unwrap();
+        rules.cut_off.insert(A.into());
+        rules.filtered.insert(B.into());
+        rules.through.insert(C.into());
+    }
+    let board = SqueezeBoard::new();
+    let (squeeze, changes) = start(&relay, &board);
+    assert!(until_ended(&changes, Duration::from_secs(10)).await);
+    for key in [A, B, C] {
+        assert!(board.is_through(&key_fingerprint(key)), "{key}");
+        assert_eq!(relay.requests_with(key), 1, "{key}");
+    }
+    assert!(squeeze.progress().iter().all(|p| !p.refused));
+}
+
+/// A squeeze nobody watches (the keeper's) waits longer after every try
+/// turned away; one the author started, or one while the author uses the
+/// keys (and waits for them), tries every few seconds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unattended_squeeze_backs_off() {
+    let (eager, patient, waited) = (
+        Relay::start().await,
+        Relay::start().await,
+        Relay::start().await,
+    );
+    let (attended, _) = start_as(&eager, &SqueezeBoard::new(), false);
+    let (unattended, _) = start_as(&patient, &SqueezeBoard::new(), true);
+    let used = SqueezeBoard::new();
+    used.note_use();
+    let (in_use, _) = start_as(&waited, &used, true);
+    tokio::time::sleep(Duration::from_millis(13_500)).await;
+    attended.stop();
+    unattended.stop();
+    in_use.stop();
+    // Tries at 0, 3, 6, 9 and 12 s, and at 0, 3 and 9 s.
+    assert!(eager.requests_with(A) >= 5, "{}", eager.requests_with(A));
+    assert!(waited.requests_with(A) >= 5, "{}", waited.requests_with(A));
+    assert_eq!(patient.requests_with(A), 3);
+}
+
+/// The purposes of the requests reported.
+#[derive(Default)]
+struct Purposes(Mutex<Vec<String>>);
+
+impl RequestObserver for Purposes {
+    fn record(&self, record: &RequestRecord) {
+        self.0.lock().unwrap().push(record.purpose.clone());
+    }
 }

@@ -14,7 +14,7 @@
 //! A key that got through loses its place when left idle for some minutes:
 //! [`ping`] sends it a short translation, which keeps its place.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -25,7 +25,7 @@ use tokio::sync::watch;
 
 use crate::config::ProviderConfig;
 use crate::keys::fingerprint;
-use crate::observe::NoObserver;
+use crate::observe::{NoObserver, RequestObserver};
 use crate::prompt::PromptSource;
 use crate::provider::HttpProvider;
 
@@ -46,8 +46,18 @@ pub const CROWDED_AFTER: usize = 2;
 /// place and one idle for ten minutes had lost it. Three minutes leave time
 /// for a few retries before [`STALE_AFTER`].
 pub const KEEP_ALIVE_AFTER: Duration = Duration::from_secs(3 * 60);
+/// Keys are kept alive, and squeezed back in, only this long after the
+/// author last used their provider: someone away for longer pays for no
+/// requests.
+pub const KEEP_ALIVE_FOR: Duration = Duration::from_secs(30 * 60);
 /// Pause between two tries of one key.
 const PROBE_GAP: Duration = Duration::from_secs(3);
+/// Longest pause between two tries of a squeeze nobody watches, which
+/// doubles [`PROBE_GAP`] after every try turned away.
+const UNATTENDED_GAP_MAX: Duration = Duration::from_secs(60);
+/// The author used the keys this lately: a squeeze nobody started tries as
+/// often as one they started, since they are waiting for it.
+const ATTENDED_WITHIN: Duration = Duration::from_secs(2 * 60);
 /// Longest wait for one try, and for a rate limit between tries.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// What a try translates.
@@ -74,8 +84,15 @@ pub struct SqueezeBoard {
     /// so an ordinary pool takes turns as without a board.
     crowding: AtomicBool,
     /// The relay turned keys away as often as [`Self::crowded`] asks, at
-    /// some time since the board was made.
+    /// some time since crowding applies.
     crowded_seen: AtomicBool,
+    /// When a request of the author's last went out with one of the keys
+    /// (a translation, the writing assistant, a key test) or a squeeze was
+    /// started; pings and the tries of a squeeze do not count.
+    used: Mutex<Option<Instant>>,
+    /// Keys a squeeze gave up on (refused, or a request that cannot
+    /// succeed), until answered: not squeezed back in by themselves.
+    given_up: Mutex<HashSet<String>>,
 }
 
 /// A key that got through, for the settings view.
@@ -133,6 +150,33 @@ impl SqueezeBoard {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn given_up(&self) -> MutexGuard<'_, HashSet<String>> {
+        self.given_up.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The author sent a request with one of the keys, or started a squeeze.
+    pub fn note_use(&self) {
+        *self.used.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+    }
+
+    /// The author used the keys within `d`.
+    pub fn used_within(&self, d: Duration) -> bool {
+        self.used
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some_and(|t| t.elapsed() < d)
+    }
+
+    /// A squeeze gave up on this key.
+    pub fn give_up(&self, fingerprint: &str) {
+        self.given_up().insert(fingerprint.to_owned());
+    }
+
+    /// A squeeze gave up on this key, and it was not answered since.
+    pub fn gave_up(&self, fingerprint: &str) -> bool {
+        self.given_up().contains(fingerprint)
+    }
+
     pub fn is_through(&self, fingerprint: &str) -> bool {
         self.lock().contains_key(fingerprint)
     }
@@ -151,7 +195,8 @@ impl SqueezeBoard {
         while turned.len() > CROWDED_AFTER {
             turned.pop_front();
         }
-        if turned.len() >= CROWDED_AFTER
+        if self.crowding.load(Ordering::Acquire)
+            && turned.len() >= CROWDED_AFTER
             && turned.front().is_some_and(|t| t.elapsed() < STALE_AFTER)
         {
             self.crowded_seen.store(true, Ordering::Release);
@@ -159,8 +204,9 @@ impl SqueezeBoard {
     }
 
     /// The relay turned keys away as often as [`Self::crowded`] asks at some
-    /// time, whether or not crowding applies to this board: its keys that
-    /// got through are worth keeping alive.
+    /// time since crowding applies (a crowded relay, or a pool a squeeze was
+    /// started for): its keys that got through are worth keeping alive. An
+    /// ordinary pool's server errors never count.
     pub fn was_crowded(&self) -> bool {
         self.crowded_seen.load(Ordering::Acquire)
     }
@@ -183,6 +229,7 @@ impl SqueezeBoard {
 
     /// A request with this key was answered.
     pub fn answered(&self, fingerprint: &str) {
+        self.given_up().remove(fingerprint);
         let now = SystemTime::now();
         let mut keys = self.lock();
         let entry = keys.entry(fingerprint.to_owned()).or_insert(Through {
@@ -225,6 +272,7 @@ impl SqueezeBoard {
     /// again.
     pub fn clear(&self) {
         self.lock().clear();
+        self.given_up().clear();
     }
 
     /// This key is no longer in the pool.
@@ -287,31 +335,28 @@ pub type ChangeFn = Arc<dyn Fn(SqueezeChange) + Send + Sync>;
 
 /// Send `key` of the provider `config` a short translation, which keeps its
 /// place at a crowded relay. The answer, or the failure, is recorded on
-/// `board` as for any request.
+/// `board` as for any request (but not as the author's use), and the request
+/// is reported to `observer` as [`crate::KEEP_ALIVE`].
 pub async fn ping(
     config: &ProviderConfig,
     key: String,
     board: Arc<SqueezeBoard>,
     prompts: Arc<dyn PromptSource>,
+    observer: Arc<dyn RequestObserver>,
 ) -> Result<(), TranslateError> {
     let provider = HttpProvider::new(
         config.clone(),
         Arc::new(move || Ok(vec![key.clone()])),
         prompts,
-        Arc::new(NoObserver),
+        observer,
     )?;
-    provider.join_board(board);
+    provider.join_board_quietly(board);
     let request = TranslationRequest {
         source: PROBE_TEXT.to_owned(),
         ..Default::default()
     };
-    match tokio::time::timeout(
-        PROBE_TIMEOUT,
-        Translator::translate(&provider, &request, &|_| {}),
-    )
-    .await
-    {
-        Ok(result) => result.map(|_| ()),
+    match tokio::time::timeout(PROBE_TIMEOUT, provider.keep_alive(&request)).await {
+        Ok(result) => result,
         Err(_) => Err(TranslateError::Network(format!(
             "no answer within {} seconds",
             PROBE_TIMEOUT.as_secs()
@@ -338,13 +383,19 @@ pub struct Squeeze {
     running: AtomicBool,
     /// A task saw every key through: all tasks end.
     done: AtomicBool,
+    /// Nobody asked for it just now: while the author does not use the
+    /// keys, it waits longer after every try turned away.
+    unattended: bool,
 }
 
 impl Squeeze {
     /// Start trying `keys` of the provider `config` on `runtime`. Keys on
     /// `board` that were answered lately are left alone while they stay
     /// so, and the board lets keys that got through go first from now on.
-    /// `on_change` is called from the squeeze's tasks.
+    /// `on_change` is called from the squeeze's tasks. An `unattended`
+    /// squeeze (nobody asked for it just now) waits longer after every try
+    /// turned away, up to a minute, unless the author used the keys within
+    /// [`ATTENDED_WITHIN`].
     pub fn start(
         config: &ProviderConfig,
         keys: Vec<String>,
@@ -352,6 +403,7 @@ impl Squeeze {
         prompts: Arc<dyn PromptSource>,
         on_change: ChangeFn,
         runtime: &tokio::runtime::Handle,
+        unattended: bool,
     ) -> Result<Arc<Self>, TranslateError> {
         let mut providers = Vec::with_capacity(keys.len());
         for key in &keys {
@@ -362,7 +414,7 @@ impl Squeeze {
                 Arc::clone(&prompts),
                 Arc::new(NoObserver),
             )?;
-            provider.join_board(Arc::clone(&board));
+            provider.join_board_quietly(Arc::clone(&board));
             providers.push(provider);
         }
         board.allow_crowding();
@@ -380,6 +432,7 @@ impl Squeeze {
             started: SystemTime::now(),
             running: AtomicBool::new(true),
             done: AtomicBool::new(false),
+            unattended,
         });
         let tasks: Vec<_> = providers
             .into_iter()
@@ -468,6 +521,8 @@ impl Squeeze {
             ..Default::default()
         };
         let mut stop = self.stop.subscribe();
+        // Tries turned away in a row.
+        let mut misses: u32 = 0;
         loop {
             if self.stopped() || self.done.load(Ordering::Acquire) || self.lock()[index].refused {
                 return;
@@ -501,6 +556,15 @@ impl Squeeze {
             }
             // An answer counts even when it held no translation.
             let through = board.is_fresh(&fingerprint);
+            misses = if through { 0 } else { misses.saturating_add(1) };
+            let gap_max = if self.unattended && !board.used_within(ATTENDED_WITHIN) {
+                UNATTENDED_GAP_MAX
+            } else {
+                PROBE_GAP
+            };
+            let gap = PROBE_GAP
+                .saturating_mul(1 << misses.saturating_sub(1).min(5))
+                .min(gap_max);
             let wait = {
                 let mut progress = self.lock();
                 let p = &mut progress[index];
@@ -509,24 +573,32 @@ impl Squeeze {
                 match &result {
                     Ok(Ok(_)) => {
                         p.last_error = None;
-                        PROBE_GAP
+                        gap
                     }
                     Ok(Err(err)) => {
                         p.last_error = Some(err.to_string());
                         p.refused = !through && !worth_another_try(err);
+                        if p.refused {
+                            board.give_up(&fingerprint);
+                        }
                         err.retry_after()
-                            .map_or(PROBE_GAP, |d| d.clamp(PROBE_GAP, PROBE_TIMEOUT))
+                            .map_or(gap, |d| d.clamp(gap, PROBE_TIMEOUT))
                     }
                     Err(_) => {
                         p.last_error = Some(format!(
                             "no answer within {} seconds",
                             PROBE_TIMEOUT.as_secs()
                         ));
-                        PROBE_GAP
+                        gap
                     }
                 }
             };
             if through {
+                // A key got through for the author, who may have stepped
+                // away while waiting: it is kept alive from now on.
+                if !was_through && !self.unattended {
+                    board.note_use();
+                }
                 // A key that kept its place was only checked again.
                 on_change(if was_through {
                     SqueezeChange::Tried
@@ -655,22 +727,51 @@ mod tests {
     }
 
     #[test]
-    fn crowding_is_remembered_for_keeping_keys_alive_on_any_board() {
+    fn crowding_is_remembered_for_keeping_keys_alive_where_it_applies() {
+        // An ordinary pool's server errors (an outage) are not a crowd.
         let ordinary = SqueezeBoard::new();
-        ordinary.note_turned_away();
+        for _ in 0..10 {
+            ordinary.note_turned_away();
+        }
         assert!(!ordinary.was_crowded());
+        // Once a squeeze was started for it, they are.
+        ordinary.allow_crowding();
         ordinary.note_turned_away();
-        assert!(
-            ordinary.was_crowded(),
-            "seen, though keys taking turns stay so"
-        );
-        assert!(!ordinary.crowded());
-        assert_eq!(ordinary.idle("a"), None);
-        ordinary.answered("a");
-        assert!(
-            ordinary
-                .idle("a")
-                .is_some_and(|d| d < Duration::from_secs(1))
-        );
+        assert!(ordinary.was_crowded());
+
+        let relay = SqueezeBoard::for_relay();
+        relay.note_turned_away();
+        relay.note_turned_away();
+        assert!(relay.was_crowded());
+        assert_eq!(relay.idle("a"), None);
+        relay.answered("a");
+        assert!(relay.idle("a").is_some_and(|d| d < Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn the_authors_use_is_remembered_for_a_while() {
+        let board = SqueezeBoard::new();
+        let hour = Duration::from_secs(3600);
+        assert!(!board.used_within(hour), "never used");
+        board.note_use();
+        assert!(board.used_within(KEEP_ALIVE_FOR));
+        let Some(long_ago) = Instant::now().checked_sub(KEEP_ALIVE_FOR + Duration::from_secs(1))
+        else {
+            return;
+        };
+        *board.used.lock().unwrap() = Some(long_ago);
+        assert!(!board.used_within(KEEP_ALIVE_FOR));
+    }
+
+    #[test]
+    fn a_key_given_up_on_is_so_until_answered_or_the_keys_change() {
+        let board = SqueezeBoard::new();
+        board.give_up("a");
+        board.give_up("b");
+        assert!(board.gave_up("a") && board.gave_up("b"));
+        board.answered("a");
+        assert!(!board.gave_up("a"));
+        board.clear();
+        assert!(!board.gave_up("b"));
     }
 }

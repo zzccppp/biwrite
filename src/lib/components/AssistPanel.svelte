@@ -25,7 +25,7 @@
     onrevert: (job: AssistJob) => void;
     onagain: (job: AssistJob) => void;
     onreapply: (job: AssistJob) => void;
-    onfollowup: (job: AssistJob, question: string) => void;
+    onfollowup: (job: AssistJob, question: string) => Promise<boolean>;
     onfocus: (job: AssistJob) => void;
     onclose: () => void;
   }

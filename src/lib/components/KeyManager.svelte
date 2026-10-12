@@ -252,7 +252,7 @@
       </select>
     </label>
     {#if provider.squeezable && keepAlive !== null}
-      <label class="inline keep">
+      <label class="inline keep" title={t("squeeze.keepAliveHint")}>
         <input
           type="checkbox"
           checked={keepAlive}

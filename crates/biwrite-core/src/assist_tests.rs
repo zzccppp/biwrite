@@ -316,6 +316,37 @@ fn a_paragraph_lists_its_sentences_where_sentence_at_ends_them() {
     assert!(sentences_at("a\n\n\n\nb", Mode::Plain, 2).is_none());
 }
 
+/// The cases `src/lib/sentences.test.ts` runs against the splitter of the
+/// shown translation: both sides end sentences alike.
+#[test]
+fn sentences_end_where_the_translation_pane_ends_them() {
+    #[derive(serde::Deserialize)]
+    struct Case {
+        text: String,
+        sentences: Vec<String>,
+    }
+    let cases: Vec<Case> =
+        serde_json::from_str(include_str!("../../../src/lib/sentences.cases.json")).unwrap();
+    for case in cases {
+        let text = case.text.as_str();
+        let (_, sentences) = sentences_at(text, Mode::Latex, 0).unwrap();
+        let found: Vec<&str> = sentences.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(found, case.sentences, "{text}");
+    }
+}
+
+#[test]
+fn comments_are_no_sentences() {
+    // Hidden in the translation, a comment neither ends a sentence nor is one.
+    let text = "Proof in Thm.~2. Done. % old note. Really.\nAfter it. % end";
+    let (_, sentences) = sentences_at(text, Mode::Latex, 0).unwrap();
+    let found: Vec<&str> = sentences.iter().map(|r| &text[r.clone()]).collect();
+    assert_eq!(found, ["Proof in Thm.~2.", "Done.", "After it."]);
+    for r in &sentences {
+        assert_eq!(sentence_at(text, Mode::Latex, r.start), Some(r.clone()));
+    }
+}
+
 #[test]
 fn mirror_requests_carry_the_new_translation_and_ask_for_a_revision_only() {
     let skill = Skill::default();

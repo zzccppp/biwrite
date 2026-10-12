@@ -44,10 +44,10 @@ pub use observe::{
     Declared, KeyUse, NoObserver, RecordState, RequestObserver, RequestRecord, UsageDetail,
 };
 pub use prompt::{DefaultPrompts, PromptFiles, PromptSource};
-pub use provider::{HttpProvider, TRANSLATE};
+pub use provider::{HttpProvider, KEEP_ALIVE, TRANSLATE};
 pub use squeeze::{
-    ChangeFn, DROP_AFTER, KEEP_ALIVE_AFTER, KeyProgress, PROBE_TEXT, STALE_AFTER, Squeeze,
-    SqueezeBoard, SqueezeChange, ThroughView, ping,
+    ChangeFn, DROP_AFTER, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress, PROBE_TEXT, STALE_AFTER,
+    Squeeze, SqueezeBoard, SqueezeChange, ThroughView, ping,
 };
 
 /// Build the translator for a (validated) provider configuration, without a

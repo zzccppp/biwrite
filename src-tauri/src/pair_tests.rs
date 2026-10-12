@@ -237,6 +237,33 @@ async fn the_translated_tex_sends_what_waits() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Saving while the other language is edited (no pair) composes the file
+/// from the translations, so it sends what waits out the delay: saving
+/// again a moment later works instead of failing until the delay is over.
+#[tokio::test]
+async fn saving_the_other_language_sends_what_waits() {
+    let (dir, en_path, _) = project("delay-save", EN, ZH);
+    let state = app_state_with(
+        &dir,
+        EngineSettings {
+            edit_delay: Duration::from_secs(600),
+            ..EngineSettings::default()
+        },
+    );
+    pairing::open(&state, en_path.clone(), read(&en_path), None);
+    settle(&state).await;
+    let swapped = crate::commands::swap(&state, EN.to_owned(), false).unwrap();
+    assert!(!state.editing_own_language());
+    settle(&state).await;
+    let edited = format!("{}\n\n刚刚写下的一段。\n", swapped.text.trim_end());
+    state.engine.update(edited.clone());
+    assert_eq!(state.engine.pending(), 1, "the edit waits out the delay");
+    assert!(crate::commands::home_text(&state, edited.clone()).is_err());
+    settle(&state).await;
+    assert!(crate::commands::home_text(&state, edited).is_ok());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[tokio::test]
 async fn a_pair_saves_only_edited_paragraphs_both_ways() {
     let (dir, en, zh) = project("sample", EN, ZH);

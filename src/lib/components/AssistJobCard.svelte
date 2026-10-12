@@ -16,7 +16,8 @@
     onremove: (job: AssistJob) => void;
     onagain: (job: AssistJob) => void;
     onreapply: (job: AssistJob) => void;
-    onfollowup: (job: AssistJob, question: string) => void;
+    /** Resolves whether the question was sent. */
+    onfollowup: (job: AssistJob, question: string) => Promise<boolean>;
     onfocus: (job: AssistJob) => void;
     onstop: (job: AssistJob) => void;
   }
@@ -54,11 +55,11 @@
     }
   }
 
-  function ask(): void {
+  async function ask(): Promise<void> {
     const q = followUp.trim();
     if (!q) return;
-    followUp = "";
-    onfollowup(job, q);
+    // Kept when it could not be sent (its text was deleted, say).
+    if ((await onfollowup(job, q)) && followUp.trim() === q) followUp = "";
   }
 </script>
 

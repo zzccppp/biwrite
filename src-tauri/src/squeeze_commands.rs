@@ -7,16 +7,18 @@
 //! squeeze started from the key pool runs in the background whichever
 //! provider is in use, and says when a key gets through. With keeping alive
 //! on, a keeper sends the keys that got through a short translation when
-//! they are idle, for every provider whose relay turned keys away, and
-//! squeezes a key it kept back in when the key loses its place.
+//! they are idle, for every provider whose relay turned keys away (a crowded
+//! relay, or a pool a squeeze was started for) and that the author used
+//! within [`KEEP_ALIVE_FOR`], and squeezes a key it kept back in when the key
+//! loses its place, unless a squeeze gave up on it.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use biwrite_providers::{
-    ChangeFn, HttpProvider, KEEP_ALIVE_AFTER, KeyProgress, Squeeze, SqueezeBoard, SqueezeChange,
-    key_fingerprint, ping,
+    ChangeFn, HttpProvider, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress, Squeeze, SqueezeBoard,
+    SqueezeChange, key_fingerprint, ping,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, UserAttentionType};
@@ -93,8 +95,9 @@ impl SqueezeState {
     }
 
     /// Keys kept alive that lost their place since, by provider among
-    /// `entries` with no squeeze running (their fingerprints). The keys
-    /// through now join those kept, for every relay that turned keys away.
+    /// `entries` with no squeeze running and used lately (their
+    /// fingerprints). The keys through now join those kept, for every relay
+    /// that turned keys away; a key a squeeze gave up on leaves them.
     pub fn dropped_keys(
         &self,
         entries: &[ProviderEntry],
@@ -113,12 +116,15 @@ impl SqueezeState {
                     let mut kept = self.kept();
                     let kept = kept.entry(e.config.id.clone()).or_default();
                     kept.extend(through.iter().cloned());
+                    kept.retain(|f| !board.gave_up(f));
                     kept.iter()
                         .filter(|f| !through.contains(*f))
                         .cloned()
                         .collect()
                 };
-                if dropped.is_empty() || self.runs().get(&e.config.id).is_some_and(|r| r.running())
+                if dropped.is_empty()
+                    || !board.used_within(KEEP_ALIVE_FOR)
+                    || self.runs().get(&e.config.id).is_some_and(|r| r.running())
                 {
                     return None;
                 }
@@ -133,6 +139,30 @@ impl SqueezeState {
     pub fn stop_squeezing_back(&self, id: &str) {
         self.kept().remove(id);
         self.auto().remove(id);
+    }
+
+    /// The squeezes the keeper started for providers among `entries` not
+    /// used within [`KEEP_ALIVE_FOR`] stop. Their keys stay kept, so they
+    /// are squeezed back in once the provider is used again.
+    pub fn stop_unused_runs(&self, entries: &[ProviderEntry]) {
+        // Not held while the boards are looked at (they come first).
+        let auto: Vec<String> = self.auto().iter().cloned().collect();
+        let unused: Vec<String> = auto
+            .into_iter()
+            .filter(|id| {
+                entries
+                    .iter()
+                    .find(|e| e.config.id == **id)
+                    .and_then(|e| self.board_of(e))
+                    .is_none_or(|b| !b.used_within(KEEP_ALIVE_FOR))
+            })
+            .collect();
+        for id in unused {
+            self.auto().remove(&id);
+            if let Some(run) = self.runs().get(&id) {
+                run.stop();
+            }
+        }
     }
 
     /// Keeping alive was turned off: the squeezes the keeper started stop,
@@ -187,8 +217,9 @@ impl SqueezeState {
     }
 
     /// The providers among `entries` with keys to keep alive: a relay that
-    /// turned keys away, and keys of it that got through and were not
-    /// answered for `after` (their fingerprints).
+    /// turned keys away and that the author used within [`KEEP_ALIVE_FOR`],
+    /// and keys of it that got through and were not answered for `after`
+    /// (their fingerprints).
     pub fn due_for_keep_alive(
         &self,
         entries: &[ProviderEntry],
@@ -203,7 +234,7 @@ impl SqueezeState {
                     .get(&e.config.id)
                     .filter(|(made_for, _)| *made_for == e.squeeze_target())
                     .map(|(_, b)| Arc::clone(b))?;
-                if !board.was_crowded() {
+                if !board.was_crowded() || !board.used_within(KEEP_ALIVE_FOR) {
                     return None;
                 }
                 let due: Vec<String> = board
@@ -391,7 +422,10 @@ pub async fn squeeze_start(
     let board = state.squeeze.board_for(&entry).ok_or_else(|| {
         CommandError::Settings("getting through applies to a relay or a pool of keys".into())
     })?;
-    if state.squeeze.runs().get(&id).is_some_and(|r| r.running()) {
+    // The author's own squeeze goes on; one the keeper started gives way to
+    // this one, which tries every key as often as it can.
+    let running = state.squeeze.runs().get(&id).is_some_and(|r| r.running());
+    if running && !state.squeeze.auto().contains(&id) {
         return Ok(view(&state.squeeze, &id));
     }
     let store = state.secrets.clone();
@@ -405,6 +439,9 @@ pub async fn squeeze_start(
             entry.config.name
         )));
     }
+    // Asked for: the keys that get through are kept alive (so are those
+    // getting through later, see `Squeeze::start`).
+    board.note_use();
     start_run(&app, &entry, board, &keys, None)?;
     Ok(view(&state.squeeze, &id))
 }
@@ -468,7 +505,7 @@ fn start_run(
                 through: fingerprints.iter().filter(|f| board.is_through(f)).count(),
                 total,
                 running,
-                keeping: state.settings().keep_alive && board.was_crowded(),
+                keeping: state.settings().keep_alive && keeps(&board),
                 change,
             };
             if let Err(e) = app.emit(EVENT_SQUEEZE, event) {
@@ -483,6 +520,7 @@ fn start_run(
         state.prompts(),
         Arc::clone(&on_change),
         tauri::async_runtime::handle().inner(),
+        auto,
     )?;
     on_change(SqueezeChange::Started);
     if auto {
@@ -561,6 +599,7 @@ async fn keep_alive(app: &AppHandle) {
         }
         s.providers.clone()
     };
+    state.squeeze.stop_unused_runs(&entries);
     for (entry, board, dropped) in state.squeeze.dropped_keys(&entries) {
         // Keys and providers do not change while it starts.
         let _keys = state.keys_lock.lock().await;
@@ -596,6 +635,12 @@ async fn keep_alive(app: &AppHandle) {
     announce_kept(app, &entries, true);
 }
 
+/// The keys of `board` that got through are kept alive (while the setting
+/// is on): its relay turned keys away, and the author used it lately.
+fn keeps(board: &SqueezeBoard) -> bool {
+    board.was_crowded() && board.used_within(KEEP_ALIVE_FOR)
+}
+
 /// Tell the frontend how many keys of each relay that turned keys away are
 /// kept alive (`on`), or that none are any more.
 fn announce_kept(app: &AppHandle, entries: &[ProviderEntry], on: bool) {
@@ -615,7 +660,7 @@ fn announce_kept(app: &AppHandle, entries: &[ProviderEntry], on: bool) {
             running: state.squeeze.runs().get(id).is_some_and(|r| r.running()),
             through: board.through().len(),
             total: entry.key_count,
-            keeping: on,
+            keeping: on && keeps(&board),
         };
         if let Err(e) = app.emit(EVENT_SQUEEZE, event) {
             log::warn!("could not emit {EVENT_SQUEEZE}: {e}");
@@ -654,7 +699,14 @@ async fn ping_one(
     if !unchanged || !state.squeeze.has_key(id, print) || !board.is_through(print) {
         return;
     }
-    let outcome = ping(&entry.config, key, Arc::clone(&board), state.prompts()).await;
+    let outcome = ping(
+        &entry.config,
+        key,
+        Arc::clone(&board),
+        state.prompts(),
+        state.request_log.clone(),
+    )
+    .await;
     if !state.squeeze.has_key(id, print) {
         // The key was removed meanwhile: its answer does not count.
         board.forget(print);
@@ -727,6 +779,7 @@ mod tests {
         let relay = entry("https://anyrouter.top/v1", 6);
         let board = state.board_for(&relay).unwrap();
         board.answered("fp-a");
+        board.note_use();
         let zero = Duration::ZERO;
         assert!(
             state
@@ -757,6 +810,9 @@ mod tests {
         };
         let other = state.board_for(&pool).unwrap();
         other.answered("fp-b");
+        other.note_use();
+        // A squeeze was started for it.
+        other.allow_crowding();
         other.note_turned_away();
         other.note_turned_away();
         let both = state.due_for_keep_alive(&[relay.clone(), pool.clone()], zero);
@@ -828,6 +884,7 @@ mod tests {
         let board = state.board_for(&relay).unwrap();
         board.answered("fp-a");
         board.answered("fp-b");
+        board.note_use();
         assert!(
             state.dropped_keys(entries).is_empty(),
             "no key was turned away"
@@ -868,6 +925,100 @@ mod tests {
         );
     }
 
+    /// Keys are kept alive, and squeezed back in, only while the author uses
+    /// the provider, and an ordinary pool whose server failed (an outage,
+    /// not a crowd) is never kept alive.
+    #[test]
+    fn keys_are_kept_alive_only_where_the_author_uses_a_crowded_relay() {
+        let state = SqueezeState::default();
+        let zero = Duration::ZERO;
+        let relay = entry("https://anyrouter.top/v1", 6);
+        let board = state.board_for(&relay).unwrap();
+        board.answered("fp-a");
+        board.answered("fp-b");
+        board.note_turned_away();
+        board.note_turned_away();
+        let entries = std::slice::from_ref(&relay);
+        assert!(state.dropped_keys(entries).is_empty());
+        board.forget("fp-b");
+        assert!(
+            state.due_for_keep_alive(entries, zero).is_empty(),
+            "not used"
+        );
+        assert!(state.dropped_keys(entries).is_empty(), "not used");
+        board.note_use();
+        assert_eq!(state.due_for_keep_alive(entries, zero).len(), 1);
+        assert_eq!(state.dropped_keys(entries)[0].2, ["fp-b".to_owned()]);
+
+        // Two keys at an official API, during an outage.
+        let pool = ProviderEntry {
+            config: ProviderConfig {
+                id: "p-pool".into(),
+                base_url: "https://api.example.com/v1".into(),
+                ..relay.config.clone()
+            },
+            key_count: 2,
+            ..relay.clone()
+        };
+        let other = state.board_for(&pool).unwrap();
+        other.note_use();
+        other.note_turned_away();
+        other.note_turned_away();
+        other.answered("fp-c");
+        let pools = std::slice::from_ref(&pool);
+        assert!(state.due_for_keep_alive(pools, zero).is_empty());
+        assert!(state.dropped_keys(pools).is_empty());
+    }
+
+    /// A kept key that a squeeze gave up on (refused, or a request that
+    /// cannot succeed) is not squeezed back in every round.
+    #[test]
+    fn a_key_a_squeeze_gave_up_on_is_not_squeezed_back_in() {
+        let state = SqueezeState::default();
+        let relay = entry("https://anyrouter.top/v1", 6);
+        let entries = std::slice::from_ref(&relay);
+        let board = state.board_for(&relay).unwrap();
+        board.answered("fp-a");
+        board.answered("fp-b");
+        board.note_use();
+        board.note_turned_away();
+        board.note_turned_away();
+        assert!(state.dropped_keys(entries).is_empty());
+        board.forget("fp-b");
+        assert_eq!(state.dropped_keys(entries)[0].2, ["fp-b".to_owned()]);
+        board.give_up("fp-b");
+        assert!(state.dropped_keys(entries).is_empty());
+        // Once it got through again, it is kept again.
+        board.answered("fp-b");
+        assert!(state.dropped_keys(entries).is_empty());
+        board.forget("fp-b");
+        assert_eq!(state.dropped_keys(entries)[0].2, ["fp-b".to_owned()]);
+    }
+
+    /// A squeeze the keeper started stops once the provider was not used
+    /// for a while; one the author started goes on.
+    #[tokio::test]
+    async fn the_keepers_squeeze_stops_when_the_provider_is_not_used() {
+        let state = SqueezeState::default();
+        let relay = entry("https://anyrouter.top/v1", 6);
+        let entries = std::slice::from_ref(&relay);
+        // Never used, as if not used for long.
+        let run = run_for(&state, &relay);
+        state.stop_unused_runs(entries);
+        assert!(run.running(), "the author's own squeeze goes on");
+        state.auto().insert("p-relay".into());
+        state.stop_unused_runs(entries);
+        assert!(!run.running(), "the keeper's stops");
+        assert!(!state.auto().contains("p-relay"));
+
+        let run = run_for(&state, &relay);
+        state.auto().insert("p-relay".into());
+        state.board_for(&relay).unwrap().note_use();
+        state.stop_unused_runs(entries);
+        assert!(run.running(), "used lately");
+        run.stop();
+    }
+
     /// A squeeze of `entry` against a port nothing listens on, so its tries
     /// fail until it is stopped.
     fn run_for(state: &SqueezeState, entry: &ProviderEntry) -> Arc<Squeeze> {
@@ -881,6 +1032,7 @@ mod tests {
             Arc::new(biwrite_providers::DefaultPrompts),
             Arc::new(|_| {}),
             &tokio::runtime::Handle::current(),
+            false,
         )
         .unwrap();
         state

@@ -141,6 +141,8 @@ pub(crate) fn home_text(state: &AppState, editor_text: String) -> CommandResult<
     if state.editing_own_language() {
         Ok(editor_text)
     } else {
+        // Made from the translations, so what waits out the edit delay goes now.
+        state.engine.translate_held();
         Ok(state.engine.compose_target()?)
     }
 }

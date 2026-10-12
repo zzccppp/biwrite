@@ -630,6 +630,7 @@ async fn anyrouter_squeeze_gets_a_key_through() {
         Arc::new(DefaultPrompts),
         Arc::new(move |c| sink.lock().unwrap().push(c)),
         &tokio::runtime::Handle::current(),
+        false,
     )
     .unwrap();
     let deadline = started + Duration::from_secs(minutes * 60);

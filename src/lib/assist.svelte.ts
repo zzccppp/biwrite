@@ -3,10 +3,19 @@
 // job notes whether the target itself was edited, which decides how an
 // approved revision is applied.
 
-import type { ChangeDesc } from "@codemirror/state";
+import type { ChangeSet } from "@codemirror/state";
 import { assistIpc } from "./ipc";
 
-export { asParagraph, insertionAt, reapplyInstruction, uniqueIndex } from "./assistText";
+import { insertAfter, mapPlace } from "./assistText";
+export {
+  askedAbout,
+  asParagraph,
+  insertionAt,
+  notLoaded,
+  reapplyInstruction,
+  revertChange,
+  uniqueIndex,
+} from "./assistText";
 import type {
   AssistAction,
   AssistEvent,
@@ -102,9 +111,8 @@ export class AssistJob {
   restarting = $state(false);
   /** Kept for later: the card folds, and can still be accepted. */
   kept = $state(false);
-  /** What applying put in, and the package lines it added to the preamble,
-   * for Revert (kept in step with later edits like the target). */
-  applied = $state<{ text: string; packages: { from: number; to: number; text: string } | null } | null>(null);
+  /** What applying put in, for Revert (the target covers it from then on). */
+  applied = $state<{ text: string } | null>(null);
   /** Revert found that text edited since: the card shows the text from before. */
   revertBlocked = $state(false);
 
@@ -135,20 +143,17 @@ export class AssistJob {
 
 /** Map a job's target through an edit. Text typed right where new text
  * goes stays before it (the new paragraph follows what the author added).
- * An applied job covers the text it put in, whatever its target was. */
-function mapTarget(job: AssistJob, changes: ChangeDesc): void {
+ * An applied job covers the text it put in, whatever its target was, and
+ * an inserted paragraph takes in what is typed at its ends (not a new
+ * paragraph there), so Revert never leaves that text on a neighbour. */
+function mapTarget(job: AssistJob, changes: ChangeSet): void {
   if (job.target.insert && job.state !== "applied") {
     job.from = job.to = changes.mapPos(job.from, 1);
     return;
   }
   if (changes.touchesRange(job.from, job.to)) job.touched = true;
-  job.from = changes.mapPos(job.from, 1);
-  job.to = Math.max(job.from, changes.mapPos(job.to, -1));
-  const packages = job.applied?.packages;
-  if (packages) {
-    packages.from = changes.mapPos(packages.from, 1);
-    packages.to = Math.max(packages.from, changes.mapPos(packages.to, -1));
-  }
+  ({ from: job.from, to: job.to } =
+    job.target.insert && job.applied ? insertAfter(job, job.applied.text, changes) : mapPlace(job, changes));
 }
 
 export class AssistStore {
@@ -170,7 +175,7 @@ export class AssistStore {
   /** Bumped when another document is loaded (reactive: cards turn stale). */
   epoch = $state(0);
   /** Edits made while jobs were being started, to map their targets through. */
-  #starting = new Set<{ changes: ChangeDesc | null }>();
+  #starting = new Set<{ changes: ChangeSet | null }>();
   /** Events of jobs whose start has not returned yet (they can come first). */
   #early = new Map<number, AssistEvent[]>();
 
@@ -191,7 +196,7 @@ export class AssistStore {
   async start(request: AssistRequest, reapplies: number | null = null): Promise<AssistJob> {
     // The document the request's text belongs to, before anything else loads.
     const epoch = this.epoch;
-    const edits: { changes: ChangeDesc | null } = { changes: null };
+    const edits: { changes: ChangeSet | null } = { changes: null };
     this.#starting.add(edits);
     let started: AssistStarted;
     try {
@@ -242,8 +247,8 @@ export class AssistStore {
   /** Keep the targets of the jobs of this document in step with an edit
    * (Again, a follow-up and a click on the card go there), and of jobs
    * still being started. */
-  map(changes: ChangeDesc): void {
-    for (const edits of this.#starting) edits.changes = edits.changes ? edits.changes.composeDesc(changes) : changes;
+  map(changes: ChangeSet): void {
+    for (const edits of this.#starting) edits.changes = edits.changes ? edits.changes.compose(changes) : changes;
     for (const job of this.jobs) {
       if (job.epoch !== this.epoch) continue;
       mapTarget(job, changes);

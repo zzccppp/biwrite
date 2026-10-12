@@ -1,0 +1,93 @@
+[
+  {
+    "text": "See Fig. 2 for x = 1.5. The model, e.g. a GNN, wins!  Next one?",
+    "sentences": [
+      "See Fig. 2 for x = 1.5.",
+      "The model, e.g. a GNN, wins!",
+      "Next one?"
+    ]
+  },
+  {
+    "text": "Prior work includes Smith et al. We extend it. Gradients are taken w.r.t. the weights.",
+    "sentences": [
+      "Prior work includes Smith et al.",
+      "We extend it.",
+      "Gradients are taken w.r.t. the weights."
+    ]
+  },
+  {
+    "text": "Samples are i.i.d. draws, s.t. the bound holds. See Thm. 2 and Lem. 3, Def. 1, Prop. 4, Cor. 5, Sect. 6, Alg. 7 and App. 8. Done.",
+    "sentences": [
+      "Samples are i.i.d. draws, s.t. the bound holds.",
+      "See Thm. 2 and Lem. 3, Def. 1, Prop. 4, Cor. 5, Sect. 6, Alg. 7 and App. 8.",
+      "Done."
+    ]
+  },
+  {
+    "text": "Smith et al. [3] show it, and models, data, etc. are shared. Models, data, etc. Then we test.",
+    "sentences": [
+      "Smith et al. [3] show it, and models, data, etc. are shared.",
+      "Models, data, etc.",
+      "Then we test."
+    ]
+  },
+  {
+    "text": "Methods (e.g. GNNs, etc.) work. U.S. law applies. We wrap up the app. It ends.",
+    "sentences": [
+      "Methods (e.g. GNNs, etc.) work.",
+      "U.S. law applies.",
+      "We wrap up the app.",
+      "It ends."
+    ]
+  },
+  {
+    "text": "He said ``yes.'' Then he left (as planned.) Really?! Yes.",
+    "sentences": [
+      "He said ``yes.''",
+      "Then he left (as planned.)",
+      "Really?!",
+      "Yes."
+    ]
+  },
+  {
+    "text": "他说：“好。”然后走了。（见上。）真的吗？！完。",
+    "sentences": [
+      "他说：“好。”",
+      "然后走了。",
+      "（见上。）",
+      "真的吗？！",
+      "完。"
+    ]
+  },
+  {
+    "text": "Wait. Go on. Yes.",
+    "sentences": [
+      "Wait. Go on.",
+      "Yes."
+    ]
+  },
+  {
+    "text": "\\textbf{Implementation details.} We train X. We use Y.",
+    "sentences": [
+      "\\textbf{Implementation details.}",
+      "We train X.",
+      "We use Y."
+    ]
+  },
+  {
+    "text": "\\textbf{实现细节。}我们训练 X。我们使用 Y。",
+    "sentences": [
+      "\\textbf{实现细节。}",
+      "我们训练 X。",
+      "我们使用 Y。"
+    ]
+  },
+  {
+    "text": "Smith et~al. propose it. Jones et al. Then more.",
+    "sentences": [
+      "Smith et~al. propose it.",
+      "Jones et al.",
+      "Then more."
+    ]
+  }
+]

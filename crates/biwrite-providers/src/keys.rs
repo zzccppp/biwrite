@@ -22,7 +22,7 @@
 //!   drops it. Otherwise the pool takes turns as without a board.
 
 use std::pin::pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -195,6 +195,9 @@ pub(crate) struct KeyPool {
     freed: Notify,
     /// The keys of this provider that got through a crowded relay.
     board: OnceLock<Arc<SqueezeBoard>>,
+    /// The pool sends pings or the tries of a squeeze, not the author's
+    /// requests (see [`SqueezeBoard::note_use`]).
+    quiet: AtomicBool,
 }
 
 /// A key handed out for one request. Dropping it frees the key's slot.
@@ -260,6 +263,19 @@ fn fault(err: &TranslateError) -> Fault {
     }
 }
 
+/// An error made of a successful answer: an output cut off or unreadable, or
+/// one the content filter or the model declined.
+fn answered_anyway(err: &TranslateError) -> bool {
+    matches!(
+        err,
+        TranslateError::InvalidResponse(_)
+            | TranslateError::Rejected {
+                status: 200..=299,
+                ..
+            }
+    )
+}
+
 pub(crate) fn mentions_quota(message: &str) -> bool {
     let lower = message.to_lowercase();
     [
@@ -311,13 +327,23 @@ impl KeyPool {
             state: Mutex::new(PoolState::default()),
             freed: Notify::new(),
             board: OnceLock::new(),
+            quiet: AtomicBool::new(false),
         }
     }
 
     /// Prefer the keys on `board`, and record there the keys that get
-    /// through. Only the first board joined counts.
+    /// through and that the author uses them. Only the first board joined
+    /// counts.
     pub fn join_board(&self, board: Arc<SqueezeBoard>) {
         let _ = self.board.set(board);
+    }
+
+    /// [`Self::join_board`] for pings and the tries of a squeeze, which are
+    /// not the author's use.
+    pub fn join_board_quietly(&self, board: Arc<SqueezeBoard>) {
+        if self.board.set(board).is_ok() {
+            self.quiet.store(true, Ordering::Release);
+        }
     }
 
     fn state(&self) -> MutexGuard<'_, PoolState> {
@@ -385,6 +411,11 @@ impl KeyPool {
             freed.as_mut().enable();
             match self.pick(epoch, &keys) {
                 Pick::Key(index, route) => {
+                    if let Some(board) = self.board.get()
+                        && !self.quiet.load(Ordering::Acquire)
+                    {
+                        board.note_use();
+                    }
                     return Ok(Lease {
                         pool: self,
                         index,
@@ -494,6 +525,13 @@ impl KeyPool {
     /// Record a failed request, and say whether the caller may retry with
     /// another key at once.
     pub fn report(&self, lease: &Lease<'_>, err: &TranslateError) -> Failover {
+        // The server answered, though with nothing the request could use:
+        // the key got through all the same.
+        if answered_anyway(err)
+            && let Some(board) = self.board.get()
+        {
+            board.answered(&fingerprint(&lease.key));
+        }
         let fault = fault(err);
         if fault == Fault::None {
             return Failover::No;
@@ -1127,6 +1165,46 @@ mod tests {
         let board = SqueezeBoard::for_relay();
         p.join_board(Arc::clone(&board));
         (p, board)
+    }
+
+    /// The author's requests count as use of the keys, pings and the tries
+    /// of a squeeze (a quiet pool) do not.
+    #[tokio::test]
+    async fn only_the_authors_requests_count_as_use() {
+        let hour = Duration::from_secs(3600);
+        let (p, board) = boarded(&["k-aaaa"], None);
+        assert!(!board.used_within(hour));
+        drop(p.acquire().await.unwrap());
+        assert!(board.used_within(hour));
+
+        let quiet = pool(&["k-aaaa"], None);
+        let board = SqueezeBoard::for_relay();
+        quiet.join_board_quietly(Arc::clone(&board));
+        drop(quiet.acquire().await.unwrap());
+        assert!(!board.used_within(hour));
+    }
+
+    /// An answer the request could not use (cut off, unreadable, filtered)
+    /// shows the key got through.
+    #[tokio::test]
+    async fn a_key_answered_with_an_unusable_output_got_through() {
+        let (p, board) = boarded(&["k-aaaa", "k-bbbb", "k-cccc"], None);
+        let unusable = [
+            TranslateError::InvalidResponse("the translation was cut off".into()),
+            TranslateError::Rejected {
+                status: 200,
+                message: "the provider's content filter blocked this paragraph".into(),
+            },
+        ];
+        for err in &unusable {
+            let l = p.acquire().await.unwrap();
+            p.report(&l, err);
+        }
+        let l = p.acquire().await.unwrap();
+        p.report(&l, &busy());
+        assert!(board.is_through(&fingerprint("k-aaaa")));
+        assert!(board.is_through(&fingerprint("k-bbbb")));
+        assert!(!board.is_through(&fingerprint("k-cccc")), "turned away");
     }
 
     /// The relay turned keys away often enough to count as crowded.

@@ -5,9 +5,12 @@
   import {
     type AssistJob,
     AssistStore,
+    askedAbout,
     asParagraph,
     insertionAt,
+    notLoaded,
     reapplyInstruction,
+    revertChange,
     uniqueIndex,
   } from "./lib/assist.svelte";
   import AssistPanel from "./lib/components/AssistPanel.svelte";
@@ -26,6 +29,7 @@
   import { LatexStore } from "./lib/latex.svelte";
   import { RequestLogStore } from "./lib/requestLog.svelte";
   import { ScrollSync, type Side } from "./lib/scrollSync";
+  import { anchorsAgree, type Bounds, placeOf, samePlace, sentenceAtCursor } from "./lib/sentences";
   import { Session } from "./lib/session.svelte";
   import { applyTheme, loadTheme, nextTheme, type ThemePref } from "./lib/theme";
   import type {
@@ -43,7 +47,9 @@
     PdfPick,
     ProjectCopy,
     SavedView,
+    SentenceMark,
     SentencePick,
+    SentencesView,
     SessionView,
     SettingsView,
     SkillInfo,
@@ -780,12 +786,19 @@
     // Another click or an edit came first: it stands.
     if (!editor || editor.text() !== text || session.activeId !== id) return;
     if (!found || found.sentences.length !== sentence.count) return;
+    // As many sentences, split elsewhere: the paragraph is as far as it goes.
+    if (!samePlace(placeOf(bounds(found), sentence.index), sentence.place)) return;
     const s = found.sentences[sentence.index];
-    if (s) editor.selectNear(s.from, s.to);
+    if (s && anchorsAgree(sentence.text, text.slice(s.from, s.to))) editor.selectNear(s.from, s.to);
+  }
+
+  /** The source sentences of `found` as bounds. */
+  function bounds(found: SentencesView): Bounds[] {
+    return found.sentences.map((s) => ({ start: s.from, end: s.to }));
   }
 
   /** The sentence ⌘⌥J shows in the translation. */
-  let translationMark = $state<{ id: number; index: number; count: number; tick: number } | null>(null);
+  let translationMark = $state<SentenceMark | null>(null);
 
   /** Show the cursor's sentence in the translation. */
   async function locateInTranslation(): Promise<void> {
@@ -797,10 +810,20 @@
       session.flash(t("pane.noTranslation"));
       return;
     }
-    const found = await ipc.sourceSentences(editor.text(), head).catch(() => null);
-    const sentences = found?.sentences ?? [];
-    const index = Math.max(0, sentences.filter((s) => s.from <= head).length - 1);
-    translationMark = { id, index, count: sentences.length, tick: (translationMark?.tick ?? 0) + 1 };
+    const text = editor.text();
+    const found = await ipc.sourceSentences(text, head).catch(() => null);
+    const sentences = found ? bounds(found) : [];
+    const index = sentenceAtCursor(sentences, head);
+    const place = placeOf(sentences, index);
+    const s = sentences[index];
+    translationMark = {
+      id,
+      index,
+      count: sentences.length,
+      place,
+      text: s ? text.slice(s.start, s.end) : "",
+      tick: (translationMark?.tick ?? 0) + 1,
+    };
   }
 
   function preview(from: number, to: number): string {
@@ -1281,8 +1304,9 @@
   interface RunOptions {
     action?: AssistAction;
     scope?: AssistScope;
-    /** The target, read once edits are flushed (a job's mapped range). */
-    at?: () => { from: number; to: number };
+    /** The target, read once edits are flushed (a job's mapped range);
+     * null when its text was deleted. */
+    at?: () => { from: number; to: number } | null;
     instruction?: string;
     history?: [string, string][];
     reapplies?: number;
@@ -1296,7 +1320,12 @@
     if (!editor) return false;
     // Positions and text of the same moment: nothing waits from here on.
     const sel = editor.view.state.selection.main;
-    const at = o.at?.() ?? { from: sel.from, to: sel.to };
+    const at = o.at ? o.at() : { from: sel.from, to: sel.to };
+    // Never the paragraph that took the deleted text's place.
+    if (!at) {
+      session.flash(t("assist.targetGone"));
+      return false;
+    }
     const request: AssistRequest = {
       action: o.action ?? assist.action,
       scope: o.scope ?? assist.scope,
@@ -1376,17 +1405,17 @@
         to = at + job.target.text.length;
       }
       const changes = [{ from, to, insert }];
-      // A figure's missing packages go into the preamble, when it is here.
+      // A figure's missing packages go into the preamble, when it is here
+      // (those a Revert left there are loaded already).
       let shift = 0;
-      let packages: { from: number; to: number; text: string } | null = null;
       if (job.action === "figure" && r.preambleHere && r.missingPackages.length) {
         const at = whole.search(/^[ \t]*\\begin\{document\}/m);
-        const lines = r.missingPackages.map((p) => `\\usepackage{${p}}\n`).join("");
-        if (at >= 0 && at < from) {
+        const wanted = at >= 0 ? notLoaded(whole.slice(0, at), r.missingPackages) : r.missingPackages;
+        const lines = wanted.map((p) => `\\usepackage{${p}}\n`).join("");
+        if (lines && at >= 0 && at < from) {
           changes.unshift({ from: at, to: at, insert: lines });
           shift = lines.length;
-          packages = { from: at, to: at + lines.length, text: lines };
-        } else {
+        } else if (lines) {
           session.flash(t("assist.packagesNotAdded", { packages: lines.trim().split("\n").join(" ") }));
         }
       }
@@ -1400,7 +1429,7 @@
       // card selects that text, and a follow-up asks about it.
       job.from = from + shift;
       job.to = from + shift + insert.length;
-      job.applied = { text: insert, packages };
+      job.applied = { text: insert };
       job.state = "applied";
       editor.focus();
       void flush();
@@ -1410,8 +1439,9 @@
   }
 
   /** Put back the text an applied job replaced (or take out what it
-   * inserted, with the package lines it added), when what it put in is
-   * still as it was. The card can then be accepted again. */
+   * inserted), when what it put in is still as it was. The package lines a
+   * figure added stay: other text may have come to need them. The card can
+   * then be accepted again. */
   function revertJob(job: AssistJob): void {
     const applied = job.applied;
     if (!editor || job.state !== "applied" || !applied) return;
@@ -1423,32 +1453,23 @@
       session.flash(t("doc.busySwapping"));
       return;
     }
-    const doc = editor.doc;
-    const { from, to } = job;
-    if (to > doc.length || doc.sliceString(from, to) !== applied.text) {
+    const original = job.target.insert ? "" : job.target.text;
+    const change = revertChange(editor.doc, job, applied.text, original);
+    if (!change) {
       // Not overwritten: the card lists the text from before instead.
       job.revertBlocked = true;
       session.flash(t(job.target.insert ? "assist.revertEditedInsert" : "assist.revertEdited"));
       return;
     }
-    const original = job.target.insert ? "" : job.target.text;
-    const changes = [{ from, to, insert: original }];
-    // The package lines go too, unless they were edited (or are needed by
-    // something else the author wrote meanwhile: they then stay).
-    const p = applied.packages;
-    let removed = 0;
-    if (p && p.to <= from && doc.sliceString(p.from, p.to) === p.text) {
-      changes.unshift({ from: p.from, to: p.to, insert: "" });
-      removed = p.text.length;
-    }
+    const { from } = change;
     editor.view.dispatch({
-      changes,
-      selection: { anchor: from - removed, head: from - removed + original.length },
+      changes: change,
+      selection: { anchor: from, head: from + original.length },
       scrollIntoView: true,
       userEvent: "input.assist",
     });
-    job.from = from - removed;
-    job.to = from - removed + original.length;
+    job.from = from;
+    job.to = from + original.length;
     job.applied = null;
     job.revertBlocked = false;
     job.touched = false;
@@ -1475,7 +1496,7 @@
     void runAssist({
       action: job.action,
       scope: job.scope,
-      at: () => ({ from: job.from, to: job.target.insert ? job.from : job.to }),
+      at: () => (job.target.insert ? { from: job.from, to: job.from } : askedPlace(job)),
       instruction: job.instruction,
       history: job.history,
     }).then((started) => replaced(job, started));
@@ -1498,18 +1519,29 @@
     }).then((started) => replaced(job, started));
   }
 
-  function followUp(job: AssistJob, question: string): void {
+  /** Ask about a job's text again. Resolves whether the question was sent. */
+  function followUp(job: AssistJob, question: string): Promise<boolean> {
     if (job.epoch !== assist.epoch) {
       session.flash(t("assist.stale"));
-      return;
+      return Promise.resolve(false);
     }
-    void runAssist({
+    return runAssist({
       action: "ask",
       scope: job.scope,
-      at: () => ({ from: job.from, to: job.to }),
+      at: () => askedPlace(job),
       instruction: question,
       history: [...job.history, [job.instruction, job.result?.answer ?? ""]],
     });
+  }
+
+  /** What a follow-up or a rerun asks about: the job's text where it is,
+   * else found again by its words (deleted, then brought back by an undo),
+   * else null. */
+  function askedPlace(job: AssistJob): { from: number; to: number } | null {
+    const place = askedAbout(job);
+    if (place || !editor || job.applied) return place;
+    const at = uniqueIndex(editor.text(), job.target.text);
+    return at < 0 ? null : { from: at, to: at + job.target.text.length };
   }
 
   /** Show a job's target in the editor. */

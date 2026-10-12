@@ -799,28 +799,45 @@ pub fn neighbors(
     (join(before), join(after))
 }
 
-/// Abbreviations after which a period does not end a sentence.
+/// Abbreviations after which a period does not end a sentence. The
+/// translation pane splits by the same lists (`src/lib/sentences.ts`; a test
+/// there compares them).
 const ABBREVIATIONS: &[&str] = &[
-    "e.g.", "i.e.", "et al.", "etc.", "vs.", "Fig.", "Figs.", "Eq.", "Eqs.", "Sec.", "Secs.",
-    "Tab.", "Ref.", "Refs.", "No.", "cf.", "approx.", "resp.", "Dr.", "Prof.",
+    "e.g.", "i.e.", "et al.", "etc.", "vs.", "cf.", "approx.", "resp.", "Fig.", "Figs.", "Eq.",
+    "Eqs.", "Eqn.", "Eqns.", "Sec.", "Secs.", "Sect.", "Tab.", "Thm.", "Thms.", "Lem.", "Def.",
+    "Defn.", "Prop.", "Cor.", "Conj.", "Rem.", "Alg.", "App.", "Ch.", "Chap.", "Ex.", "Ref.",
+    "Refs.", "No.", "Nos.", "Vol.", "pp.", "Dr.", "Prof.", "Mr.", "Mrs.", "Ms.",
+];
+
+/// Abbreviations that end a sentence after all when a capital follows:
+/// `… by Smith et al. We …`.
+const ENDING: &[&str] = &["et al.", "etc."];
+
+/// Closing quotes and brackets that stay with the sentence they close (in
+/// the source also the brace of a command around it, `\textbf{… .}`).
+const CLOSERS: &[char] = &[
+    '"', '\'', ')', ']', '}', '”', '’', '）', '」', '』', '》', '〉', '】',
 ];
 
 /// Byte range of the sentence containing `pos` inside its paragraph. A
 /// sentence ends at `.`, `!` or `?` followed by whitespace (not after a
-/// common abbreviation), or at `。`, `！`, `？`. Protected spans (math,
-/// citations) never split a sentence. Outside any paragraph, `None`.
+/// common abbreviation), or at `。`, `！`, `？`, together with the marks and
+/// closing quotes or brackets right after it. Protected spans (math,
+/// citations, comments) never split a sentence, and comments around one are
+/// not part of it. Outside any paragraph, `None`.
 pub fn sentence_at(text: &str, mode: Mode, pos: usize) -> Option<Range<usize>> {
     let para = paragraph_at(text, mode, pos)?;
     let body = &text[para.clone()];
     let ends = sentence_ends(body, mode);
+    let comments = comments(body, mode);
     let rel = pos.saturating_sub(para.start).min(body.len());
     let mut start = 0;
     for end in ends.iter().copied().chain(std::iter::once(body.len())) {
         if rel < end || end == body.len() {
-            let slice = &body[start..end];
-            let lead = slice.len() - slice.trim_start().len();
-            let trail = slice.len() - slice.trim_end().len();
-            return Some(para.start + start + lead..para.start + end - trail);
+            // Only comments there: the comment, as it is.
+            let r = trimmed(body, start..end, &[]).unwrap_or(start..end);
+            let r = trimmed(body, r.clone(), &comments).unwrap_or(r);
+            return Some(para.start + r.start..para.start + r.end);
         }
         start = end;
     }
@@ -828,8 +845,8 @@ pub fn sentence_at(text: &str, mode: Mode, pos: usize) -> Option<Range<usize>> {
 }
 
 /// The paragraph containing `pos` and the byte ranges of its sentences, in
-/// order, where [`sentence_at`] ends them. Stretches of blank text are not
-/// sentences. Outside any paragraph, `None`.
+/// order, where [`sentence_at`] ends them. Stretches of blank text or
+/// comments are not sentences. Outside any paragraph, `None`.
 pub fn sentences_at(
     text: &str,
     mode: Mode,
@@ -837,53 +854,122 @@ pub fn sentences_at(
 ) -> Option<(Range<usize>, Vec<Range<usize>>)> {
     let para = paragraph_at(text, mode, pos)?;
     let body = &text[para.clone()];
+    let comments = comments(body, mode);
     let mut sentences = Vec::new();
     let mut start = 0;
     for end in sentence_ends(body, mode)
         .into_iter()
         .chain(std::iter::once(body.len()))
     {
-        let slice = &body[start..end];
-        if !slice.trim().is_empty() {
-            let lead = slice.len() - slice.trim_start().len();
-            let trail = slice.len() - slice.trim_end().len();
-            sentences.push(para.start + start + lead..para.start + end - trail);
+        if let Some(r) = trimmed(body, start..end, &comments) {
+            sentences.push(para.start + r.start..para.start + r.end);
         }
         start = end;
     }
     Some((para, sentences))
 }
 
-/// Where the sentences of paragraph `body` end (byte offsets after their
-/// closing mark).
-fn sentence_ends(body: &str, mode: Mode) -> Vec<usize> {
-    let shielded: Vec<Range<usize>> = spans(body, mode)
+/// The `%` comments of `body`.
+fn comments(body: &str, mode: Mode) -> Vec<Range<usize>> {
+    spans(body, mode)
         .into_iter()
-        .filter(|s| s.kind != SpanKind::Comment)
+        .filter(|s| s.kind == SpanKind::Comment)
         .map(|s| s.range)
-        .collect();
+        .collect()
+}
+
+/// `range` of `body` without the blank text and `comments` around it, or
+/// `None` when nothing else is left.
+fn trimmed(body: &str, range: Range<usize>, comments: &[Range<usize>]) -> Option<Range<usize>> {
+    let (mut start, mut end) = (range.start, range.end);
+    loop {
+        let at = start;
+        start = end - body[start..end].trim_start().len();
+        if let Some(c) = comments.iter().find(|c| c.start == start && c.end <= end) {
+            start = c.end;
+        }
+        if start == at {
+            break;
+        }
+    }
+    loop {
+        let at = end;
+        end = start + body[start..end].trim_end().len();
+        if let Some(c) = comments.iter().find(|c| c.end == end && c.start >= start) {
+            end = c.start;
+        }
+        if end == at {
+            break;
+        }
+    }
+    (start < end).then_some(start..end)
+}
+
+/// Where the sentences of paragraph `body` end (byte offsets after their
+/// closing marks).
+fn sentence_ends(body: &str, mode: Mode) -> Vec<usize> {
+    let shielded: Vec<Range<usize>> = spans(body, mode).into_iter().map(|s| s.range).collect();
     let inside = |i: usize| shielded.iter().any(|r| r.start <= i && i < r.end);
+    let full_stop = |c: char| matches!(c, '。' | '！' | '？');
+    let mark = |c: char| full_stop(c) || matches!(c, '.' | '!' | '?');
     let mut ends = Vec::new();
     let chars: Vec<(usize, char)> = body.char_indices().collect();
-    for (k, &(i, c)) in chars.iter().enumerate() {
-        if inside(i) {
+    let mut k = 0;
+    while k < chars.len() {
+        let (i, c) = chars[k];
+        k += 1;
+        if !mark(c) || inside(i) {
             continue;
         }
-        let end = i + c.len_utf8();
-        let closes = match c {
-            '。' | '！' | '？' => true,
-            '.' | '!' | '?' => {
-                let next_is_space = chars.get(k + 1).is_none_or(|&(_, n)| n.is_whitespace());
-                let abbrev = c == '.' && ABBREVIATIONS.iter().any(|a| body[..end].ends_with(a));
-                next_is_space && !abbrev
-            }
-            _ => false,
-        };
-        if closes {
-            ends.push(end);
+        // Marks and closing quotes or brackets right after it are its own.
+        while chars
+            .get(k)
+            .is_some_and(|&(j, n)| (mark(n) || CLOSERS.contains(&n)) && !inside(j))
+        {
+            k += 1;
+        }
+        let rest = &chars[k..];
+        // A no-break space (`~` in the translation pane) keeps it going.
+        let break_after = rest
+            .first()
+            .is_none_or(|&(_, n)| n.is_whitespace() && n != '\u{a0}');
+        if full_stop(c) || (break_after && !(c == '.' && goes_on(&body[..i + c.len_utf8()], rest)))
+        {
+            ends.push(rest.first().map_or(body.len(), |&(j, _)| j));
         }
     }
     ends
+}
+
+/// Whether the period ending `before` ends an abbreviation the sentence goes
+/// on after (`rest`: what follows its closing marks).
+fn goes_on(before: &str, rest: &[(usize, char)]) -> bool {
+    // `et~al.` is `et al.` with a no-break space.
+    let before = before.replace(['~', '\u{a0}'], " ");
+    let before = before.as_str();
+    let word = |a: &&str| {
+        before
+            .strip_suffix(*a)
+            .is_some_and(|head| !head.ends_with(|c: char| c.is_ascii_alphabetic()))
+    };
+    if ENDING.iter().any(word) {
+        let next = rest.iter().map(|&(_, c)| c).find(|c| !c.is_whitespace());
+        return !next.is_some_and(char::is_uppercase);
+    }
+    ABBREVIATIONS.iter().any(word) || dotted(before)
+}
+
+/// `before` ends in two or more single letters each followed by a period:
+/// `i.i.d.`, `w.r.t.`, `s.t.`.
+fn dotted(before: &str) -> bool {
+    let b = before.as_bytes();
+    let mut n = b.len();
+    let mut letters = 0;
+    while n >= 2 && b[n - 1] == b'.' && b[n - 2].is_ascii_alphabetic() {
+        letters += 1;
+        n -= 2;
+    }
+    letters >= 2 && (n == 0 || !b[n - 1].is_ascii_alphabetic())
 }
 
 #[cfg(test)]

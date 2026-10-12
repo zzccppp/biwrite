@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { language, parts, t } from "../i18n.svelte";
   import type { Session } from "../session.svelte";
-  import { sentenceBounds, textRange } from "../sentences";
-  import type { SentencePick } from "../types";
+  import { anchorsAgree, placeOf, samePlace, sentenceBounds, shownText, textRange } from "../sentences";
+  import type { SentenceMark, SentencePick } from "../types";
   import SegmentBlock from "./SegmentBlock.svelte";
 
   interface Props {
@@ -14,8 +14,9 @@
     slice: (from: number, to: number) => string;
     /** A click on block `id`, `offsetY` px below the pane's top, on `sentence` of its translation. */
     onactivate: (id: number, offsetY: number, sentence: SentencePick | null) => void;
-    /** Show where the cursor is: sentence `index` of `count` in block `id` (`tick` repeats it). */
-    mark?: { id: number; index: number; count: number; tick: number } | null;
+    /** Show where the cursor is: sentence `index` of `count` in block `id`,
+     * at `place` of its paragraph (`tick` repeats it). */
+    mark?: SentenceMark | null;
     onretry: (id: number) => void;
     onedit: (id: number) => void;
     onscroll: () => void;
@@ -62,7 +63,9 @@
   }
 
   // The cursor's sentence, marked for a moment: the same sentence of the
-  // translation when both have as many, else the whole block.
+  // translation when both have as many, it lies in about the same place and
+  // its numbers and names are the source sentence's, else the whole block.
+  // A translation of older text has none.
   let unmark: (() => void) | null = null;
   $effect(() => {
     const m = mark;
@@ -74,8 +77,18 @@
     const at = block.getBoundingClientRect();
     if (at.bottom < view.top || at.top > view.bottom) block.scrollIntoView({ block: "center" });
     const box = block.querySelector<HTMLElement>(".zh");
-    const bounds = box ? sentenceBounds(box.textContent ?? "") : [];
-    const sentence = box && bounds.length === m.count ? bounds[m.index] : undefined;
+    const current = untrack(
+      () => session.states.get(m.id)?.status === "translated" && !session.localStale.has(m.id),
+    );
+    const shown = box && current ? shownText(box) : "";
+    const bounds = sentenceBounds(shown);
+    const candidate = bounds.length === m.count ? bounds[m.index] : undefined;
+    const sentence =
+      candidate &&
+      samePlace(placeOf(bounds, m.index), m.place) &&
+      anchorsAgree(shown.slice(candidate.start, candidate.end), m.text)
+        ? candidate
+        : undefined;
     const range = box && sentence ? textRange(box, sentence.start, sentence.end) : null;
     if (range && "highlights" in CSS) {
       CSS.highlights.set("bw-locate", new Highlight(range));

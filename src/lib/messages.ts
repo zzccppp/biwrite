@@ -240,6 +240,10 @@ export const messages = {
     en: "The target text is gone, so this revision cannot be placed.",
     zh: "目标文字已被删除，这条修改无法放回原处。",
   },
+  "assist.targetGone": {
+    en: "The text this card is about was deleted, so nothing was sent.",
+    zh: "这张卡片对应的文字已被删除，没有发送请求。",
+  },
   "assist.removed": { en: "Removed from the text: {items}", zh: "修订稿删去了：{items}" },
   "assist.repeated": { en: "Repeated: {items}", zh: "修订稿重复了：{items}" },
   "assist.translationDiffers": {
@@ -539,6 +543,10 @@ export const messages = {
   "squeeze.status": { en: "Squeezing {through}/{total}", zh: "挤一挤 {through}/{total}" },
   "squeeze.keeping": { en: "Keeping {through}/{total} alive", zh: "保活 {through}/{total}" },
   "squeeze.keepAlive": { en: "Keep alive", zh: "持续保活" },
+  "squeeze.keepAliveHint": {
+    en: "While the relay turns keys away, each key that got through is sent a short translation after 3 idle minutes, for 30 minutes after this provider was last used. These requests are listed under Requests.",
+    zh: "中转拥挤时，已挤进的密钥空闲 3 分钟后会收到一条很短的翻译以保住位置，只在最后一次使用该服务商后的 30 分钟内进行。这些请求列在请求记录里。",
+  },
   "keys.import": { en: "Import from file…", zh: "从文件导入…" },
   "keys.exported": {
     en: "Saved to {path}. The file holds the secret keys: share it only with people you trust.",
@@ -951,6 +959,7 @@ export const messages = {
   "log.col.took": { en: "Took", zh: "耗时" },
   "log.col.tokens": { en: "Tokens in / out", zh: "Token 输入 / 输出" },
   "log.purpose.translate": { en: "translate", zh: "翻译" },
+  "log.purpose.keepAlive": { en: "keep alive", zh: "保活" },
   "log.purpose.polish": { en: "polish", zh: "润色" },
   "log.purpose.edit": { en: "edit", zh: "按指令改" },
   "log.purpose.ask": { en: "ask", zh: "提问" },

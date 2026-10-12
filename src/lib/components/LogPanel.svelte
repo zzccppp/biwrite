@@ -80,6 +80,7 @@
     edit: "log.purpose.edit",
     ask: "log.purpose.ask",
     figure: "log.purpose.figure",
+    "keep-alive": "log.purpose.keepAlive",
   };
 
   /** A known purpose in the interface language, any other as recorded. */

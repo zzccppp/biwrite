@@ -289,10 +289,21 @@ export interface SentencesView {
   sentences: { from: number; to: number }[];
 }
 
-/** A sentence of the translation, by its place: sentence `index` of `count`. */
+/** A sentence by its place: sentence `index` of `count`, lying at `place`
+ * of its paragraph (parts 0–1 of it, see `sentences.ts`), with its `text`. */
 export interface SentencePick {
   index: number;
   count: number;
+  place: { start: number; end: number };
+  text: string;
+}
+
+/** The cursor's sentence (of the source) to show in the translation:
+ * sentence `index` of `count` in block `id`, at `place` of its paragraph
+ * (`tick` repeats it). */
+export interface SentenceMark extends SentencePick {
+  id: number;
+  tick: number;
 }
 
 export interface SqueezeView {

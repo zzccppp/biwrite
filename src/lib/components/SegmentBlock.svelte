@@ -2,7 +2,7 @@
   import "katex/dist/katex.min.css";
   import { type MessageKey, t } from "../i18n.svelte";
   import { type Macros, renderToHtml } from "../math";
-  import { caretAt, sentenceBounds, sentenceIndexAt } from "../sentences";
+  import { caretAt, charBack, placeOf, sentenceBounds, sentenceIndexAt, shownOffset, shownText } from "../sentences";
   import type { Mode, SegmentLayout, SegmentState, SentencePick, SkipReason } from "../types";
 
   interface Props {
@@ -93,16 +93,20 @@
 
   /** Which sentence of the translation a click hit, and how many it has. */
   function sentenceOf(e: MouseEvent): SentencePick | null {
+    // Only a translation of the text as it is now has its sentences.
+    if (status !== "translated") return null;
     const box = el.querySelector<HTMLElement>(".zh");
     if (!box || !(e.target instanceof Node) || !box.contains(e.target)) return null;
     const caret = caretAt(e.clientX, e.clientY);
     if (!caret || !box.contains(caret.node)) return null;
-    const before = document.createRange();
-    before.setStart(box, 0);
-    before.setEnd(caret.node, caret.offset);
-    const bounds = sentenceBounds(box.textContent ?? "");
+    const shown = shownText(box);
+    const bounds = sentenceBounds(shown);
     if (bounds.length === 0) return null;
-    return { index: sentenceIndexAt(bounds, before.toString().length), count: bounds.length };
+    // The character clicked, not the caret's place after it.
+    const at = shownOffset(box, caret.node, caret.offset) - charBack(caret.node, caret.offset, e.clientX, e.clientY);
+    const index = sentenceIndexAt(bounds, at);
+    const { start, end } = bounds[index];
+    return { index, count: bounds.length, place: placeOf(bounds, index), text: shown.slice(start, end) };
   }
 
   function onkeydown(e: KeyboardEvent): void {
