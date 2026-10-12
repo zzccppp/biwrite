@@ -101,6 +101,10 @@ pub struct AssistStart {
     /// Attachment ids of reference images.
     #[serde(default)]
     pub images: Vec<u64>,
+    /// What each of `images` is for in a figure (a draft to trace by
+    /// default).
+    #[serde(default)]
+    pub image_uses: Vec<assist::ImageUse>,
     /// Earlier questions and answers of an ask conversation.
     #[serde(default)]
     pub history: Vec<(String, String)>,
@@ -321,7 +325,8 @@ pub async fn assist_start(
         ));
     }
     let model = state.assistant_model()?;
-    let (skill, info) = state.skill()?;
+    // The skill's rules, and its icons with the author's own.
+    let (skill, info) = crate::materials::skill(&state)?;
 
     let (before, after) = match request.scope {
         Scope::Neighbors => assist::neighbors(text, mode, &target.range, 2),
@@ -360,13 +365,26 @@ pub async fn assist_start(
             root_dir,
         )
     });
-    let images: Vec<ImageInput> = {
+    let (images, uses): (Vec<ImageInput>, Vec<assist::ImageUse>) = {
         let all = state.assist.images();
         request
             .images
             .iter()
-            .filter_map(|id| all.get(id).map(|a| a.image.clone()))
-            .collect()
+            .enumerate()
+            .filter_map(|(k, id)| {
+                let used = request.image_uses.get(k).copied().unwrap_or_default();
+                all.get(id).map(|a| (a.image.clone(), used))
+            })
+            .unzip()
+    };
+    // The author's own papers give the voice to write in.
+    let voice = if matches!(
+        request.action,
+        Action::Polish | Action::Edit | Action::Mirror | Action::Write
+    ) {
+        crate::materials::Materials::voice(&crate::materials::root(&state))
+    } else {
+        Vec::new()
     };
     let prompt = assist::build(
         &assist::Request {
@@ -381,10 +399,11 @@ pub async fn assist_start(
             doc_note: Some(note.as_str()),
             glossary: &terms,
             references: &request.references,
-            images: images.len(),
+            images: &uses,
             history: &request.history,
             packages: package_list.as_deref(),
             figure,
+            voice: &voice,
         },
         &skill,
     );
@@ -637,9 +656,8 @@ pub(crate) async fn make_figure(
     let mut changes_en = answer.changes_en.clone();
     let (environment, view, made, files) = match format {
         FigureFormat::Pptx => {
-            // The icons of the skill in use.
-            let icons = state
-                .skill()
+            // The icons of the skill in use, with the author's own.
+            let icons = crate::materials::skill(state)
                 .map(|(s, _)| s.icons.clone())
                 .unwrap_or_default();
             let laid = figures::laid(&answer, &icons)?;
@@ -1039,18 +1057,27 @@ pub async fn attach_image(
     let media = media_type(&path)
         .ok_or_else(|| CommandError::Settings("choose a PNG, JPEG, WebP or GIF image".into()))?;
     let bytes = crate::files::read_small_file(path.clone(), MAX_IMAGE_BYTES).await?;
-    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(Some(attach(
+        &state,
+        crate::state::display_name(Some(&path)),
+        media,
+        &bytes,
+    )))
+}
+
+/// Keep `bytes` (of type `media`) as a reference image named `name`.
+pub(crate) fn attach(state: &AppState, name: String, media: &str, bytes: &[u8]) -> AttachmentView {
     let image = ImageInput {
         media_type: media.to_owned(),
-        data,
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
     };
     let view = AttachmentView {
         id: state.assist.next_image.fetch_add(1, Ordering::Relaxed) + 1,
-        name: crate::state::display_name(Some(&path)),
+        name,
         data_url: image.data_url(),
     };
     state.assist.images().insert(view.id, Attachment { image });
-    Ok(Some(view))
+    view
 }
 
 #[tauri::command]

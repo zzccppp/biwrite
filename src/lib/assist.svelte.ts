@@ -5,6 +5,7 @@
 
 import type { ChangeDesc } from "@codemirror/state";
 import { assistIpc } from "./ipc";
+import { openPdf } from "./pdf";
 
 export { asParagraph, insertionAt, reapplyInstruction, uniqueIndex } from "./assistText";
 import type {
@@ -16,6 +17,8 @@ import type {
   AssistStarted,
   AssistTarget,
   AttachmentView,
+  ImageUse,
+  MaterialEntry,
   CheckResult,
   FigureFormat,
   Sample,
@@ -179,9 +182,57 @@ function mapTarget(job: AssistJob, changes: ChangeDesc): void {
   }
 }
 
+/** The first page of a PDF as a PNG in base64, at most 1600 pixels across. */
+async function pdfPagePng(bytes: ArrayBuffer): Promise<string> {
+  const doc = await openPdf(bytes);
+  try {
+    const page = await doc.getPage(1);
+    const unit = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: Math.min(3, 1600 / Math.max(unit.width, unit.height)) });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no canvas");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+    return canvas.toDataURL("image/png").slice("data:image/png;base64,".length);
+  } finally {
+    void doc.loadingTask.destroy();
+  }
+}
+
+/** The longest reference text, as for a file (`MAX_REFERENCE_CHARS`). */
+const MAX_REFERENCE_CHARS = 120_000;
+
+/** The text of a PDF, page by page, at most `MAX_REFERENCE_CHARS`. */
+async function pdfText(bytes: ArrayBuffer): Promise<{ text: string; truncated: boolean }> {
+  const doc = await openPdf(bytes);
+  try {
+    const pages: string[] = [];
+    let total = 0;
+    for (let n = 1; n <= doc.numPages && total <= MAX_REFERENCE_CHARS; n++) {
+      const content = await (await doc.getPage(n)).getTextContent();
+      let page = "";
+      for (const item of content.items) {
+        if (!("str" in item)) continue;
+        page += item.str + (item.hasEOL ? "\n" : "");
+      }
+      pages.push(page.trim());
+      total += page.length;
+    }
+    const text = pages.filter(Boolean).join("\n\n");
+    const truncated = text.length > MAX_REFERENCE_CHARS || pages.length < doc.numPages;
+    return { text: text.slice(0, MAX_REFERENCE_CHARS), truncated };
+  } finally {
+    void doc.loadingTask.destroy();
+  }
+}
+
 export class AssistStore {
   jobs = $state<AssistJob[]>([]);
-  attachments = $state<AttachmentView[]>([]);
+  attachments = $state<(AttachmentView & { use: ImageUse })[]>([]);
   samples = $state<Sample[]>([]);
   /** Polishing takes an instruction too, so "edit" (of older versions) loads as polishing. */
   action = $state<AssistAction>(load(ACTION_KEY, ["polish", "ask", "figure", "mirror", "write", "fix"] as const, "polish"));
@@ -340,13 +391,45 @@ export class AssistStore {
 
   async attach(): Promise<void> {
     const view = await assistIpc.attachImage();
-    if (view) this.attachments = [...this.attachments, view];
+    if (view) this.attachments = [...this.attachments, { ...view, use: "trace" }];
+  }
+
+  /** In a figure, trace image `id` as a draft or take its look alone. */
+  setImageUse(id: number, use: ImageUse): void {
+    this.attachments = this.attachments.map((a) => (a.id === id ? { ...a, use } : a));
   }
 
   /** A reference paper from a file. */
   async addFile(): Promise<void> {
     const view = await assistIpc.loadReference();
     if (view) this.samples = [...this.samples, { name: view.name, text: view.text, truncated: view.truncated }];
+  }
+
+  /** A paper or figure of the materials as a reference (a PDF figure is
+   * drawn here, its first page). */
+  async addMaterial(entry: MaterialEntry): Promise<void> {
+    const name = entry.path.split("/").pop() ?? entry.path;
+    if (entry.kind === "text") {
+      const view = await assistIpc.materialText(entry.path);
+      this.samples = [...this.samples, { name: view.name, text: view.text, truncated: view.truncated }];
+      return;
+    }
+    if (entry.kind === "pdftext") {
+      const { text, truncated } = await pdfText(await assistIpc.materialPdf(entry.path));
+      if (!text.trim()) throw new Error(`${name}: no text`);
+      this.samples = [...this.samples, { name, text, truncated }];
+      return;
+    }
+    const view =
+      entry.kind === "image"
+        ? await assistIpc.materialImage(entry.path)
+        : await assistIpc.attachImageData(
+            name,
+            await pdfPagePng(
+              entry.kind === "pptx" ? await assistIpc.materialPptx(entry.path) : await assistIpc.materialPdf(entry.path),
+            ),
+          );
+    this.attachments = [...this.attachments, { ...view, use: "trace" }];
   }
 
   addText(text: string): void {

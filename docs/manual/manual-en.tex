@@ -37,7 +37,7 @@
 \setlength{\parskip}{3pt}
 
 \title{\textbf{BiWrite User Guide}}
-\author{Version 0.2.2}
+\author{Version 0.2.11}
 \date{October 2026}
 
 \setlength{\emergencystretch}{2em}
@@ -51,7 +51,7 @@ Writing skill research-builder \url{https://github.com/qzkinhit/research-builder
 \end{center}
 
 \begin{abstract}
-BiWrite is an editor for writing an academic paper in English and Chinese at once. You write on the left, the right pane shows the other language paragraph by paragraph, and only paragraphs you change are translated again. A LaTeX paper compiles into a PDF inside the app, and a click on a sentence in the PDF selects that sentence in the source. A writing assistant polishes, edits, answers questions, writes new paragraphs in the manner of a published paper and writes figures, with the rules of the research-builder writing skill. Section~\ref{sec:flow} follows one paper from the template to submission, and the sections after it go through each feature step by step. In the screenshots, red boxes mark the buttons to use and the areas to look at, and the numbers in the text, such as \n{1}, refer to the numbers next to the boxes.
+BiWrite is an editor for writing an academic paper in English and Chinese at once. You write on the left, the right pane shows the other language paragraph by paragraph, and only paragraphs you change are translated again. A LaTeX paper compiles into a PDF inside the app, unsaved edits included, and a click on a sentence in the PDF selects that sentence in the source. A writing assistant polishes, edits, answers questions, writes new paragraphs in the manner of a published paper, writes figures and repairs LaTeX errors, with the rules of the research-builder writing skill. Section~\ref{sec:flow} follows one paper from the template to submission, and the sections after it go through each feature step by step. In the screenshots, red boxes mark the buttons to use and the areas to look at, and the numbers in the text, such as \n{1}, refer to the numbers next to the boxes.
 \end{abstract}
 
 \section{Features at a glance}
@@ -61,12 +61,13 @@ Each feature name below links to its section.
 \item[{\hyperref[sec:flow]{The writing workflow}}] Ten steps from a new paper on a template, through writing, imitating a published paper, figures, the PDF and editing the Chinese, to the Chinese version.
 \item[{\hyperref[sec:write]{Bilingual writing}}] English on the left, the Chinese paragraph by paragraph on the right, and only changed paragraphs are translated again. The swap button in the toolbar lets you edit the Chinese instead, with the English following and unchanged paragraphs kept word for word. Swapping early, paragraphs not translated yet are filled in on the left as their translations arrive.
 \item[{\hyperref[sec:zhfile]{A paper written in Chinese}}] A Chinese file opens as the Chinese side and is translated into English, and saving always writes the file's own language. A document taken for the wrong language is set right in one step.
-\item[{\hyperref[sec:latex]{LaTeX builds and PDF navigation}}] The PDF compiles inside the app. A click on a sentence in the PDF selects it in the source, ready to polish. The paragraph at the cursor can be found in the PDF, and a build error opens its line.
+\item[{\hyperref[sec:latex]{LaTeX builds and PDF navigation}}] The PDF compiles inside the app. Unsaved edits compile in a cache folder, and the file on disk stays as last saved. A click on a sentence in the PDF selects it in the source, ready to polish. The paragraph at the cursor can be found in the PDF, and a build error opens its line.
 \item[{\hyperref[sec:zhpdf]{Chinese PDF}}] Once the English is translated, the Chinese PDF compiles in one step, and the Chinese PDF and a stand-alone Chinese .tex can be exported.
 \item[{\hyperref[sec:pair]{Your existing Chinese version}}] \texttt{paper\_zh.tex} or \texttt{sections\_zh/} pair with the English paragraph by paragraph. Edit either side and the matching paragraph of the other file is updated in place, with the rest unchanged.
-\item[{\hyperref[sec:assist]{Writing assistant}}] Polish (as you ask, when you write a request), ask, write new paragraphs in the manner of a reference paper, write figures, or rewrite a translation and let the paragraph follow. A reference paper can be added as its \texttt{.tex} file, and packages a figure needs are added on insert. Jobs run in the background, and you decide what is applied.
+\item[{\hyperref[sec:assist]{Writing assistant}}] Polish (as you ask, when you write a request), ask, write new paragraphs in the manner of a reference paper, write figures (LaTeX code, a PDF picture or an editable PowerPoint diagram, traced from an image or in the style of one), fix LaTeX errors, or rewrite a translation and let the paragraph follow. A reference can be added as a file or taken from the materials folder, packages a figure needs are added on insert, and \ui{Smart apply} compiles before it applies. Jobs run in the background, and you decide what is applied.
+\item[{\hyperref[sec:materials]{My materials}}] The folders of research-builder's \texttt{materials/}. Your papers give the voice to write in, your papers and figures serve as references, and your icons go into PowerPoint figures.
 \item[{\hyperref[sec:templates]{Paper templates}}] VLDB, ICLR 2027 and IEEE TII built in. Your own projects can be imported as templates, and the open project exported.
-\item[{\hyperref[sec:provider]{APIs and key pools}}] OpenAI-compatible, OpenAI Responses and Anthropic APIs. A provider holds several keys, uses them evenly and moves to another key on rate limits.
+\item[{\hyperref[sec:provider]{APIs and key pools}}] OpenAI-compatible, OpenAI Responses and Anthropic APIs. A provider holds several keys, uses them evenly, moves to another key on rate limits, and takes a new key in place of an old one.
 \item[{\hyperref[sec:log]{Request log} and \hyperref[sec:update]{updates}}] The log records the model, reasoning effort and service tier of every request. Any version published on GitHub can be installed from inside the app.
 \item[{\hyperref[sec:tray]{Close to the tray}}] Closed, the window hides and BiWrite stays in the menu bar or notification area with the document and its translations. A click on the icon brings it back.
 \end{description}
@@ -107,14 +108,33 @@ The card (\fig{f-written}) shows the new paragraphs \n{1}, their Chinese paragra
 \ui{Polish} evens out the wording, or changes a paragraph as you say when you write a request in the box, and \ui{Ask} checks an argument. Section~\ref{sec:assist} has the details.
 
 \subsection{Step 5: Figures and tables}
-Choose \ui{Figure} and describe the figure or table, for example \ui{accuracy on the four benchmarks as a table}. The card gives LaTeX ready to insert (\fig{f-table} \n{1}). The request lists the packages the document loads and asks for code that uses them first. When the code needs a package the document does not load, the card names it \n{2}. If the open file is the main file, \ui{Insert} \n{3} puts the code after the paragraph and adds the \texttt{\textbackslash usepackage} lines right before \texttt{\textbackslash begin\{document\}} (\fig{f-table-in}). In a section file, the card names the lines to add to the main file's preamble.
+\label{sec:figure}
+Choose \ui{Figure} (\fig{f-format} \n{1}), describe the figure or table \n{3}, for example \ui{accuracy on the four benchmarks as a table}, and click \ui{Run} \n{4}. In a LaTeX paper, \ui{Format} \n{2} chooses what it becomes.
+\begin{description}[leftmargin=1em, style=nextline]
+\item[LaTeX code] LaTeX ready to insert, as described below.
+\item[PDF picture] TikZ built into a PDF of its own and included with \texttt{\textbackslash includegraphics}. When it does not compile, BiWrite has the model repair it first.
+\item[PowerPoint] An editable PowerPoint diagram of native shapes, block arrows and SVG icons, laid out by the figure rules of \texttt{paper-figure-pptx} in the writing skill. With LibreOffice installed, BiWrite also turns it into the PDF the paper includes. Without LibreOffice only the PowerPoint file is made, and the card says how to export the PDF from PowerPoint.
+\end{description}
+
+\shot{f-format}{(1) Figure, (2) Format, (3) the request, (4) Run}
+
+The card of a PDF picture or a PowerPoint diagram (\fig{f-pptx}) shows the picture \n{1}. \n{2} \ui{Save as} saves a copy as PowerPoint, PDF or PNG where you choose. \n{3} names the files that saving the document writes, into the folder of the paper's other figures, such as \texttt{figures/}, under names not taken yet. Until you save, the files live only in the app and in the cache folder \texttt{.biwrite/} beside the paper, and a build of the unsaved document still finds them. \n{4} \ui{Insert} or \ui{Smart apply} puts the figure environment that includes it into the paper.
+
+\shot[0.62]{f-pptx}{(1) The picture, (2) Save as, (3) the files written on save, (4) Insert and Smart apply}
+
+With \ui{LaTeX code}, the card gives LaTeX ready to insert (\fig{f-table} \n{1}). The request lists the packages the document loads and asks for code that uses them first. When the code needs a package the document does not load, the card names it \n{2}. If the open file is the main file, \ui{Insert} \n{3} puts the code after the paragraph and adds the \texttt{\textbackslash usepackage} lines right before \texttt{\textbackslash begin\{document\}} (\fig{f-table-in}). In a section file, the card names the lines to add to the main file's preamble. When the inserted code does not compile, use \ui{Smart apply} or \ui{Fix} instead (Section~\ref{sec:assist}).
 
 \shot{f-table}{(1) The table, (2) the packages it needs, (3) Insert}
 \shot{f-table-in}{(1) The package added to the preamble on insert}
 
-To draw in the style of an existing figure, choose \ui{Figure} (\fig{f-figref} \n{1}), say what to draw and from which data \n{2}, add the figure with \ui{+ Image} \n{3} in the \ui{References} row, which shows it as a thumbnail chip \n{4}, and click \ui{Run} \n{5}. The model draws the same kind of chart with the same layout, colours, marks, line styles, fonts and legend placement, in TikZ or pgfplots, with the data and labels from your instruction and the paper, never the numbers in the image. Images can be PNG, JPEG, WebP or GIF of up to 8 MB each, and the model must accept images.
+A figure can start from reference images (\fig{f-trace}). \ui{+ Image} \n{1} in the \ui{References} row adds an image file, and \ui{+ Materials} \n{2} takes a figure from the materials folder (Section~\ref{sec:materials}). Each image is either \ui{Trace} or \ui{Style} \n{3}.
+\begin{description}[leftmargin=1em, style=nextline]
+\item[Trace] The image is a draft of this figure, such as a sketch or an older version. The model redraws it with its layout, parts, arrows and text, checks the text, symbols, formulas, numbers and steps against the paper, corrects what disagrees with the paper or is wrong in itself, and lists each correction in the notes. With \ui{Context} set to \ui{Whole document}, it checks against the whole paper.
+\item[Style] The image is a figure of another paper. The model takes only its layout, colours, lines, arrows and type sizes, while the content comes from your request and the paper, never the text or numbers of the image.
+\end{description}
+Images can be PNG, JPEG, WebP or GIF, and SVG, PDF and PowerPoint figures of the materials folder are turned into images first. Each can be up to 8 MB, and the model must accept images.
 
-\shot{f-figref}{A figure in the style of a reference image: (1) Figure, (2) what to draw, (3) add the image, (4) the image added, (5) Run}
+\shot{f-trace}{(1) Add an image, (2) take a figure from the materials, (3) Trace or Style}
 
 \subsection{Step 6: The PDF, and editing from it}
 Open the PDF tab and press \cmdkey B. A click on a sentence in the PDF selects it in the source, ready to polish or edit (Section~\ref{sec:latex}). The line numbers in the margin of a submission do not get in the way.
@@ -201,12 +221,18 @@ BiWrite finds the main file from a \texttt{\% !TEX root = …} comment, else fro
 \subsection{Compile the English PDF}
 \begin{enumerate}
 \item Click the \ui{PDF} tab (\fig{l-compile} \n{1}).
-\item Click \ui{Compile} \n{2} or press \cmdkey B (Ctrl+B on Windows). Unsaved edits are saved first, since the PDF comes from the files on disk.
+\item Click \ui{Compile} \n{2} or press \cmdkey B (Ctrl+B on Windows). It compiles what the editor shows, with no need to save first (see the next section).
 \item The PDF appears. \n{3} shows the time taken and the numbers of errors and warnings, and the problem list \n{4} links each one to its line.
 \end{enumerate}
 \ui{Compile after saving a .tex file} is on by default, so every save compiles again. A document with errors still gets its PDF, with the errors listed.
 
 \shot{l-compile}{(1) The PDF tab, (2) Compile, (3) the result, (4) the problem list}
+
+\subsection{Compile without saving}
+\label{sec:unsaved}
+A build of a document with unsaved edits leaves the files on disk as they are. BiWrite writes what the editor shows into the hidden folder \texttt{.biwrite/} beside the paper and builds the PDF there, and the \texttt{.tex} file on disk stays as last saved until you click \ui{Save} or \ui{Save As}. When the file you edit is a section of a larger project, a copy of the main file includes the edited section, the other files are used as they are, and the bibliography is found as well. PDF pictures and PowerPoint diagrams of the writing assistant also wait in that folder until you save, and builds include them. Every task of the writing assistant works on what the editor shows too, saved or not.
+
+In a few cases the edited section cannot go into the copy, for example when a custom macro includes it. The PDF is then built from the files as saved, and BiWrite says that the edits appear once you save. A new document that was never saved needs to be saved as a \texttt{.tex} file before it compiles.
 
 \subsection{From the PDF to the source}
 Click a sentence in the PDF (\fig{l-click} \n{1}) and the same sentence is selected in the source \n{2}. A small menu next to the click \n{3} offers \ui{Polish}, \ui{Polish…} and \ui{Ask…} on that sentence. \ui{Polish} polishes by the writing rules at once, and \ui{Polish…} opens the writing assistant to write a request first. If the sentence is in another file of the project (such as \texttt{sections/04\_method.tex}), BiWrite opens that file and selects it there, after asking when the open file has unsaved changes.
@@ -297,20 +323,21 @@ With a pair, \ui{Chinese} in the PDF tab compiles your own Chinese main file (\t
 \section{Writing assistant}
 \label{sec:assist}
 
-\subsection{Open it and pick a task}
-\ui{Assistant} in the toolbar or \cmdkey J opens the writing assistant on the right (\fig{a-dock}). It works on the selection, or on the paragraph at the cursor \n{2}.
+\subsection{Open it and pick one of six tasks}
+\ui{Assistant} in the toolbar or \cmdkey J opens the writing assistant on the right (\fig{a-dock}). It works on the selection, or on the paragraph at the cursor \n{2}, as the editor shows it, saved or not.
 \begin{enumerate}
 \item Pick a task at \n{1}.
 \begin{description}[leftmargin=1em, style=nextline]
 \item[Polish] Applies the writing rules. It removes AI-style phrasing and dashes or semicolons that splice sentences, and keeps claims, numbers, citations and formulas. With a request in the box, for example \ui{shorter, state the number of benchmarks}, it changes the text as asked, by the same rules. \cmdkey\shiftkey P polishes the paragraph at the cursor.
 \item[Ask] Answers a question about the selection or the whole paper, and leaves the text as it is.
 \item[Write] Writes new paragraphs as you ask, inserted after the paragraph, in the manner of a reference paper when you add one (Section~\ref{sec:flow}, step 3).
-\item[Figure] Writes a LaTeX figure or table from a description, inserted after the paragraph with the packages it needs (Section~\ref{sec:flow}, step 5).
+\item[Figure] Writes LaTeX code, a PDF picture or a PowerPoint diagram from a description, inserted after the paragraph with the packages it needs, traced from a reference image or in its style (Section~\ref{sec:figure}).
 \item[Via translation] Fills the box with the paragraph's translation. Rewrite it and run, and the paragraph is revised to say the same (Section~\ref{sec:pair}).
+\item[Fix] Compiles the whole document, gives TeX's errors to the model and offers the changes that make it compile (Section~\ref{sec:fix}). It appears in LaTeX documents only.
 \end{description}
 \item Write the instruction or question at \n{3} (polishing needs none).
 \item \n{4} \ui{Context} sends the text alone, with its neighbouring paragraphs, or with the whole paper.
-\item \n{5} \ui{References} takes passages whose style to follow (\ui{+ Text}), whole papers as \texttt{.tex}, \texttt{.md} or \texttt{.txt} files (\ui{+ File}), or images such as a figure whose style to follow (\ui{+ Image}).
+\item \n{5} \ui{References} takes passages whose style to follow (\ui{+ Text}), whole papers as \texttt{.tex}, \texttt{.md} or \texttt{.txt} files (\ui{+ File}), images (\ui{+ Image}), or papers and figures of the materials folder (\ui{+ Materials}, Section~\ref{sec:materials}).
 \item Click \ui{Run} \n{6}. The job runs in the background while you keep writing.
 \end{enumerate}
 
@@ -321,15 +348,48 @@ The finished card (\fig{a-result}) shows the changes as a diff \n{1} (deleted wo
 
 \shot{a-result}{(1) The diff, (2) the translation, (3) the reasons, (4) Accept}
 
+\subsection{Smart apply}
+In a LaTeX paper, the card of a figure or table has \ui{Smart apply} \n{2} next to \ui{Insert} (\fig{a-smart} \n{1}). Inserted code may use a package, a TikZ library or a colour the document lacks, and the document then fails to compile. \ui{Smart apply} first compiles the document with the result and applies it at once when that brings no new error. When it brings new errors, the model repairs them, in at most three rounds, and the result is applied once it compiles. Errors the document had before do not count. The applied card says it was repaired to compile (\fig{a-smart-done} \n{1}), and shown again it lists the changes made to compile \n{2} and the lines added to the preamble \n{3}. When errors are left after three rounds, the card lists them and nothing is applied, and \ui{Insert} still applies the result as it is.
+
+\shot{a-smart}{(1) Insert, (2) Smart apply}
+\shot{a-smart-done}{(1) Repaired to compile, (2) the changes made to compile, (3) the lines added to the preamble}
+
+\subsection{Fix}
+\label{sec:fix}
+When the document does not compile, choose \ui{Fix} (\fig{a-fix} \n{1}) and click \ui{Run}. The box can stay empty or name the problem to fix. BiWrite compiles the whole document and gives TeX's errors with their lines to the model, the model proposes changes, and BiWrite compiles the changed text again, for at most three rounds. The card says how many errors there were and whether the changes make the document compile \n{2}, and lists each change by its line \n{3}. \ui{Accept} \n{4} applies them, and \ui{Revert} takes them back. The changes go into the editor only, and no file is saved.
+
+\shot{a-fix}{(1) Fix, (2) the summary, (3) the changes by line, (4) Accept}
+
 \subsection{Questions}
 An answer appears in the card (\fig{a-ask} \n{1}), with a box for a follow-up question \n{2}. A question card has no \ui{Accept} or \ui{Discard}. \ui{Delete} takes it off the list, and \ui{Keep} folds it to read later. Writing new paragraphs and figures are shown in Section~\ref{sec:flow}, steps 3 and 5.
 
 \shot{a-ask}{(1) The answer, (2) a follow-up question}
 
 \subsection{The writing skill}
-The rules come from research-builder, an open-source writing skill under the MIT license. BiWrite ships a copy. The \ui{Writing skill} section of Settings (\fig{a-skill}) can \n{1} update it from GitHub, \n{2} use a skill folder of your own, and \n{3} open the skill's repository.
+The rules come from research-builder, an open-source writing skill under the MIT license, each task with its part of the skill. Polishing and edits use the rules on AI-style phrasing and the writing playbook, \ui{Write} adds the paper anatomy and the storytelling patterns, figures use the figure style, and PowerPoint diagrams use the rules and icon library of \texttt{paper-figure-pptx}. BiWrite ships a copy. The \ui{Writing skill} section of Settings (\fig{a-skill}) can \n{1} update it from GitHub, \n{2} use a skill folder of your own, and \n{3} open the skill's repository. With a skill folder of your own, its \texttt{materials/} is the materials folder.
 
 \shot{a-skill}{(1) Update from GitHub, (2) use your own folder, (3) the skill's repository}
+
+\subsection{My materials}
+\label{sec:materials}
+The published skill holds none of the author's papers, figures or icons, so BiWrite keeps a materials folder with the same folders as research-builder's \texttt{materials/}. Put each file into its folder. With a skill folder of your own, the materials folder is its \texttt{materials/}. Otherwise it lives in BiWrite's data folder, apart from the skill, so updating or changing the skill keeps it. The \ui{My materials} section of Settings (\fig{m-materials}) shows where the folder is \n{1} and how many usable files each folder holds \n{2}, and \ui{Show folder} \n{3} opens it in the Finder or Explorer. Files put into the folder show when you come back to the BiWrite window.
+
+\shot{m-materials}{(1) The materials folder, (2) the files of each folder, (3) Show folder}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}l X X@{}}
+\toprule
+Folder & What goes there & How BiWrite uses it \\
+\midrule
+\texttt{writing-samples/} & Passages or papers in your own voice, as \texttt{.tex}, Word, \texttt{.md} or \texttt{.txt} & The openings of the first three are samples of the voice for polishing, edits, \ui{Via translation} and \ui{Write} \\
+\texttt{domain/} & Your papers, as LaTeX sources (a folder each), Word, PDF, \texttt{.md} or \texttt{.txt} & References under \ui{+ Materials}. A LaTeX paper of several files is read through its main file \\
+\texttt{general/} & Grant proposals and reports & The same \\
+\texttt{figures/} & Figures you like, as PNG, JPEG, SVG, PDF or PPTX & Reference images under \ui{+ Materials}, to trace or take the style of. PPTX needs LibreOffice \\
+\texttt{icons/} & SVG icons, or PPTX files holding SVG icons & Icons of PowerPoint diagrams. An SVG file is named by its file name, an icon in a PPTX by the picture's alternative text, and one without alternative text is left out (Settings shows how many) \\
+\texttt{ppt/} & Talks and posters & Not used \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
 \section{Request log}
 \label{sec:log}
@@ -393,19 +453,23 @@ The built-in \ui{Mock} provider works offline and returns each paragraph reverse
 \shot{c-add}{(1) The providers, (2) add a provider}
 \shot{c-form}{The provider's form: (1) API type and temperature, (2) reasoning effort and service tier, (3) Manage keys, (4) Test}
 
-\subsection{A third-party API: AnyRouter as an example}
-AnyRouter is a third-party service compatible with the OpenAI Responses API. The \ui{AnyRouter (GPT-6 Astra)} preset sets the Responses API, the address \texttt{https://anyrouter.top/v1}, the model \texttt{gpt-6-astra}, high reasoning effort, the \ui{Priority} service tier, two requests per key and ten retries. Paste one or more keys and save. Other third-party APIs are set up the same way, with the address, model and API type from the provider's documentation. The request log shows the reasoning effort and service tier the server reports back, so you can check that a third-party service honours them.
+\subsection{Third-party APIs}
+A third-party service is set up like any other provider. Its preset sets the API type, the address, the model, the reasoning effort, the service tier, the requests per key and the retries. Paste one or more keys and save. A service without a preset takes the address, model and API type from the provider's documentation. The request log shows the reasoning effort and service tier the server reports back, so you can check that a third-party service honours them.
 
 \subsection{Key pools}
 A provider can hold several keys, a pool. \ui{Manage keys…} in the provider's form opens it (\fig{c-keys}).
 \begin{itemize}
 \item \n{1} lists the keys. Give each a name. The table shows only the last characters of a key, its state and its requests in flight. Each request goes to the least busy ready key. A key hitting a rate limit cools down and the request moves to another key, and a rejected key is set aside.
-\item \n{2} sets the requests per key and the retries. AnyRouter allows two conversations per account, hence 2.
+\item \n{2} sets the requests per key, as many as the provider allows, and the retries.
 \item \n{3} takes new keys: one per line, or a name on one line and its key on the next, or \ui{name: key}. \ui{Add keys} adds them to the pool.
 \item \n{4} \ui{Import from file…} and \ui{Export to file…}: the export saves the names and keys to a text file to move them to another computer or share them with a colleague, and the import adds the keys of such a file. The keys go from the keychain to the file without passing through the window. The file holds the keys in plain text, so share it only with people you trust.
 \end{itemize}
 
 \shot[0.8]{c-keys}{The key pool: (1) the keys, (2) requests per key and retries, (3) new keys, (4) import from and export to a file}
+
+\ui{New key} on a key's row (\fig{c-keyswap} \n{1}) replaces that key with a new one, under the same name and in the same place of the pool. Paste the new key into the box \n{2} and click \ui{Save} \n{3}. It takes one key at a time, and not one the pool already has. Use it after creating a new key for the same account in the provider's console, to replace an old key that stopped working or has never been answered.
+
+\shot[0.8]{c-keyswap}{(1) New key, (2) the new key, (3) Save}
 
 \subsection{Separate models for translation and writing}
 The \ui{Writing assistant} section of Settings (\fig{c-assistant} \n{1}) picks the model for polishing, edits and questions. A cheap, fast model can translate while a stronger one writes. \ui{Same as translation} uses one provider for both.
@@ -470,7 +534,11 @@ macOS (Ctrl for \cmdkey and Alt for \optkey on Windows) & Action \\
 
 \paragraph{A Chinese file shows Chinese on the right.} BiWrite took the text for English, which happens with mixed documents. Choose \ui{Read the document as Chinese, translate into English} in the \ui{All} menu. The file stays as it is.
 
-\paragraph{An inserted figure does not compile.} Check the packages named on the card and load them in the main file's preamble. In the main file itself, inserting adds them.
+\paragraph{An inserted figure does not compile.} Use \ui{Smart apply} instead of \ui{Insert}, which compiles and repairs the result before applying it. For a figure already inserted, run \ui{Fix} in the writing assistant. In a section file, check the packages named on the card and load them in the main file's preamble.
+
+\paragraph{A PowerPoint diagram has no PDF.} Turning a PowerPoint diagram into a PDF needs LibreOffice. Install it and make the figure again, or open the PowerPoint file in PowerPoint and export a PDF of the same name into the same folder.
+
+\paragraph{Icons of the materials folder are not used.} An SVG file is named by its file name, so name it by what it shows, such as \texttt{data-pool.svg}. An icon in a PPTX needs its alternative text, set in PowerPoint. The \ui{My materials} section of Settings shows how many icons lack one.
 
 \paragraph{Where did BiWrite go after closing the window?} It hides in the tray and keeps running. The BiWrite icon in the menu bar or notification area brings the window back, and the \ui{Window} section of Settings turns this off (Section~\ref{sec:tray}).
 

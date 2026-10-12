@@ -184,6 +184,19 @@ export const messages = {
   "assist.references": { en: "References to imitate", zh: "参照样例" },
   "assist.addText": { en: "+ Text", zh: "+ 文本" },
   "assist.addImage": { en: "+ Image", zh: "+ 图片" },
+  "assist.addMaterial": { en: "+ Materials", zh: "+ 素材" },
+  "assist.materialsEmpty": { en: "The materials folder holds no papers or figures", zh: "素材文件夹里还没有论文或图" },
+  "assist.materialsOpen": { en: "Show the materials folder…", zh: "打开素材文件夹…" },
+  "assist.image.trace": { en: "Trace", zh: "临摹" },
+  "assist.image.style": { en: "Style", zh: "仿风格" },
+  "assist.image.traceTitle": {
+    en: "A draft of this figure, redrawn and corrected against the text",
+    zh: "这张图是本文图的草稿，照着重画并按正文修正",
+  },
+  "assist.image.styleTitle": {
+    en: "A figure of another paper, whose look alone is taken",
+    zh: "这张图来自其他论文，只学它的版式与配色",
+  },
   "assist.addFile": { en: "+ File", zh: "+ 文件" },
   "assist.addFileTitle": {
     en: "A paper or text whose writing to follow (.tex, .md, .txt). For LaTeX, the body without comments is kept.",
@@ -431,6 +444,14 @@ export const messages = {
   "settings.skillChoose": { en: "Use my folder…", zh: "使用自己的文件夹…" },
   "settings.skillReset": { en: "Use the bundled skill", zh: "恢复内置版本" },
   "settings.skillReveal": { en: "Show files", zh: "查看文件" },
+  "settings.materials": { en: "My materials", zh: "我的素材" },
+  "settings.materialsInSkill": { en: "the materials of your skill folder", zh: "你的 skill 文件夹中的素材" },
+  "settings.materialsReveal": { en: "Show folder", zh: "打开素材文件夹" },
+  "settings.materialsUnnamed": { en: " ({n} without a name)", zh: "（另有 {n} 个未命名）" },
+  "settings.materialsUnnamedTitle": {
+    en: "Name an SVG file after what it shows, or give the picture in PowerPoint its alternative text",
+    zh: "SVG 文件以图标含义命名，PPT 中的图标写上替代文字",
+  },
   "settings.skillHint": {
     en: "Polishing, edits, answers and figures follow the research-builder skill (open source, MIT). Its rules remove AI-style phrasing and keep claims, numbers, citations and formulas intact.",
     zh: "润色、按指令修改、提问和图表都遵循 research-builder 技能（开源，MIT 协议）。其规则去除 AI 腔，并保持论断、数字、引用和公式不变。",

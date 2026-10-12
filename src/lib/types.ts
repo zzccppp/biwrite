@@ -549,10 +549,16 @@ export interface AssistRequest {
   instruction: string;
   references: string[];
   images: number[];
+  /** What each image is for in a figure, in the order of `images`. */
+  imageUses: ImageUse[];
   history: [string, string][];
   /** What a figure becomes (LaTeX documents). */
   figure: FigureFormat;
 }
+
+/** What an image is for in a figure: a draft of this figure to redraw and
+ * correct against the text, or a figure of another paper whose look to take. */
+export type ImageUse = "trace" | "style";
 
 /** A reference image picked in Rust (the webview keeps only a preview). */
 export interface AttachmentView {
@@ -570,6 +576,27 @@ export interface SkillInfo {
   folder: string | null;
   files: number;
   missing: string[];
+}
+
+/** The author's own materials: the folders of the skill's `materials/`. */
+export interface MaterialsView {
+  folder: string;
+  /** The folder is the `materials/` of the author's own skill folder. */
+  inSkill: boolean;
+  /** What each folder holds that BiWrite uses (icons for `icons`). */
+  counts: { name: string; files: number }[];
+  /** SVG pictures of PowerPoint files in `icons` without alternative text,
+   * which are not used. */
+  unnamedIcons: number;
+}
+
+/** A paper or figure of the materials, to take as a reference. */
+export interface MaterialEntry {
+  folder: string;
+  /** From the materials folder, with `/`. */
+  path: string;
+  /** `pdftext`: a paper as a PDF. `pdf`, `pptx`: a figure. */
+  kind: "text" | "pdftext" | "image" | "pdf" | "pptx";
 }
 
 // ── LaTeX ───────────────────────────────────────────────────────────

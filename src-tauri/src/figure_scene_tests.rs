@@ -301,7 +301,11 @@ fn write_a_sample_for_powerpoint() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/skills/research-builder");
     let icons = crate::skills::load_icons(&bundled);
     assert_eq!(icons.len(), 16);
-    let laid = Scene::parse(scene).unwrap().laid_with(&icons).unwrap();
+    // Another scene from a file, when given.
+    let scene = std::env::var("BIWRITE_PPTX_SCENE")
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .unwrap_or_else(|_| scene.to_owned());
+    let laid = Scene::parse(&scene).unwrap().laid_with(&icons).unwrap();
     let out = std::env::var("BIWRITE_PPTX_OUT").unwrap();
     std::fs::write(&out, laid.pptx().unwrap()).unwrap();
     std::fs::write(format!("{out}.svg"), laid.svg()).unwrap();
@@ -440,7 +444,7 @@ fn icons_are_svg_pictures_with_a_png_for_other_programs() {
 
 #[test]
 fn only_drawings_pass_as_icons() {
-    assert!(safe_svg(DB_SVG).is_some());
+    assert!(plain_svg(DB_SVG).is_some());
     for bad in [
         "<svg><script>alert(1)</script></svg>",
         "<svg><image href=\"x.png\"/></svg>",
@@ -450,8 +454,39 @@ fn only_drawings_pass_as_icons() {
         "<svg><style>@import url(http://x)</style></svg>",
         "not svg",
     ] {
-        assert!(safe_svg(bad).is_none(), "{bad}");
+        assert!(plain_svg(bad).is_none(), "{bad}");
     }
+    // An XML declaration may come first.
+    assert_eq!(
+        plain_svg("<?xml version=\"1.0\"?>\n<svg viewBox=\"0 0 1 1\"/></svg>").map(|s| &s[..4]),
+        Some("<svg")
+    );
     // Words that only look like handlers are fine.
-    assert!(safe_svg("<svg><title>based on data</title></svg>").is_some());
+    assert!(plain_svg("<svg><title>based on data</title></svg>").is_some());
+}
+
+#[test]
+fn a_label_wider_than_its_icon_stays_on_the_slide() {
+    let icons = crate::skills::load_icons(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/skills/research-builder"),
+    );
+    let scene = r#"{"nodes": [
+      {"id": "data", "x": 0, "y": 0, "w": 1, "h": 1, "icon": "database", "text": "Process data from the plant"},
+      {"id": "b", "x": 3, "y": 0, "w": 2, "h": 1, "text": "Model"}
+    ]}"#;
+    let laid = Scene::parse(scene).unwrap().laid_with(&icons).unwrap();
+    let label = laid
+        .items
+        .iter()
+        .find(|i| i.text.starts_with("Process data"))
+        .unwrap();
+    let icon = laid.items.iter().find(|i| i.picture.is_some()).unwrap();
+    // As wide as its text, centred under the icon, and on the slide.
+    assert!(label.frame.w > 4.0, "{}", label.frame.w);
+    let centre = |f: &Frame| f.x + f.w / 2.0;
+    assert!((centre(&label.frame) - centre(&icon.frame)).abs() < 0.01);
+    assert!(label.frame.x >= 0.0, "{}", label.frame.x);
+    assert!(label.frame.x + label.frame.w <= laid.width + 1e-9);
+    // Chinese is about twice as wide as Latin letters.
+    assert!(text_width("数据池", 10.0) > text_width("abc", 10.0) * 1.5);
 }

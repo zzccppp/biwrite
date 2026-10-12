@@ -100,6 +100,8 @@ pub struct AppState {
     pub squeeze: SqueezeState,
     /// Figures that are files, waiting for the document's save.
     pub figures: crate::figures::FigureStore,
+    /// The author's own papers and icons for the skill.
+    pub materials: crate::materials::Materials,
 }
 
 impl AppState {
@@ -114,6 +116,12 @@ impl AppState {
         skills: SkillStore,
         latex: LatexState,
     ) -> Self {
+        // The author's own materials, next to the settings.
+        let materials = paths
+            .settings
+            .parent()
+            .map(|d| d.join("materials"))
+            .unwrap_or_default();
         Self {
             engine,
             cache,
@@ -138,6 +146,7 @@ impl AppState {
             updates: UpdateState::default(),
             squeeze: SqueezeState::default(),
             figures: crate::figures::FigureStore::default(),
+            materials: crate::materials::Materials::new(materials),
         }
     }
 

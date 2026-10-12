@@ -442,10 +442,13 @@ const MAX_SVG: usize = 30_000;
 /// Pixels of the longer side of an icon's PNG.
 const ICON_PNG: f32 = 256.0;
 
-/// An SVG a scene drew, if it is one that holds nothing but drawing: no
-/// script, no other document, no picture, nothing fetched from elsewhere.
-fn safe_svg(svg: &str) -> Option<&str> {
+/// An SVG that holds nothing but drawing (no script, no other document, no
+/// picture, nothing fetched from elsewhere), from its `<svg>` tag on: what
+/// a scene may draw and the materials may keep.
+pub(crate) fn plain_svg(svg: &str) -> Option<&str> {
     let t = svg.trim();
+    // An XML declaration or comments may come first.
+    let t = &t[t.find("<svg")?..];
     let lower = t.to_ascii_lowercase();
     let fetched = [
         "href=\"http",
@@ -497,6 +500,11 @@ fn render_svg(svg: &str) -> Option<(f64, Vec<u8>)> {
     ))
 }
 
+/// A PNG of `svg`, for programs without SVG.
+pub(crate) fn svg_png(svg: &str) -> Option<Vec<u8>> {
+    render_svg(svg).map(|(_, png)| png)
+}
+
 /// The icon a node names: one the scene drew (in `svgs`), else one of the
 /// skill's `icons`; and its width over its height.
 fn icon_of(
@@ -505,7 +513,7 @@ fn icon_of(
     icons: &[SkillIcon],
 ) -> Option<(Picture, f64)> {
     let (svg, png) = match svgs.get(name) {
-        Some(svg) => (safe_svg(svg)?.to_owned(), None),
+        Some(svg) => (plain_svg(svg)?.to_owned(), None),
         None => {
             let icon = icons.iter().find(|i| i.id == name)?;
             (icon.svg.clone(), icon.png.clone())
@@ -544,6 +552,33 @@ fn fit(frame: Frame, aspect: f64) -> Frame {
 /// The height of the label under an icon with `text` of `size` points.
 fn label_height(text: &str, size: f64) -> f64 {
     text.lines().count().max(1) as f64 * size * 0.045 + 0.1
+}
+
+/// About how wide `text` of `size` points is, in centimetres: its longest
+/// line, a CJK character as wide as the size and a Latin one about half.
+fn text_width(text: &str, size: f64) -> f64 {
+    let point = 2.54 / 72.0;
+    text.lines()
+        .map(|l| {
+            l.chars()
+                .map(|c| if c.is_ascii() { 0.55 } else { 1.0 })
+                .sum::<f64>()
+                * size
+                * point
+        })
+        .fold(0.0, f64::max)
+}
+
+/// The label under an icon in the frame `x`, `y`, `w`, `h`: centred under
+/// it and as wide as its text, so that the slide takes it in whole.
+fn label_frame(x: f64, y: f64, w: f64, h: f64, text: &str, size: f64) -> Frame {
+    let width = (w + 1.0).max(text_width(text, size) + 0.3);
+    Frame {
+        x: x + w / 2.0 - width / 2.0,
+        y: y + h + 0.05,
+        w: width,
+        h: label_height(text, size),
+    }
 }
 
 /// How an edge runs, before the shift onto the slide: a line from one
@@ -684,9 +719,12 @@ impl Scene {
         for n in &self.nodes {
             extend(n.x, n.y);
             extend(n.x + n.w, n.y + n.h);
-            if n.icon.is_some() && !n.text.trim().is_empty() {
+            let label = clean_text(n.text.trim());
+            if n.icon.is_some() && !label.is_empty() {
                 let size = n.font_size.unwrap_or(FONT_SIZE).clamp(4.0, 40.0);
-                extend(n.x, n.y + n.h + 0.05 + label_height(n.text.trim(), size));
+                let f = label_frame(n.x, n.y, n.w, n.h, &label, size);
+                extend(f.x, f.y);
+                extend(f.x + f.w, f.y + f.h);
             }
         }
         for g in &self.groups {
@@ -765,14 +803,8 @@ impl Scene {
             if let Some((picture, aspect)) = icon {
                 let text = clean_text(n.text.trim());
                 if !text.is_empty() {
-                    let lh = label_height(&text, font_size);
                     icon_labels.push(Item {
-                        frame: Frame {
-                            x: frame.x - 0.5,
-                            y: frame.y + frame.h + 0.05,
-                            w: frame.w + 1.0,
-                            h: lh,
-                        },
+                        frame: label_frame(frame.x, frame.y, frame.w, frame.h, &text, font_size),
                         shape: Shape::Text,
                         text,
                         fill: None,

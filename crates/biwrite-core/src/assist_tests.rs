@@ -54,7 +54,7 @@ fn scope_and_references_shape_the_message() {
         instruction: "Make it more precise.",
         document: Some("Whole paper."),
         references: &refs,
-        images: 2,
+        images: &[ImageUse::Trace, ImageUse::Style],
         ..Default::default()
     };
     let p = build(&doc, &skill());
@@ -447,20 +447,22 @@ fn a_figure_with_a_reference_image_imitates_its_style() {
         mode: Mode::Latex,
         target: "We compare the methods.",
         instruction: "Accuracy on four benchmarks, like the attached chart.",
-        images: 1,
+        images: &[ImageUse::Style],
         ..Default::default()
     };
     let p = build(&req, &skill());
-    assert!(p.user.contains("show the figure to imitate"));
+    assert!(
+        p.user.contains(
+            "The attached image is from another paper and is attached for its look alone."
+        )
+    );
+    assert!(p.user.contains("colour scheme, line weights, arrow styles, the marks, line styles and legend placement of a chart"));
     assert!(
         p.user
-            .contains("layout, colour scheme, marks, line styles, fonts and legend placement")
+            .contains("take no text, numbers, formulas or content from it.")
     );
-    assert!(p.user.contains("in TikZ or pgfplots"));
-    assert!(
-        p.user
-            .contains("Never take numbers or labels from the image")
-    );
+    assert!(!p.user.contains("draft"));
+    assert!(p.user.contains("describing the figure"));
     // Other tasks keep the general wording.
     let edit = build(
         &Request {
@@ -470,7 +472,7 @@ fn a_figure_with_a_reference_image_imitates_its_style() {
         &skill(),
     );
     assert!(edit.user.contains("follow their layout and style"));
-    assert!(!edit.user.contains("figure to imitate"));
+    assert!(!edit.user.contains("look alone"));
 }
 
 #[test]
@@ -671,15 +673,27 @@ fn an_image_to_trace_becomes_a_powerpoint_scene() {
         mode: Mode::Latex,
         target: "We compare the methods.",
         instruction: "临摹这张系统图",
-        images: 1,
+        images: &[ImageUse::Trace],
         figure: FigureFormat::Pptx,
         ..Default::default()
     };
     let p = build(&req, &skill());
-    assert!(p.user.contains("Redraw it as the scene in native shapes"));
-    assert!(p.user.contains(
-        "Keep the text of the image as it is when the instruction asks to copy or trace"
-    ));
+    assert!(p.user.contains("The attached image is a draft of this figure from the author's own paper. Redraw it as the scene in native shapes"));
+    assert!(
+        p.user
+            .contains("Unicode symbols, subscripts and superscripts")
+    );
+    // Corrected against the text, and the notes say what changed.
+    assert!(
+        p.user.contains(
+            "Check every label, symbol, formula, number and step against the author's text"
+        )
+    );
+    assert!(
+        p.user
+            .contains("naming each correction made to the traced draft")
+    );
+    assert!(!p.user.contains("describing the figure"));
     assert!(!p.user.contains("in TikZ or pgfplots"));
     // As a PDF picture it is TikZ, as before.
     let pdf = build(
@@ -690,4 +704,110 @@ fn an_image_to_trace_becomes_a_powerpoint_scene() {
         &skill(),
     );
     assert!(pdf.user.contains("in TikZ or pgfplots"));
+    assert!(
+        pdf.user
+            .contains("Redraw it in TikZ, or in pgfplots for a chart")
+    );
+}
+
+#[test]
+fn a_draft_to_trace_and_figures_to_take_the_look_of() {
+    let req = Request {
+        action: Action::Figure,
+        mode: Mode::Latex,
+        target: "We compare the methods.",
+        instruction: "Draw the pipeline.",
+        images: &[ImageUse::Style, ImageUse::Trace, ImageUse::Style],
+        figure: FigureFormat::Pptx,
+        ..Default::default()
+    };
+    let p = build(&req, &skill());
+    assert!(
+        p.user
+            .contains(" Attached image 2 is a draft of this figure")
+    );
+    assert!(p.user.contains(" Attached images 1 and 3 are from another paper and are attached for their look alone. Take their layout"));
+    assert!(
+        p.user
+            .contains("take no text, numbers, formulas or content from them.")
+    );
+    assert!(
+        p.user
+            .contains("The draft decides what the figure shows and where")
+    );
+    // Two drafts and a figure in LaTeX.
+    let p = build(
+        &Request {
+            images: &[ImageUse::Trace, ImageUse::Trace],
+            figure: FigureFormat::Latex,
+            ..req
+        },
+        &skill(),
+    );
+    assert!(p.user.contains(" Attached images 1 and 2 are drafts of this figure from the author's own paper. Redraw them in LaTeX"));
+    assert!(!p.user.contains("look alone"));
+    // Outside LaTeX an image is a reference, as for any task.
+    let md = build(
+        &Request {
+            mode: Mode::Markdown,
+            ..req
+        },
+        &skill(),
+    );
+    assert!(md.user.contains("follow their layout and style"));
+    assert!(!md.user.contains("draft"));
+}
+
+#[test]
+fn the_authors_papers_give_the_voice_of_what_is_written() {
+    let voice = vec![
+        "We study how a table is cleaned.".to_owned(),
+        "Each row is checked once.".to_owned(),
+    ];
+    let req = Request {
+        action: Action::Polish,
+        mode: Mode::Latex,
+        target: "The method is good.",
+        voice: &voice,
+        ..Default::default()
+    };
+    let p = build(&req, &skill());
+    assert!(
+        p.user
+            .contains("<voice_sample n=\"1\">\nWe study how a table is cleaned.\n</voice_sample>")
+    );
+    assert!(p.user.contains("<voice_sample n=\"2\">"));
+    assert!(p.user.contains("write in the voice they show"));
+    for action in [Action::Edit, Action::Mirror, Action::Write] {
+        let p = build(
+            &Request {
+                action,
+                instruction: "x",
+                ..req.clone()
+            },
+            &skill(),
+        );
+        assert!(p.user.contains("<voice_sample n=\"1\">"), "{action:?}");
+    }
+    // Questions and figures are not the author's prose.
+    for action in [Action::Ask, Action::Figure] {
+        let p = build(
+            &Request {
+                action,
+                instruction: "x",
+                ..req.clone()
+            },
+            &skill(),
+        );
+        assert!(!p.user.contains("voice_sample"), "{action:?}");
+    }
+    // Without papers nothing changes.
+    let plain = build(
+        &Request {
+            voice: &[],
+            ..req.clone()
+        },
+        &skill(),
+    );
+    assert!(!plain.user.contains("voice"));
 }

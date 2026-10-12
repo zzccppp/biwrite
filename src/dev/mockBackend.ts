@@ -73,6 +73,13 @@ const FIXCLEAN = PARAMS.has("fixclean");
 const LEFTOUT = PARAMS.has("leftout");
 /** No LibreOffice: a PowerPoint figure comes as its drawing (?nolo). */
 const NOLO = PARAMS.has("nolo");
+/** A provider of no particular service, for the user guide's pictures. */
+const NEUTRAL = PARAMS.has("neutral");
+const RELAY = NEUTRAL
+  ? { name: "OpenAI (GPT-5)", url: "https://api.openai.com/v1", host: "api.openai.com", model: "gpt-5", file: "BiWrite" }
+  : { name: "AnyRouter (GPT-6 Astra)", url: "https://anyrouter.top/v1", host: "anyrouter.top", model: "gpt-6-astra", file: "AnyRouter" };
+/** An empty materials folder. */
+const NOMATERIALS = PARAMS.has("nomaterials");
 
 const FIGURE_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="80" viewBox="0 0 300 80"><rect width="100%" height="100%" fill="#fff"/><rect x="10" y="20" width="100" height="36" fill="#DCE6F2" stroke="#1F4E79"/><text x="60" y="43" font-size="12" text-anchor="middle">Paired run</text><rect x="190" y="20" width="100" height="36" fill="#fff" stroke="#404040"/><text x="240" y="43" font-size="12" text-anchor="middle">Faulty run</text><path d="M110 38H190" stroke="#404040"/></svg>';
@@ -184,12 +191,12 @@ const state = {
       },
       {
         id: "p-relay",
-        name: "AnyRouter (GPT-6 Astra)",
+        name: RELAY.name,
         kind: "openai_compatible",
         wireApi: "responses",
         serviceTier: "priority",
-        baseUrl: "https://anyrouter.top/v1",
-        model: "gpt-6-astra",
+        baseUrl: RELAY.url,
+        model: RELAY.model,
         temperature: 0,
         effort: "high",
         keyConcurrency: 2,
@@ -199,20 +206,20 @@ const state = {
         keyNames: {},
         builtin: false,
         needsKey: true,
-        squeezable: true,
+        squeezable: !NEUTRAL,
       },
     ] as ProviderView[],
     activeProvider: ACTIVE === "mock" ? "mock" : "p-relay",
-    activeLabel: ACTIVE === "mock" ? "Mock" : "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+    activeLabel: ACTIVE === "mock" ? "Mock" : `${RELAY.name} · ${RELAY.model}`,
     concurrency: 4,
     docNote: "",
     presets: [
       {
-        name: "AnyRouter (GPT-6 Astra)",
+        name: RELAY.name,
         kind: "openai_compatible",
         wireApi: "responses",
-        baseUrl: "https://anyrouter.top/v1",
-        model: "gpt-6-astra",
+        baseUrl: RELAY.url,
+        model: RELAY.model,
         effort: "high",
         serviceTier: "priority",
         keyConcurrency: 2,
@@ -232,7 +239,7 @@ const state = {
     ],
     promptDir: "/Users/me/Library/Application Support/app.biwrite.desktop/prompts",
     assistantProvider: "",
-    assistantLabel: "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+    assistantLabel: `${RELAY.name} · ${RELAY.model}`,
     assistantReady: true,
     logDir: "/Users/me/Library/Logs/app.biwrite.desktop",
     requestLog: { enabled: true, persist: true } as LogSettings,
@@ -241,7 +248,8 @@ const state = {
     matchPool: true,
     effectiveConcurrency: 12,
     latex: { compileOnSave: true },
-    checkUpdates: true,
+    // No notice of a newer version in the README's pictures.
+    checkUpdates: !PARAMS.has("quiet"),
     closeToTray: true,
     keepAlive: true,
     version: "0.1.1",
@@ -251,6 +259,8 @@ const state = {
   offers: [] as { source: string; translation: string }[],
   /** The last assistant request (for UI tests). */
   lastAssist: null as Record<string, unknown> | null,
+  /** Reference images and papers taken from the materials folder. */
+  materialsTaken: [] as string[],
 };
 
 /** Paragraphs separated by blank lines (LaTeX blocks get a rough kind). */
@@ -435,7 +445,7 @@ function squeezeEvent(change: Record<string, unknown>): void {
   void emit("squeeze", {
     ...change,
     providerId: "p-relay",
-    providerName: "AnyRouter (GPT-6 Astra)",
+    providerName: RELAY.name,
     running: squeezeRun.running,
     through: squeezeRun.through.filter((t) => t !== null).length,
     total: POOL.length,
@@ -528,12 +538,12 @@ export function fakeRecord(over: Partial<RequestRecord> = {}): RequestRecord {
     id,
     startedAt: Date.now() - 1000 * (10 - id),
     purpose: "translate",
-    provider: "AnyRouter (GPT-6 Astra)",
+    provider: RELAY.name,
     wire: "responses",
-    endpoint: "anyrouter.top/v1/responses",
+    endpoint: `${RELAY.host}/v1/responses`,
     key: { number: ((id - 1) % 6) + 1, count: 6, tail: POOL[(id - 1) % 6].tail, fingerprint: POOL[(id - 1) % 6].fingerprint },
-    request: { model: "gpt-6-astra", effort: "high", serviceTier: "priority" },
-    response: { model: "gpt-6-astra", effort: "high", serviceTier: "default" },
+    request: { model: RELAY.model, effort: "high", serviceTier: "priority" },
+    response: { model: RELAY.model, effort: "high", serviceTier: "default" },
     httpStatus: 200,
     state: "ok",
     error: null,
@@ -553,14 +563,14 @@ function seedRecords(): void {
     fakeRecord({
       state: "error",
       error: "rate limited by the provider",
-      response: { model: "gpt-6-astra", effort: "high", serviceTier: "auto" },
+      response: { model: RELAY.model, effort: "high", serviceTier: "auto" },
       usage: { inputTokens: null, cachedTokens: null, outputTokens: null, reasoningTokens: null },
-      notes: ["stream error rate_limit_exceeded: Your requests to gpt-6-astra have exceeded token rate limit.", "key 2 of 3 set aside: retrying with another key"],
+      notes: [`stream error rate_limit_exceeded: Your requests to ${RELAY.model} have exceeded token rate limit.`, "key 2 of 3 set aside: retrying with another key"],
       durationMs: 1900,
       firstTokenMs: null,
     }),
     fakeRecord(),
-    fakeRecord({ purpose: "polish", response: { model: "gpt-6-astra-2026-09", effort: "medium", serviceTier: null } }),
+    fakeRecord({ purpose: "polish", response: { model: `${RELAY.model}-2026-09`, effort: "medium", serviceTier: null } }),
     fakeRecord({
       provider: "DeepSeek",
       wire: "chat",
@@ -631,6 +641,11 @@ We present UniClean, a cleaning system that composes operators into a pipeline a
 const TABLE =
   "\\begin{table}[t]\n  \\centering\n  \\caption{Accuracy on four benchmarks (\\%).}\n  \\label{tab:accuracy}\n  \\begin{tabular}{lrrrr}\n    \\toprule\n    Method & Cora & CiteSeer & PubMed & arXiv \\\\\n    \\midrule\n    Fine-tuned GNN & 81.5 & 70.3 & 79.0 & 71.7 \\\\\n    Prompt graph (ours) & 80.9 & 69.8 & 78.6 & 70.9 \\\\\n    \\bottomrule\n  \\end{tabular}\n\\end{table}";
 
+/** What a diagram of the paired runs shows. */
+const FIGURE_NOTES = {
+  zh: ["两个框分别是故障运行和配对运行，箭头标出两者之差。"],
+  en: ["Two boxes for the faulty run and its paired run, with an arrow for their difference."],
+};
 const TABLE_NOTES = {
   zh: ["三线表，两行方法对比四个基准，数值取自第 5 节。"],
   en: ["A booktabs table: two methods on four benchmarks, numbers from Section 5."],
@@ -808,7 +823,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     };
   },
   write_mirror: () => ({ name: "paper_zh.tex", written: true, pending: 0, changed: 1 }),
-  export_api_keys: () => "/Users/me/Desktop/AnyRouter-keys.txt",
+  export_api_keys: () => `/Users/me/Desktop/${RELAY.file}-keys.txt`,
   import_api_keys: () => state.settings,
   swap_languages: (a) => {
     state.swaps.push(Boolean(a.keep));
@@ -921,16 +936,18 @@ const handlers: Record<string, (args: Args) => unknown> = {
         revision,
         translation:
           req.action === "figure"
-            ? "四个基准上的准确率（%）。"
+            ? asFile || FIGCOLOR
+              ? "故障运行与配对运行。"
+              : "四个基准上的准确率（%）。"
             : req.action === "write"
               ? WRITTEN.translation
               : req.action === "ask"
                 ? null
                 : p.translation,
         changesZh:
-          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.zh : req.action === "figure" ? TABLE_NOTES.zh : p.zh,
+          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.zh : req.action === "figure" ? (asFile || FIGCOLOR ? FIGURE_NOTES : TABLE_NOTES).zh : p.zh,
         changesEn:
-          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.en : req.action === "figure" ? TABLE_NOTES.en : p.en,
+          req.action === "ask" ? [] : req.action === "write" ? WRITTEN.en : req.action === "figure" ? (asFile || FIGCOLOR ? FIGURE_NOTES : TABLE_NOTES).en : p.en,
         answer:
           req.action === "ask"
             ? "第二句的“seems important”没有给出依据。建议改为指向结果的陈述，例如写明消息传递带来的准确率提升，并引用对应的表。"
@@ -962,7 +979,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return {
       id,
       target: { from, to, text: original, wholeParagraph: req.from === req.to, insert },
-      model: "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+      model: `${RELAY.name} · ${RELAY.model}`,
       skill: "research-builder d227e92",
     };
   },
@@ -1013,7 +1030,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return {
       id,
       target: { from: 0, to: 0, text: "", wholeParagraph: false, insert: false },
-      model: "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+      model: `${RELAY.name} · ${RELAY.model}`,
       skill: "",
     };
   },
@@ -1072,6 +1089,60 @@ const handlers: Record<string, (args: Args) => unknown> = {
       encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23b8432f'/><rect x='8' y='14' width='6' height='20' fill='white'/><rect x='17' y='8' width='6' height='26' fill='white'/><rect x='26' y='18' width='6' height='16' fill='white'/></svg>"),
   }),
   drop_attachment: () => null,
+  materials_get: () => ({
+    folder: "/Users/me/Library/Application Support/app.biwrite.desktop/materials",
+    inSkill: false,
+    counts: [
+      { name: "domain", files: 1 },
+      { name: "general", files: 0 },
+      { name: "writing-samples", files: 1 },
+      { name: "figures", files: 2 },
+      { name: "icons", files: 12 },
+    ],
+    unnamedIcons: 42,
+  }),
+  materials_reveal: () => null,
+  materials_list: () =>
+    NOMATERIALS
+      ? []
+      : [
+          { folder: "domain", path: "domain/old-paper.pdf", kind: "pdftext" },
+          { folder: "domain", path: "domain/uniclean/main.tex", kind: "text" },
+          { folder: "writing-samples", path: "writing-samples/voice.md", kind: "text" },
+          { folder: "figures", path: "figures/system.pdf", kind: "pdf" },
+          { folder: "figures", path: "figures/pipeline.png", kind: "image" },
+          { folder: "figures", path: "figures/motivation.pptx", kind: "pptx" },
+        ],
+  materials_text: (a) => {
+    state.materialsTaken.push(String(a.path));
+    return { name: "main.tex", text: UNICLEAN, chars: UNICLEAN.length, truncated: false };
+  },
+  materials_image: (a) => {
+    state.materialsTaken.push(String(a.path));
+    return {
+      id: Date.now() % 100000,
+      name: String(a.path).split("/").pop(),
+      dataUrl:
+        "data:image/svg+xml;utf8," +
+        encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%231F3864'/></svg>"),
+    };
+  },
+  materials_pdf: async (a) => {
+    state.materialsTaken.push(String(a.path));
+    // A paper reads as the sample paper, a figure as the sample figure.
+    const file = String(a.path).startsWith("figures/") ? "/dev/figure.pdf" : "/dev/sample.pdf";
+    return (await fetch(file)).arrayBuffer();
+  },
+  materials_pptx: async (a) => {
+    state.materialsTaken.push(String(a.path));
+    if (NOLO) throw "reading a PowerPoint figure needs LibreOffice";
+    return (await fetch("/dev/figure.pdf")).arrayBuffer();
+  },
+  attach_image_data: (a) => {
+    const png = String(a.png);
+    state.materialsTaken.push(`png:${String(a.name)}:${png.slice(0, 8)}:${png.length}`);
+    return { id: Date.now() % 100000, name: String(a.name), dataUrl: `data:image/png;base64,${png}` };
+  },
   get_skill: () => ({
     name: "research-builder",
     source: "https://github.com/qzkinhit/research-builder",
@@ -1251,7 +1322,7 @@ export function installMockBackend(): void {
       httpStatus: 200,
       durationMs: 8123,
       firstTokenMs: 5000,
-      response: { model: "gpt-6-astra", effort: "high", serviceTier: "default" },
+      response: { model: RELAY.model, effort: "high", serviceTier: "default" },
       usage: { inputTokens: 95, cachedTokens: 64, outputTokens: 120, reasoningTokens: 99 },
     });
     void emit("request-log", clone(done));

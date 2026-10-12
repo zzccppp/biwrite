@@ -133,83 +133,88 @@ pub(crate) fn load_icons(dir: &Path) -> Vec<SkillIcon> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let Some(json) = read_small(&lib, "manifest.json", 4_000_000)
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        else {
-            continue;
-        };
-        for icon in json["icons"].as_array().into_iter().flatten() {
-            if out.len() >= MAX_ICONS {
-                return out;
-            }
-            let text = |v: &serde_json::Value| v.as_str().unwrap_or("").trim().to_owned();
-            let tags = |v: &serde_json::Value| {
-                v.as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|t| t.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            let raw_id = text(&icon["id"]);
-            let id = raw_id.trim_end_matches(".svg").to_owned();
-            let (meaning, svg_rel, png_rel) = if icon["svg"].is_string() {
-                let tags = tags(&icon["tags"]);
-                let meaning = text(&icon["meaning"]);
-                (
-                    if tags.is_empty() {
-                        meaning
-                    } else {
-                        format!("{meaning} ({tags})")
-                    },
-                    text(&icon["svg"]),
-                    text(&icon["png"]),
-                )
-            } else {
-                let name = text(&icon["metadata"]["name_zh"]);
-                let tags = tags(&icon["metadata"]["purpose_tags"]);
-                (
-                    if name.is_empty() || tags.is_empty() {
-                        name
-                    } else {
-                        format!("{name} ({tags})")
-                    },
-                    text(&icon["path"]),
-                    text(&icon["png_fallbacks"][0]["path"]),
-                )
-            };
-            if id.is_empty() || meaning.is_empty() || svg_rel.is_empty() {
-                continue;
-            }
-            let Some(svg) = read_small(&lib, &svg_rel, MAX_ICON_BYTES)
-                .and_then(|b| String::from_utf8(b).ok())
-                .filter(|t| t.contains("<svg"))
-            else {
-                continue;
-            };
-            let id = if library == "starter" {
-                id
-            } else {
-                format!("{library}/{id}")
-            };
-            if out.iter().any(|i| i.id == id) {
-                continue;
-            }
-            out.push(SkillIcon {
-                id,
-                meaning,
-                library: library.clone(),
-                svg,
-                png: (!png_rel.is_empty())
-                    .then(|| read_small(&lib, &png_rel, MAX_ICON_BYTES))
-                    .flatten(),
-            });
-        }
+        load_library(&lib, &library, &mut out);
     }
     out
 }
 
-/// Load the skill's files from `dir`.
+/// The icons of the library in `lib` (named `library`), added to `out`.
+pub(crate) fn load_library(lib: &Path, library: &str, out: &mut Vec<SkillIcon>) {
+    let Some(json) = read_small(lib, "manifest.json", 4_000_000)
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+    else {
+        return;
+    };
+    for icon in json["icons"].as_array().into_iter().flatten() {
+        if out.len() >= MAX_ICONS {
+            return;
+        }
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or("").trim().to_owned();
+        let tags = |v: &serde_json::Value| {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let raw_id = text(&icon["id"]);
+        let id = raw_id.trim_end_matches(".svg").to_owned();
+        let (meaning, svg_rel, png_rel) = if icon["svg"].is_string() {
+            let tags = tags(&icon["tags"]);
+            let meaning = text(&icon["meaning"]);
+            (
+                if tags.is_empty() {
+                    meaning
+                } else {
+                    format!("{meaning} ({tags})")
+                },
+                text(&icon["svg"]),
+                text(&icon["png"]),
+            )
+        } else {
+            let name = text(&icon["metadata"]["name_zh"]);
+            let tags = tags(&icon["metadata"]["purpose_tags"]);
+            (
+                if name.is_empty() || tags.is_empty() {
+                    name
+                } else {
+                    format!("{name} ({tags})")
+                },
+                text(&icon["path"]),
+                text(&icon["png_fallbacks"][0]["path"]),
+            )
+        };
+        if id.is_empty() || meaning.is_empty() || svg_rel.is_empty() {
+            continue;
+        }
+        let Some(svg) = read_small(lib, &svg_rel, MAX_ICON_BYTES)
+            .and_then(|b| String::from_utf8(b).ok())
+            .filter(|t| t.contains("<svg"))
+        else {
+            continue;
+        };
+        let id = if library == "starter" {
+            id
+        } else {
+            format!("{library}/{id}")
+        };
+        if out.iter().any(|i| i.id == id) {
+            continue;
+        }
+        out.push(SkillIcon {
+            id,
+            meaning,
+            library: library.to_owned(),
+            svg,
+            png: (!png_rel.is_empty())
+                .then(|| read_small(lib, &png_rel, MAX_ICON_BYTES))
+                .flatten(),
+        });
+    }
+}
+
+/// Load the skill's files and icons from `dir`.
 fn load(dir: &Path, origin: &'static str) -> (Skill, SkillInfo) {
     let manifest = read_manifest(dir);
     let mut files = Vec::new();

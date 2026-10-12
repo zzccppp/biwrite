@@ -110,6 +110,18 @@ impl Action {
     }
 }
 
+/// What an attached image is for, in a figure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageUse {
+    /// A draft of this very figure: redrawn, and corrected against the
+    /// author's text.
+    #[default]
+    Trace,
+    /// A figure of another paper: its look alone.
+    Style,
+}
+
 /// What a figure becomes in a LaTeX document.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -195,14 +207,16 @@ pub struct Request<'a> {
     pub glossary: &'a [GlossaryEntry],
     /// Text samples whose style to follow.
     pub references: &'a [String],
-    /// Number of attached reference images.
-    pub images: usize,
+    /// The attached reference images, by what each is for.
+    pub images: &'a [ImageUse],
     /// Earlier questions and answers in this conversation.
     pub history: &'a [(String, String)],
     /// The packages the document loads (for a figure), when known.
     pub packages: Option<&'a [String]>,
     /// What a figure becomes (LaTeX documents).
     pub figure: FigureFormat,
+    /// Openings of the author's own papers: the voice to write in.
+    pub voice: &'a [String],
 }
 
 /// The messages for a request, and the protector that restores the answer.
@@ -335,6 +349,20 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
             block(&mut user, "icon_style", &style);
         }
     }
+    // The author's own voice, for the tasks that write the author's text.
+    let voiced = matches!(
+        action,
+        Action::Polish | Action::Edit | Action::Mirror | Action::Write
+    ) && !req.voice.is_empty();
+    if voiced {
+        for (i, sample) in req.voice.iter().enumerate() {
+            user.push_str(&format!(
+                "<voice_sample n=\"{}\">\n{}\n</voice_sample>\n\n",
+                i + 1,
+                sample.trim()
+            ));
+        }
+    }
     for (i, sample) in req.references.iter().enumerate() {
         user.push_str(&format!(
             "<reference_text n=\"{}\">\n{}\n</reference_text>\n\n",
@@ -408,6 +436,9 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
     if !req.glossary.is_empty() {
         user.push_str(" Use the glossary renderings.");
     }
+    if voiced {
+        user.push_str(" The <voice_sample> blocks are from the author's own papers: write in the voice they show (sentence length and rhythm, how claims are made, the terms), as the rules on matching a voice say. Take their manner, never their content.");
+    }
     if !req.references.is_empty() && action == Action::Write {
         user.push_str(" The <reference_text> blocks are papers whose writing to imitate closely: how a paragraph opens and closes, how claims are set up and supported, sentence patterns and length, the level of terms. Take their manner, not their content: never copy their sentences, claims, numbers or citations.");
     } else if !req.references.is_empty() {
@@ -416,15 +447,9 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
     if icons {
         user.push_str(" Put icons of <icons> in by their id (the \"icon\" of a node, its own box) where one shows data, a model, an operation or a result, in space the layout already has, and label them with text nodes beside them. Leave out icons that show nothing. When no icon of <icons> shows a thing, draw one in \"svgs\" in the style of <icon_style>: the same canvas, stroke width, colours, corners and detail.");
     }
-    if req.images > 0
-        && action == Action::Figure
-        && req.mode == Mode::Latex
-        && req.figure == FigureFormat::Pptx
-    {
-        user.push_str(" The attached images show the figure to draw. Redraw it as the scene in native shapes: the same layout and proportions, boxes, arrows, colours and icons (from <icons>, or drawn in \"svgs\" where none fits). Keep the text of the image as it is when the instruction asks to copy or trace the figure; otherwise use the labels the instruction and the paper give, and never take numbers from the image unless the instruction says so.");
-    } else if req.images > 0 && action == Action::Figure {
-        user.push_str(" The attached images show the figure to imitate. Draw the same kind of chart or diagram with the same layout, colour scheme, marks, line styles, fonts and legend placement, in TikZ or pgfplots, with the data and labels the instruction and the paper give. Never take numbers or labels from the image unless the instruction says so.");
-    } else if req.images > 0 {
+    if !req.images.is_empty() && action == Action::Figure && req.mode == Mode::Latex {
+        user.push_str(&image_task(req.images, req.figure));
+    } else if !req.images.is_empty() {
         user.push_str(" The attached images are references the author chose: follow their layout and style where the task allows.");
     }
     if masked.contains('⟦') {
@@ -442,6 +467,12 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
         Mode::Markdown => user.push_str(" The text is Markdown: keep its markup."),
         Mode::Plain => {}
     }
+    // A traced draft is checked against the text: the notes name what changed.
+    let figure_notes = if traced(req) {
+        "at most five short lines in Chinese naming each correction made to the traced draft and its reason, or saying it needed none"
+    } else {
+        "at most three short lines in Chinese describing the figure"
+    };
     let format = match action {
         Action::Mirror => format!(
             "\n\nReply in exactly this form:\n<revision>\nthe revised text in {src}, ready to replace <target>\n</revision>\n<changes_zh>\nat most three short lines in Chinese on what changed\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
@@ -451,13 +482,13 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
         ),
         Action::Ask => "\n\nReply with the answer in <answer>…</answer>.".to_owned(),
         Action::Figure if req.mode == Mode::Latex && req.figure == FigureFormat::Pptx => format!(
-            "\n\nReply in exactly this form:\n<name>\na short file name of letters, digits and dashes\n</name>\n<scene>\n{SCENE_FORMAT}\n</scene>\n<caption>\nthe caption in {src}\n</caption>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\nat most three short lines in Chinese describing the figure\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
+            "\n\nReply in exactly this form:\n<name>\na short file name of letters, digits and dashes\n</name>\n<scene>\n{SCENE_FORMAT}\n</scene>\n<caption>\nthe caption in {src}\n</caption>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\n{figure_notes}\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
         ),
         Action::Figure if req.mode == Mode::Latex && req.figure == FigureFormat::Pdf => format!(
-            "\n\nReply in exactly this form:\n<name>\na short file name of letters, digits and dashes\n</name>\n<revision>\nthe picture alone, from \\begin{{tikzpicture}} to \\end{{tikzpicture}}\n</revision>\n<preamble>\nthe \\usepackage and \\usetikzlibrary lines it needs, one per line\n</preamble>\n<caption>\nthe caption in {src}\n</caption>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\nat most three short lines in Chinese describing the figure\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
+            "\n\nReply in exactly this form:\n<name>\na short file name of letters, digits and dashes\n</name>\n<revision>\nthe picture alone, from \\begin{{tikzpicture}} to \\end{{tikzpicture}}\n</revision>\n<preamble>\nthe \\usepackage and \\usetikzlibrary lines it needs, one per line\n</preamble>\n<caption>\nthe caption in {src}\n</caption>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\n{figure_notes}\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
         ),
         Action::Figure => format!(
-            "\n\nReply in exactly this form:\n<revision>\nthe source to insert\n</revision>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\nat most three short lines in Chinese describing the figure\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
+            "\n\nReply in exactly this form:\n<revision>\nthe source to insert\n</revision>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\n{figure_notes}\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
         ),
         Action::Write => format!(
             "\n\nReply in exactly this form:\n<revision>\nthe new text in {src}, paragraphs separated by a blank line\n</revision>\n<translation>\na faithful {other} translation, paragraph for paragraph, separated the same way\n</translation>\n<changes_zh>\nat most three short lines in Chinese on what the text says and which features of the references it follows\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
@@ -470,6 +501,81 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
         user,
         protector,
     }
+}
+
+/// A figure drawn from a draft image the author attached.
+fn traced(req: &Request) -> bool {
+    req.action == Action::Figure && req.mode == Mode::Latex && req.images.contains(&ImageUse::Trace)
+}
+
+/// The attached images numbered `numbers` (from 1) of `n`, as the subject
+/// of a sentence, and whether it is plural.
+fn images_named(numbers: &[usize], n: usize) -> (String, bool) {
+    match numbers {
+        _ if n == 1 => ("The attached image".to_owned(), false),
+        [one] => (format!("Attached image {one}"), false),
+        [rest @ .., last] => {
+            let rest: Vec<String> = rest.iter().map(ToString::to_string).collect();
+            (
+                format!("Attached images {} and {last}", rest.join(", ")),
+                true,
+            )
+        }
+        [] => (String::new(), false),
+    }
+}
+
+/// What a figure takes from the attached images: a draft of this figure is
+/// redrawn and corrected against the author's text, a figure of another
+/// paper gives its look alone.
+fn image_task(images: &[ImageUse], figure: FigureFormat) -> String {
+    let numbers = |kind: ImageUse| -> Vec<usize> {
+        images
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| **u == kind)
+            .map(|(k, _)| k + 1)
+            .collect()
+    };
+    let (drafts, looks) = (numbers(ImageUse::Trace), numbers(ImageUse::Style));
+    let mut out = String::new();
+    if !drafts.is_empty() {
+        let (subject, plural) = images_named(&drafts, images.len());
+        let (is, it, a) = if plural {
+            ("are", "them", "drafts")
+        } else {
+            ("is", "it", "a draft")
+        };
+        let redraw = match figure {
+            FigureFormat::Pptx => format!(
+                "Redraw {it} as the scene in native shapes with the same layout and proportions, boxes, arrows, colours and icons (from <icons>, or drawn in \"svgs\" where none fits), and write formulas as text with Unicode symbols, subscripts and superscripts (such as λ₁‖D₁z‖²)."
+            ),
+            FigureFormat::Pdf => format!(
+                "Redraw {it} in TikZ, or in pgfplots for a chart, with the same layout and proportions, shapes, arrows, colours and text, and formulas in LaTeX math."
+            ),
+            FigureFormat::Latex => format!(
+                "Redraw {it} in LaTeX (TikZ or pgfplots for a diagram or a chart, a tabular for a table) with the same layout and proportions, shapes, arrows, colours and text, and formulas in LaTeX math."
+            ),
+        };
+        out.push_str(&format!(
+            " {subject} {is} {a} of this figure from the author's own paper. {redraw} Keep what the draft shows, its parts and their order, the arrows and the text, and make the changes <instruction> asks for. Check every label, symbol, formula, number and step against the author's text given here, correct what disagrees with it or is wrong in itself (a misspelt word, a wrong index, a missing or extra step), and name each correction in the change notes. Where the text gives a number, use the text's."
+        ));
+    }
+    if !looks.is_empty() {
+        let (subject, plural) = images_named(&looks, images.len());
+        let (is, it, its) = if plural {
+            ("are", "them", "their")
+        } else {
+            ("is", "it", "its")
+        };
+        out.push_str(&format!(
+            " {subject} {is} from another paper and {is} attached for {its} look alone. Take {its} layout, shapes and corners, colour scheme, line weights, arrow styles, the marks, line styles and legend placement of a chart, type sizes and the use of icons. Draw what <instruction> asks for from the author's text, and take no text, numbers, formulas or content from {it}."
+        ));
+    }
+    if !drafts.is_empty() && !looks.is_empty() {
+        out.push_str(" The draft decides what the figure shows and where, and the other images decide how it looks.");
+    }
+    out
 }
 
 /// Which colours a figure in LaTeX may use: a class or style file may

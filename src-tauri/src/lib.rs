@@ -11,6 +11,7 @@ mod latex_commands;
 mod latex_sync;
 mod log_commands;
 mod logging;
+mod materials;
 mod pairing;
 mod project_copy;
 mod provider_state;
@@ -231,6 +232,14 @@ pub fn run() {
             assist_commands::assist_cancel,
             assist_commands::figure_pdf,
             assist_commands::figure_save,
+            materials::materials_get,
+            materials::materials_reveal,
+            materials::materials_list,
+            materials::materials_text,
+            materials::materials_image,
+            materials::materials_pdf,
+            materials::materials_pptx,
+            materials::attach_image_data,
             repair_commands::assist_fix,
             repair_commands::assist_check,
             repair_commands::assist_check_cancel,

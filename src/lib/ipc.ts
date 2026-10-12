@@ -40,6 +40,8 @@ import type {
   SessionView,
   SettingsView,
   SkillInfo,
+  MaterialEntry,
+  MaterialsView,
   Snapshot,
   SqueezeEvent,
   SqueezeView,
@@ -173,6 +175,18 @@ export const assistIpc = {
   chooseSkillFolder: () => invoke<SkillInfo | null>("choose_skill_folder"),
   resetSkillFolder: () => invoke<SkillInfo>("reset_skill_folder"),
   revealSkill: () => invoke<void>("reveal_skill"),
+  /** The author's own materials, in the folders of the skill's. */
+  materials: () => invoke<MaterialsView>("materials_get"),
+  /** The papers and figures of the materials, to take as references. */
+  listMaterials: () => invoke<MaterialEntry[]>("materials_list"),
+  materialText: (path: string) => invoke<ReferenceView>("materials_text", { path }),
+  materialImage: (path: string) => invoke<AttachmentView>("materials_image", { path }),
+  materialPdf: (path: string) => invoke<ArrayBuffer>("materials_pdf", { path }),
+  /** A PowerPoint figure as a PDF (LibreOffice converts it). */
+  materialPptx: (path: string) => invoke<ArrayBuffer>("materials_pptx", { path }),
+  /** A reference image drawn here (a PDF's first page), as a PNG in base64. */
+  attachImageData: (name: string, png: string) => invoke<AttachmentView>("attach_image_data", { name, png }),
+  revealMaterials: () => invoke<void>("materials_reveal"),
 };
 
 /** LaTeX: builds, the PDF, SyncTeX, project files and templates. Folders

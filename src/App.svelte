@@ -1263,6 +1263,7 @@
       instruction: o.instruction ?? assist.instruction.trim(),
       references: assist.samples.map((s) => s.text),
       images: assist.attachments.map((a) => a.id),
+      imageUses: assist.attachments.map((a) => a.use),
       history: o.history ?? [],
       figure: isLatex ? assist.figureFormat : "latex",
     };

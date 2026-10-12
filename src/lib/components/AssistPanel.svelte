@@ -1,8 +1,9 @@
 <script lang="ts">
   import { type AssistJob, type AssistStore, ACTION_LABEL, FIGURE_LABEL, PLACEHOLDER, SCOPE_LABEL } from "../assist.svelte";
   import { t } from "../i18n.svelte";
-  import { ipc } from "../ipc";
-  import type { AssistAction, AssistScope, FigureFormat } from "../types";
+  import { onMount } from "svelte";
+  import { assistIpc, errorMessage, ipc } from "../ipc";
+  import type { AssistAction, AssistScope, FigureFormat, ImageUse, MaterialEntry } from "../types";
   import AssistJobCard from "./AssistJobCard.svelte";
 
   interface Props {
@@ -84,6 +85,51 @@
   });
   const scopes: AssistScope[] = ["target", "neighbors", "document"];
   const formats: FigureFormat[] = ["latex", "pdf", "pptx"];
+  const USES: ImageUse[] = ["trace", "style"];
+
+  /** The papers and figures of the materials folder, read again whenever
+   * the window comes back (files may have been put in meanwhile). */
+  let materials = $state<MaterialEntry[] | null>(null);
+  let materialError = $state<string | null>(null);
+  async function loadMaterials(): Promise<void> {
+    try {
+      materials = await assistIpc.listMaterials();
+    } catch {
+      materials = [];
+    }
+  }
+  onMount(() => {
+    void loadMaterials();
+    const onFocus = () => void loadMaterials();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  });
+  /** The materials by folder: figures first for a figure, texts first otherwise. */
+  const materialGroups = $derived.by(() => {
+    const order =
+      store.action === "figure"
+        ? ["figures", "domain", "general", "writing-samples"]
+        : ["writing-samples", "domain", "general", "figures"];
+    return order
+      .map((name) => ({ name, items: (materials ?? []).filter((m) => m.folder === name) }))
+      .filter((g) => g.items.length > 0);
+  });
+  /** Not a path of the list: those start with a folder name. */
+  const OPEN_FOLDER = "#open";
+  async function pickMaterial(path: string): Promise<void> {
+    materialError = null;
+    if (path === OPEN_FOLDER) {
+      await assistIpc.revealMaterials().catch((err) => (materialError = errorMessage(err)));
+      return;
+    }
+    const entry = materials?.find((m) => m.path === path);
+    if (!entry) return;
+    try {
+      await store.addMaterial(entry);
+    } catch (err) {
+      materialError = errorMessage(err);
+    }
+  }
   const fixing = $derived(store.action === "fix");
   const needsInstruction = $derived(store.action !== "polish" && !fixing);
   const mirrorReady = $derived(
@@ -181,13 +227,37 @@
     </div>
 
     <div class="refs">
-      <div class="row">
+      <div class="row adds-row">
         <span class="label smallcaps">{t("assist.references")}</span>
         <span class="spacer"></span>
-        <button class="link" onclick={() => (addingSample = !addingSample)}>{t("assist.addText")}</button>
-        <button class="link" onclick={() => store.addFile()} title={t("assist.addFileTitle")}>{t("assist.addFile")}</button>
-        <button class="link" onclick={() => store.attach()}>{t("assist.addImage")}</button>
+        <span class="adds">
+          <button class="link" onclick={() => (addingSample = !addingSample)}>{t("assist.addText")}</button>
+          <button class="link" onclick={() => store.addFile()} title={t("assist.addFileTitle")}>{t("assist.addFile")}</button>
+          <button class="link" onclick={() => store.attach()}>{t("assist.addImage")}</button>
+          <span class="pick-wrap">
+            <span class="link" aria-hidden="true">{t("assist.addMaterial")}</span>
+            <select
+              class="pick"
+              aria-label={t("assist.addMaterial")}
+              onchange={(e) => {
+                const path = e.currentTarget.value;
+                e.currentTarget.value = "";
+                void pickMaterial(path);
+              }}
+            >
+              <option value="" disabled selected hidden>{t("assist.addMaterial")}</option>
+              {#each materialGroups as g (g.name)}
+                <optgroup label={`${g.name}/`}>
+                  {#each g.items as m (m.path)}<option value={m.path}>{m.path.slice(g.name.length + 1)}</option>{/each}
+                </optgroup>
+              {/each}
+              {#if materials && materialGroups.length === 0}<option value="" disabled>{t("assist.materialsEmpty")}</option>{/if}
+              <option value={OPEN_FOLDER}>{t("assist.materialsOpen")}</option>
+            </select>
+          </span>
+        </span>
       </div>
+      {#if materialError}<p class="material-error">{materialError}</p>{/if}
       {#if addingSample}
         <textarea class="textarea" rows="3" bind:value={sampleDraft} placeholder={t("assist.samplePlaceholder")}
         ></textarea>
@@ -215,6 +285,18 @@
             <li>
               <img src={a.dataUrl} alt={a.name} />
               <span class="chip-text">{a.name}</span>
+              {#if store.action === "figure" && latex}
+                <span class="use" role="group">
+                  {#each USES as u (u)}
+                    <button
+                      class:on={a.use === u}
+                      aria-pressed={a.use === u}
+                      title={t(`assist.image.${u}Title`)}
+                      onclick={() => store.setImageUse(a.id, u)}>{t(`assist.image.${u}`)}</button
+                    >
+                  {/each}
+                </span>
+              {/if}
               <button class="x" aria-label={t("common.remove")} onclick={() => store.detach(a.id)}>✕</button>
             </li>
           {/each}
@@ -364,6 +446,18 @@
     display: grid;
     gap: 6px;
   }
+  /* The links stay together: in a narrow dock they go under the label. */
+  .adds-row {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+  .adds {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    white-space: nowrap;
+  }
   .link {
     border: 0;
     background: transparent;
@@ -372,6 +466,25 @@
     font-size: 13px;
     cursor: pointer;
     padding: 0 2px;
+  }
+  /* The menu of materials opens from its label: the select lies over it,
+     transparent. */
+  .pick-wrap {
+    position: relative;
+    display: inline-block;
+  }
+  .pick {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    opacity: 0;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .material-error {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--error);
   }
   .chips {
     list-style: none;
@@ -403,6 +516,27 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 260px;
+  }
+  .use {
+    display: inline-flex;
+    flex: none;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .use button {
+    border: 0;
+    background: transparent;
+    padding: 0 5px;
+    font-size: 11.5px;
+    line-height: 18px;
+    color: var(--muted);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .use button.on {
+    background: var(--ink);
+    color: var(--paper);
   }
   .chip-text .file {
     font-family: var(--font-mono);
