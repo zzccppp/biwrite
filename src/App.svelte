@@ -1656,17 +1656,19 @@
       const whole = editor.doc.toString();
       const changes = [{ from, to, insert }];
       // The lines the answer needs go before \begin{document}, when it is
-      // here (those a Revert left there are loaded already).
+      // here: those a Revert left there are loaded already, and after Smart
+      // apply the lines as checked (left out there already).
       let shift = 0;
-      let packages: { from: number; to: number; text: string } | null = null;
       const at = preambleAt(whole, from);
-      const needed = checked ? checked.preamble : figureLines(job);
-      const lines = at === null ? needed : newPreambleLines(whole.slice(0, at), needed);
+      const lines = checked
+        ? checked.preamble
+        : at === null
+          ? figureLines(job)
+          : newPreambleLines(whole.slice(0, at), figureLines(job));
       if (lines) {
         if (at !== null) {
           changes.unshift({ from: at, to: at, insert: lines });
           shift = lines.length;
-          packages = { from: at, to: at + lines.length, text: lines };
         } else {
           session.flash(t("assist.packagesNotAdded", { packages: lines.trim().split("\n").join(" ") }));
         }
@@ -1681,7 +1683,7 @@
       // card selects that text, and a follow-up asks about it.
       job.from = from + shift;
       job.to = from + shift + insert.length;
-      job.applied = { text: insert, packages };
+      job.applied = { text: insert };
       job.state = "applied";
       editor.focus();
       void flush();
@@ -1721,7 +1723,8 @@
         trail: place.trail,
         revision: job.target.insert ? revision.trim() : revision,
         preambleAt: preambleAt(whole, place.from),
-        preamble: figureLines(job),
+        // As they will be applied: none the preamble has already.
+        preamble: newPreambleLines(whole.slice(0, preambleAt(whole, place.from) ?? 0), figureLines(job)),
       });
     } catch (err) {
       job.checking = null;
@@ -1777,7 +1780,7 @@
     });
     job.from = hunks[0].from;
     job.to = hunks[0].to;
-    job.applied = { text: "", packages: null, hunks };
+    job.applied = { text: "", hunks };
     job.state = "applied";
     editor.focus();
     void flush();
@@ -1862,7 +1865,13 @@
     void runAssist({
       action: job.action,
       scope: job.scope,
-      at: () => (job.target.insert ? { from: job.from, to: job.from } : askedPlace(job)),
+      // A fix is about the whole document, not a place in it.
+      at: () =>
+        job.action === "fix"
+          ? { from: job.from, to: job.to }
+          : job.target.insert
+            ? { from: job.from, to: job.from }
+            : askedPlace(job),
       instruction: job.instruction,
       history: job.history,
     }).then((started) => replaced(job, started));

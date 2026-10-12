@@ -168,3 +168,9 @@ test("assist: lines for the preamble that it has already are not added again", (
   assert.equal(newPreambleLines(preamble, "\\usepackage{booktabs}\n"), "");
   assert.equal(newPreambleLines("", "\\usepackage[table]{xcolor}\n"), "\\usepackage[table]{xcolor}\n");
 });
+
+test("assist: only package and library lines are left out, never part of a block", () => {
+  const preamble = "\\documentclass{article}\n\\hypersetup{\n  colorlinks=true,\n}\n";
+  const block = "\\tikzset{\n  box/.style={draw},\n}\n";
+  assert.equal(newPreambleLines(preamble, block), block);
+});

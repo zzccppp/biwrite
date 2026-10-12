@@ -572,20 +572,29 @@ fn stage_bibliographies(p: &Project, folder: &str, texts: &[&str]) {
     }
 }
 
+/// The text of a file as edited now (see [`text_now`]).
+struct Now {
+    text: String,
+    /// A paired file's links (segment of the document → unit of `text`).
+    links: Option<HashMap<SegmentId, usize>>,
+    /// Paragraphs in it still in the other language.
+    untranslated: usize,
+}
+
 /// What the file of `lang` holds as edited now, as a save would write it:
 /// the editor's text when it is in that language; else the paired file
 /// with the current translations (paragraphs still being translated as
 /// they are) and its links, or `None` when they would not fit its
 /// structure; else, without a pair, the document composed from the
-/// translations.
-fn text_now(
-    state: &AppState,
-    lang: Lang,
-    direction: Direction,
-    text: &str,
-) -> Option<(String, Option<HashMap<SegmentId, usize>>)> {
+/// translations. With the number of paragraphs in it still in the other
+/// language (their translations not there yet).
+fn text_now(state: &AppState, lang: Lang, direction: Direction, text: &str) -> Option<Now> {
     if lang == source_lang(direction) {
-        return Some((text.to_owned(), None));
+        return Some(Now {
+            text: text.to_owned(),
+            links: None,
+            untranslated: 0,
+        });
     }
     // Paragraphs waiting out the translation delay go now.
     state.engine.translate_held();
@@ -593,12 +602,24 @@ fn text_now(
         let fs = state.file();
         if let Some(pair) = fs.pair.as_ref() {
             return match crate::pairing::patched(state, pair, None, true) {
-                crate::pairing::Patched::Ready { text, links, .. } => Some((text, Some(links))),
+                // Kept as they are, and stand-ins: in the other language.
+                crate::pairing::Patched::Ready {
+                    text, links, kept, ..
+                } => Some(Now {
+                    text,
+                    links: Some(links),
+                    untranslated: kept.len() + state.engine.standins().len(),
+                }),
                 _ => None,
             };
         }
     }
-    Some((state.engine.compose_mirror().text, None))
+    let mirror = state.engine.compose_mirror();
+    Some(Now {
+        text: mirror.text,
+        links: None,
+        untranslated: mirror.untranslated,
+    })
 }
 
 /// Build the PDF of the file's own language (as edited) or of the other
@@ -646,16 +667,28 @@ pub async fn latex_compile(
     let (job, doc_file, basis, source) = match lang {
         _ if paired || lang == file_lang => {
             let now = text_now(&state, lang, direction, &text);
-            let unsaved = now.as_ref().is_none_or(|(now, _)| *now != p.saved);
+            // What TeX reads of the file as saved: as it is on disk now,
+            // changed elsewhere perhaps since the app read or wrote it.
+            let disk = as_on_disk(&p.path, &p.saved);
+            let unsaved = now.as_ref().is_none_or(|now| now.text != disk);
             let staged = match &now {
-                Some((now, _)) if unsaved => {
-                    stage(&state, &p, copies_dir(lang), now, str::to_owned)?
+                Some(now) if unsaved => {
+                    stage(&state, &p, copies_dir(lang), &now.text, str::to_owned)?
                 }
                 _ => None,
             };
             unsaved_left_out = unsaved && staged.is_none();
             match (staged, now) {
-                (Some((root, copy)), Some((now, links))) => {
+                (
+                    Some((root, copy)),
+                    Some(Now {
+                        text: now,
+                        links,
+                        untranslated: left,
+                    }),
+                ) => {
+                    // Paragraphs still in the other language are noted.
+                    untranslated = left;
                     // A changed `% !TEX program` counts as it is now.
                     let root_text = if doc_is_root { &now } else { &p.root_text };
                     let engine = latex::project_engine(&p.root, root_text);
@@ -693,10 +726,7 @@ pub async fn latex_compile(
                     },
                     p.path.clone(),
                     Basis {
-                        // What TeX reads: the file as it is on disk now,
-                        // changed elsewhere perhaps since the app read or
-                        // wrote it.
-                        compiled: as_on_disk(&p.path, &p.saved),
+                        compiled: disk,
                         editor: text,
                         same_language,
                         mode: Mode::Latex,

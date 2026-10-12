@@ -126,13 +126,12 @@ export class AssistJob {
   restarting = $state(false);
   /** Kept for later: the card folds, and can still be accepted. */
   kept = $state(false);
-  /** What applying put in (the target covers it from then on), the lines
-   * it added to the preamble (Revert leaves them), and for a fix the lines
-   * it changed with what they were, for Revert (kept in step with later
-   * edits like the target). */
+  /** What applying put in (the target covers it from then on), and for a
+   * fix the lines it changed with what they were, for Revert (kept in step
+   * with later edits like the target). The lines it added before
+   * \begin{document} are not kept: Revert leaves them. */
   applied = $state<{
     text: string;
-    packages: { from: number; to: number; text: string } | null;
     hunks?: { from: number; to: number; text: string; old: string }[];
   } | null>(null);
   /** Revert found that text edited since: the card shows the text from before. */
@@ -184,11 +183,6 @@ function mapTarget(job: AssistJob, changes: ChangeSet): void {
   if (changes.touchesRange(job.from, job.to)) job.touched = true;
   ({ from: job.from, to: job.to } =
     job.target.insert && job.applied ? insertAfter(job, job.applied.text, changes) : mapPlace(job, changes));
-  const packages = job.applied?.packages;
-  if (packages) {
-    packages.from = changes.mapPos(packages.from, 1);
-    packages.to = Math.max(packages.from, changes.mapPos(packages.to, -1));
-  }
   for (const h of job.applied?.hunks ?? []) {
     h.from = changes.mapPos(h.from, 1);
     h.to = Math.max(h.from, changes.mapPos(h.to, -1));

@@ -114,8 +114,10 @@ export function notLoaded(preamble: string, wanted: string[]): string[] {
 }
 
 /** The lines of `lines` (to go before \begin{document}) that `preamble`
- * lacks: a \usepackage keeps only the packages not loaded, another line goes
- * unless the preamble has it already (as a Revert leaves them). */
+ * lacks: a \usepackage keeps only the packages not loaded, and a
+ * \usetikzlibrary goes unless the preamble has the same line (as a Revert
+ * leaves them). Any other line stays: one of several lines (a \tikzset
+ * block, say) can match a line of the preamble and still be needed. */
 export function newPreambleLines(preamble: string, lines: string): string {
   const code = (line: string) => line.replace(/(?<!\\)(?:\\\\)*%.*$/, "").trim();
   const have = new Set(preamble.split("\n").map(code).filter(Boolean));
@@ -127,7 +129,7 @@ export function newPreambleLines(preamble: string, lines: string): string {
     if (use) {
       const wanted = notLoaded(preamble, use[2].split(",").map((p) => p.trim()).filter(Boolean));
       if (wanted.length > 0) out.push(`\\usepackage${use[1] ?? ""}{${wanted.join(",")}}`);
-    } else if (!have.has(c)) {
+    } else if (!(/^\\usetikzlibrary\s*\{/.test(c) && have.has(c))) {
       out.push(line);
     }
   }

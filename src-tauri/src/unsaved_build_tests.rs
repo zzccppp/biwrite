@@ -370,3 +370,70 @@ async fn a_bibliography_beside_the_project_folder_is_found_by_an_unsaved_build()
     assert_eq!(after, before, "nothing outside .biwrite changed");
     std::fs::remove_dir_all(&top).unwrap();
 }
+
+/// The editor as saved, but the file changed elsewhere since (the change
+/// ignored): the PDF shows what the editor shows, built from a copy, not
+/// the other version on disk.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_file_changed_elsewhere_is_built_as_the_editor_shows_it() {
+    let dir = temp("elsewhere");
+    let path = dir.join("main.tex");
+    std::fs::write(&path, MAIN).unwrap();
+    let app = tauri::test::mock_app();
+    app.manage(app_state(&dir));
+    let state = app.state::<AppState>();
+    open(&state, &path);
+    settle(&state).await;
+    let theirs = MAIN.replace("twelve datasets", "ELSEWHERE datasets");
+    std::fs::write(&path, &theirs).unwrap();
+    let view = latex_compile(
+        state.clone(),
+        Lang::En,
+        MAIN.to_owned(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    assert!(view.has_pdf, "{}", view.output);
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".biwrite/en/main.tex")).unwrap(),
+        MAIN
+    );
+    assert!(
+        pdf_of(&state, Lang::En)
+            .unwrap()
+            .starts_with(dir.join(".biwrite/en"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        theirs,
+        "left alone"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A pair's paragraph not translated yet goes into the Chinese build as it
+/// is, and the build says so.
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_pairs_paragraph_not_translated_yet_is_counted_in_its_build() {
+    let dir = temp("pair-pending");
+    let (en, zh) = (dir.join("paper.tex"), dir.join("paper_zh.tex"));
+    std::fs::write(&en, MAIN).unwrap();
+    std::fs::write(&zh, ZH).unwrap();
+    let app = tauri::test::mock_app();
+    app.manage(app_state(&dir));
+    let state = app.state::<AppState>();
+    open(&state, &en);
+    settle(&state).await;
+    state.engine.set_auto_translate(false);
+    let edited = MAIN.replace("twelve datasets", "fourteen datasets");
+    state.engine.update(edited.clone());
+    let view = latex_compile(state.clone(), Lang::Zh, edited, state.engine.document())
+        .await
+        .unwrap();
+    assert!(view.has_pdf, "{}", view.output);
+    assert_eq!(view.untranslated, 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
