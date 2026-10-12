@@ -92,6 +92,11 @@ pub enum Effort {
     Low,
     Medium,
     High,
+    /// Above high, for models that take it (a relay's GPT, say).
+    #[serde(rename = "xhigh")]
+    XHigh,
+    /// The most a model takes.
+    Max,
     /// Don't send the parameter.
     Default,
 }
@@ -102,6 +107,8 @@ impl Effort {
             Self::Low => Some("low"),
             Self::Medium => Some("medium"),
             Self::High => Some("high"),
+            Self::XHigh => Some("xhigh"),
+            Self::Max => Some("max"),
             Self::Default => None,
         }
     }
@@ -412,5 +419,17 @@ mod tests {
         assert_eq!(p.model, "gpt-6-astra");
         assert_eq!(p.effort, Effort::High);
         assert_eq!(p.service_tier, Some(ServiceTier::Priority));
+    }
+
+    #[test]
+    fn efforts_above_high_are_sent_by_name() {
+        assert_eq!(Effort::XHigh.as_param(), Some("xhigh"));
+        assert_eq!(Effort::Max.as_param(), Some("max"));
+        assert_eq!(Effort::Default.as_param(), None);
+        let read: Effort = serde_json::from_str("\"xhigh\"").unwrap();
+        assert_eq!(read, Effort::XHigh);
+        assert_eq!(serde_json::to_string(&Effort::Max).unwrap(), "\"max\"");
+        // The relay preset stays at high.
+        assert_eq!(ANYROUTER.effort, Effort::High);
     }
 }

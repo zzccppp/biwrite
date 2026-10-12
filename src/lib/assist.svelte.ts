@@ -389,6 +389,12 @@ export class AssistStore {
     void assistIpc.cancel(job.id);
   }
 
+  /** Stop checking which lines a revert left before \begin{document} can
+   * go: they stay, as a plain revert leaves them (the answer is ignored). */
+  stopTidy(job: AssistJob): void {
+    if (job.tidy?.checking) job.tidy = null;
+  }
+
   /** Stop checking a job's answer. */
   cancelCheck(job: AssistJob): void {
     job.checking = null;

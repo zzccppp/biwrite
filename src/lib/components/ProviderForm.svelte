@@ -160,6 +160,8 @@
     { value: "low", label: "provider.effort.low" },
     { value: "medium", label: "provider.effort.medium" },
     { value: "high", label: "provider.effort.high" },
+    { value: "xhigh", label: "provider.effort.xhigh" },
+    { value: "max", label: "provider.effort.max" },
     { value: "default", label: "provider.effort.default" },
   ];
 

@@ -20,6 +20,7 @@ mod keys;
 mod models;
 mod observe;
 mod openai;
+mod probe;
 mod provider;
 mod responses;
 mod squeeze;
@@ -46,7 +47,7 @@ pub use observe::{
 pub use prompt::{DefaultPrompts, PromptFiles, PromptSource};
 pub use provider::{HttpProvider, KEEP_ALIVE, TRANSLATE};
 pub use squeeze::{
-    CROWDED_AFTER, ChangeFn, DROP_AFTER, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress, PROBE_TEXT,
+    CROWDED_AFTER, ChangeFn, DROP_AFTER, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress,
     STALE_AFTER, Squeeze, SqueezeBoard, SqueezeChange, ThroughView, ping,
 };
 

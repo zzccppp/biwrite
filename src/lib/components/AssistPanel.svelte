@@ -320,6 +320,7 @@
         held={store.adopting}
         {onaccept}
         oncancelcheck={(j) => store.cancelCheck(j)}
+        onstoptidy={(j) => store.stopTidy(j)}
         {onrevert}
         ondiscard={(j) => store.discard(j)}
         onremove={(j) => store.remove(j)}

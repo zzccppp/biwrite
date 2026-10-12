@@ -135,7 +135,7 @@ LaTeX 功能需要 TeX 发行版：macOS 用 MacTeX，Windows 和 Linux 用 TeX 
 * **按译文改**在输入框中预填这一段的中文。改写中文后运行，英文以最小改动修订为相同的意思。每个已翻译段落上的铅笔按钮可以直接进入这个操作。
 * 「上下文」可选只发送目标段落、含前后段或整篇论文。「参照样例」可以添加文字、文件（`.tex`、`.md`、`.txt`）、图片，或者用「+ 素材」从[素材文件夹](#我的素材)中选论文和图。
 
-每个任务都在后台运行。结果以差异显示改动，附修订稿的中文和中英文两份改动说明。「采纳」把结果写入文字当前所在的位置，即使你在等待期间继续输入。LaTeX 论文中采纳会先让模型把结果改成适合这篇文档的样子（改用文档已有的宏包和颜色，补上需要的导言区行），再放进文档编译一次，如果带来新的错误（缺宏包、缺 TikZ 库、模板颜色等），先让模型修好再写入，修不好或模型、编译不可用时按原样写入。如果目标文字本身在等待期间被改过，「让模型重新套用」会把修订套用到当前文本上。「还原」撤回已采纳的结果。还原插入的图表时，导言区补加的行由模型判断是否还有用，模型选出的行删掉后先编译一次，没有新的错误才真正删除。模型无法连接时只撤掉正文，导言区不动。一张卡片在采纳或还原时，其他卡片要等它结束。「设置」中的「采纳和还原由模型辅助」默认勾选，不勾时采纳直接写入，还原只撤掉正文。
+每个任务都在后台运行。结果以差异显示改动，附修订稿的中文和中英文两份改动说明。「采纳」把结果写入文字当前所在的位置，即使你在等待期间继续输入。LaTeX 论文中采纳会先让模型把结果改成适合这篇文档的样子（改用文档已有的宏包和颜色，补上需要的导言区行），再放进文档编译一次，如果带来新的错误（缺宏包、缺 TikZ 库、模板颜色等），先让模型修好再写入，修不好或模型、编译不可用时按原样写入。如果目标文字本身在等待期间被改过，「让模型重新套用」会把修订套用到当前文本上。「还原」撤回已采纳的结果。还原插入的图表时，导言区补加的行由模型判断是否还有用，模型选出的行删掉后先编译一次，没有新的错误才真正删除。模型无法连接时只撤掉正文，导言区不动。一张卡片在采纳或还原时，其他卡片要等它结束，编辑器也暂不接受输入。「设置」中的「采纳和还原由模型辅助」默认勾选，不勾时采纳直接写入，还原只撤掉正文。
 
 规则来自 [research-builder](https://github.com/qzkinhit/research-builder)，每项操作使用 skill 中对应的部分：润色和修改用去 AI 腔规则与写作手册，仿写还用论文骨架和讲故事的套路，图表用图表风格，PPT 图用 `paper-figure-pptx` 的插图规则与图标库。BiWrite 自带一份 skill，「设置」中的「写作技能」可以从 GitHub 更新，也可以换成你自己的 skill 文件夹。
 
@@ -468,7 +468,8 @@ current text. *Revert* takes an applied result back. Reverting an inserted
 figure also takes out the lines it added before `\begin{document}` that the
 model judges no longer needed, once a build without them brings no new
 error. When the model cannot be reached, only the figure goes. While one
-card is accepted or reverted, the others wait for it. *Accept and Revert
+card is accepted or reverted, the others wait for it and the editor takes
+no typing. *Accept and Revert
 with the model's help*, in Settings, is on by default. Off, Accept applies
 the result at once and Revert takes out only the text.
 

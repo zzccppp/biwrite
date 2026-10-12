@@ -16,6 +16,8 @@
     onaccept: (job: AssistJob) => void;
     /** Stop that build. */
     oncancelcheck: (job: AssistJob) => void;
+    /** Stop the check of the lines a revert left before \begin{document}. */
+    onstoptidy: (job: AssistJob) => void;
     /** Undo an applied job's change, wherever later edits put it. */
     onrevert: (job: AssistJob) => void;
     ondiscard: (job: AssistJob) => void;
@@ -35,6 +37,7 @@
     held,
     onaccept,
     oncancelcheck,
+    onstoptidy,
     onrevert,
     ondiscard,
     onremove,
@@ -216,6 +219,7 @@
       <div class="streaming tidy">
         <span class="spinner" aria-hidden="true"></span>
         <span class="label">{t("assist.tidy.checking")}</span>
+        <button class="btn small" onclick={() => onstoptidy(job)}>{t("assist.stop")}</button>
       </div>
     {:else if job.tidy?.failed}
       <p class="note tidy">{t("assist.tidy.failed", { lines: lineList(job.tidy.kept) })}</p>

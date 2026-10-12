@@ -242,6 +242,18 @@
   let loadingDisk = false;
   /** Files are being loaded from disk: saving and swapping wait. */
   let reloading = false;
+
+  /** The editor takes typing unless the files are being read again, the
+   * panes swapped, or a card accepted or reverted (its edit is worked out
+   * from the text as it is, so typing meanwhile waits for it). */
+  function relock(): void {
+    editor?.setEditable(!reloading && !swapping && !assist.adopting);
+  }
+  $effect(() => {
+    // Reactive on the cards' state: locked while one is accepted or reverted.
+    void assist.adopting;
+    relock();
+  });
   /** An open file changed on disk elsewhere: `changed` asks whether to load
    * the versions there (`which`); `save`, the document's save was refused
    * over such a change; `mirror`, the paired file's write was. */
@@ -703,7 +715,7 @@
       fail(err);
     } finally {
       reloading = false;
-      editor?.setEditable(true);
+      relock();
       editor?.focus();
     }
   }
@@ -924,7 +936,7 @@
       setTimeout(() => void checkDisk(), 0);
     } finally {
       swapping = false;
-      editor?.setEditable(true);
+      relock();
       releaseHeldFills();
     }
   }
@@ -980,7 +992,7 @@
       fail(err);
     } finally {
       swapping = false;
-      editor?.setEditable(true);
+      relock();
       releaseHeldFills();
     }
   }
@@ -1937,6 +1949,8 @@
     // (Accepted again meanwhile, even while that is being checked, it is not.)
     const current = () =>
       tidyRuns.get(job) === run &&
+      // Not stopped from the card.
+      !!job.tidy?.checking &&
       job.state === "done" &&
       !job.checking &&
       !job.applying &&
@@ -1945,31 +1959,41 @@
     const allKept = () => {
       if (current()) job.tidy = { checking: false, removed: [], kept: [lines.trim()], failed: true };
     };
-    for (let tries = 1; tries <= TIDY_TRIES; tries++) {
-      if (!editor || !current()) return;
-      const text = editor.doc.toString();
-      let result: Tidied;
-      try {
-        result = await assistIpc.tidy(text, lines);
-      } catch {
-        // The model could not decide (after its own retries): a plain revert.
-        break;
-      }
-      if (!editor || !current()) return;
-      // Written into while it ran: checked again on the text as it is.
-      if (swapping || editor.doc.toString() !== text) continue;
-      const places = result.remove
-        .map((s) => preamblePlace(text, s))
-        .filter((p): p is { from: number; to: number } => p !== null)
-        .sort((a, b) => a.from - b.from);
-      if (places.length > 0) {
-        editor.view.dispatch({ changes: places, userEvent: "input.assist" });
-        void flush();
-      }
-      job.tidy = { checking: false, removed: result.remove, kept: result.kept, failed: false };
-      return;
+    try {
+      await tidyLoop();
+    } finally {
+      // Every way out ends the check (typing waits while it runs), unless a
+      // later revert of the card owns it.
+      if (tidyRuns.get(job) === run && job.tidy?.checking) job.tidy = null;
     }
-    allKept();
+
+    async function tidyLoop(): Promise<void> {
+      for (let tries = 1; tries <= TIDY_TRIES; tries++) {
+        if (!editor || !current()) return;
+        const text = editor.doc.toString();
+        let result: Tidied;
+        try {
+          result = await assistIpc.tidy(text, lines);
+        } catch {
+          // The model could not decide (after its own retries): a plain revert.
+          break;
+        }
+        if (!editor || !current()) return;
+        // Written into while it ran: checked again on the text as it is.
+        if (swapping || editor.doc.toString() !== text) continue;
+        const places = result.remove
+          .map((s) => preamblePlace(text, s))
+          .filter((p): p is { from: number; to: number } => p !== null)
+          .sort((a, b) => a.from - b.from);
+        if (places.length > 0) {
+          editor.view.dispatch({ changes: places, userEvent: "input.assist" });
+          void flush();
+        }
+        job.tidy = { checking: false, removed: result.remove, kept: result.kept, failed: false };
+        return;
+      }
+      allKept();
+    }
   }
 
   /** Once a job's rerun started: the old card goes, unless it was applied meanwhile. */

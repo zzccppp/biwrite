@@ -968,6 +968,8 @@ export const messages = {
   "provider.effort.low": { en: "Low (fast)", zh: "低（快）" },
   "provider.effort.medium": { en: "Medium", zh: "中" },
   "provider.effort.high": { en: "High", zh: "高" },
+  "provider.effort.xhigh": { en: "Extra high", zh: "超高" },
+  "provider.effort.max": { en: "Max", zh: "最高" },
   "provider.effort.default": { en: "Model default", zh: "模型默认" },
   "provider.tier": { en: "Service tier", zh: "服务等级" },
   "provider.tier.none": { en: "Not sent", zh: "不发送" },

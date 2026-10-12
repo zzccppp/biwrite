@@ -339,11 +339,12 @@ impl HttpProvider {
         })
     }
 
-    /// Translate `req` to keep a key's place: as [`Self::translate_one`],
-    /// reported as [`KEEP_ALIVE`] rather than a translation.
-    pub(crate) async fn keep_alive(&self, req: &TranslationRequest) -> Result<(), TranslateError> {
-        let messages = prompt::build(req, self.core.prompts.system_prompt(req.direction));
-        self.exchange(KEEP_ALIVE, &messages.system, &messages.user, &[], &|_| {})
+    /// Send one short translation, its words, wording and system prompt
+    /// drawn anew (see `crate::probe`), to keep a key's place or to try it.
+    /// Reported as `purpose`.
+    pub(crate) async fn probe(&self, purpose: &str) -> Result<(), TranslateError> {
+        let (system, user) = crate::probe::prompt();
+        self.exchange(purpose, &system, &user, &[], &|_| {})
             .await
             .map(|_| ())
     }

@@ -143,7 +143,7 @@ export const MODE_LABELS: Record<Mode, string> = {
 // ── Settings ─────────────────────────────────────────────────────────
 
 export type ProviderKind = "openai_compatible" | "anthropic" | "mock";
-export type Effort = "low" | "medium" | "high" | "default";
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "default";
 /** Endpoint of an OpenAI-compatible provider (absent means "chat"). */
 export type WireApi = "chat" | "responses";
 export type ServiceTier = "priority" | "flex" | "default";

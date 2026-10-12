@@ -1,0 +1,86 @@
+(X,Y)
+(n=1)
+(q,n)\le(p,n)
+(u^+,u^-,\nu_u)
+(v_iv_j)
+(x',y)
+(x,y)
+1 - k^{-e}
+A\subset\Omega
+A_\nu
+A_l
+A_l ^{(\lambda)}
+A_{q,n}=A_{p,n}
+B(X)
+BH(z)
+C_i
+C_{i(j)}
+D_\nu
+H_c
+K>0
+K_n
+K_{n_1\dots n_p}
+K_{n_1n_2n_3}
+K_{n_1n_2}
+Q_{X}
+S(X,Y)
+S_u
+T^u_x
+W^{B(X)}
+\Lambda_{X}
+\Omega
+\Phi_ 0
+\Phi_ 0(z)
+\Phi_0(z)
+\Psi^2_1
+\alpha
+\beta
+\lambda=0
+\lambda_i
+\lambda_i=0
+\lambda_i=1
+\mathbf{B}
+\mathbf{K}
+\mathbf{M}
+\mathbf{R}
+\mathbf{R}^n
+\mathcal{H}_{n-1}
+\nu
+\omega
+\omega (t)\to 0
+\phi
+\pi
+\pi_\nu
+\prod
+\psi_0(z)
+\sum
+u(x)
+\varepsilon >0
+\{0,01,01\}
+\{0,1\}
+a_{ij}=a_{ji}
+b_l
+e > 0
+f = \{f_k\}
+f(0)=0
+f^{-1}(y)
+h(r)=0
+h(r)\geq 0
+h(r)\geq c_3
+i,j=1,\dots,n
+i-1
+i=0
+i=1,\dots,n
+i\ne j
+k=1
+n=1
+n>1
+n\times n
+q\le p
+r-j
+r>1-2a
+s>t
+u'(t)=u(-t)
+v^{k}
+v_h=f(u_h)
+S_u

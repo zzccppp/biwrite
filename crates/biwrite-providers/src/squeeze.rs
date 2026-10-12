@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use biwrite_engine::{TranslateError, TranslationRequest, Translator};
+use biwrite_engine::TranslateError;
 use serde::Serialize;
 use tokio::sync::watch;
 
@@ -60,8 +60,6 @@ const UNATTENDED_GAP_MAX: Duration = Duration::from_secs(60);
 const ATTENDED_WITHIN: Duration = Duration::from_secs(2 * 60);
 /// Longest wait for one try, and for a rate limit between tries.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
-/// What a try translates.
-pub const PROBE_TEXT: &str = "Good morning.";
 
 #[derive(Clone, Debug)]
 struct Through {
@@ -345,17 +343,13 @@ pub async fn ping(
     observer: Arc<dyn RequestObserver>,
 ) -> Result<(), TranslateError> {
     let provider = HttpProvider::new(
-        config.clone(),
+        crate::probe::config(config),
         Arc::new(move || Ok(vec![key.clone()])),
         prompts,
         observer,
     )?;
     provider.join_board_quietly(board);
-    let request = TranslationRequest {
-        source: PROBE_TEXT.to_owned(),
-        ..Default::default()
-    };
-    match tokio::time::timeout(PROBE_TIMEOUT, provider.keep_alive(&request)).await {
+    match tokio::time::timeout(PROBE_TIMEOUT, provider.probe(crate::provider::KEEP_ALIVE)).await {
         Ok(result) => result,
         Err(_) => Err(TranslateError::Network(format!(
             "no answer within {} seconds",
@@ -409,7 +403,7 @@ impl Squeeze {
         for key in &keys {
             let key = key.clone();
             let provider = HttpProvider::new(
-                config.clone(),
+                crate::probe::config(config),
                 Arc::new(move || Ok(vec![key.clone()])),
                 Arc::clone(&prompts),
                 Arc::new(NoObserver),
@@ -516,10 +510,6 @@ impl Squeeze {
         on_change: &ChangeFn,
     ) {
         let fingerprint = self.lock()[index].fingerprint.clone();
-        let request = TranslationRequest {
-            source: PROBE_TEXT.to_owned(),
-            ..Default::default()
-        };
         let mut stop = self.stop.subscribe();
         // Tries turned away in a row.
         let mut misses: u32 = 0;
@@ -540,10 +530,9 @@ impl Squeeze {
             }
             let was_through = board.is_through(&fingerprint);
             self.lock()[index].trying = true;
-            let attempt = tokio::time::timeout(
-                PROBE_TIMEOUT,
-                Translator::translate(&provider, &request, &|_| {}),
-            );
+            // Each try asks for other words (see `crate::probe`).
+            let attempt =
+                tokio::time::timeout(PROBE_TIMEOUT, provider.probe(crate::provider::TRANSLATE));
             let result = tokio::select! {
                 r = attempt => r,
                 _ = stop.changed() => {
