@@ -25,13 +25,16 @@ import type {
 type Args = Record<string, unknown>;
 
 /** Six relay accounts with made-up key tails (never real key material). */
+const DAY = 24 * 60 * 60 * 1000;
+/** Key 6 never got through (?never). */
+const NEVER = new URLSearchParams(window.location.search).has("never");
 const POOL: (Omit<KeyEntry, "name">)[] = [
-  { number: 1, fingerprint: "a1b2c3d4e5f6", tail: "Xa7Q", state: "ready", inFlight: 2, detail: null },
-  { number: 2, fingerprint: "b2c3d4e5f6a1", tail: "M3kd", state: "ready", inFlight: 1, detail: null },
-  { number: 3, fingerprint: "c3d4e5f6a1b2", tail: "p0Rz", state: "cooling", inFlight: 0, detail: null },
-  { number: 4, fingerprint: "d4e5f6a1b2c3", tail: "Ve2t", state: "ready", inFlight: 2, detail: null },
-  { number: 5, fingerprint: "e5f6a1b2c3d4", tail: "q8Lw", state: "ready", inFlight: 1, detail: null },
-  { number: 6, fingerprint: "f6a1b2c3d4e5", tail: "Hn5s", state: "ready", inFlight: 0, detail: null },
+  { number: 1, fingerprint: "a1b2c3d4e5f6", tail: "Xa7Q", state: "ready", inFlight: 2, detail: null, lastThrough: Date.now() - 2 * 60_000 },
+  { number: 2, fingerprint: "b2c3d4e5f6a1", tail: "M3kd", state: "ready", inFlight: 1, detail: null, lastThrough: Date.now() - 5 * 60_000 },
+  { number: 3, fingerprint: "c3d4e5f6a1b2", tail: "p0Rz", state: "cooling", inFlight: 0, detail: null, lastThrough: Date.now() - 3 * DAY },
+  { number: 4, fingerprint: "d4e5f6a1b2c3", tail: "Ve2t", state: "ready", inFlight: 2, detail: null, lastThrough: Date.now() - 60_000 },
+  { number: 5, fingerprint: "e5f6a1b2c3d4", tail: "q8Lw", state: "ready", inFlight: 1, detail: null, lastThrough: Date.now() - 9 * 60_000 },
+  { number: 6, fingerprint: "f6a1b2c3d4e5", tail: "Hn5s", state: NEVER ? "idle" : "ready", inFlight: 0, detail: null, lastThrough: NEVER ? null : Date.now() - 4 * 60_000 },
 ];
 
 function clone<T>(value: T): T {
@@ -60,6 +63,27 @@ const SLOW = Number(PARAMS.get("slow") ?? 0);
 const ACTIVE = PARAMS.get("active");
 /** `squeeze=N`: a squeeze gets key k through on its (N + k - 1)-th try, key 6 is invalid. */
 const SQUEEZE = Number(PARAMS.get("squeeze") ?? 3);
+/** Figures come as TikZ with a color the template defined before xcolor (?figcolor). */
+const FIGCOLOR = PARAMS.has("figcolor");
+/** The check of an answer cannot repair it (?checkfail). */
+const CHECKFAIL = PARAMS.has("checkfail");
+/** The document compiles without errors, so a fix has nothing to do (?fixclean). */
+const FIXCLEAN = PARAMS.has("fixclean");
+/** Builds cannot take unsaved edits (a part included through a macro) (?leftout). */
+const LEFTOUT = PARAMS.has("leftout");
+/** No LibreOffice: a PowerPoint figure comes as its drawing (?nolo). */
+const NOLO = PARAMS.has("nolo");
+
+const FIGURE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="80" viewBox="0 0 300 80"><rect width="100%" height="100%" fill="#fff"/><rect x="10" y="20" width="100" height="36" fill="#DCE6F2" stroke="#1F4E79"/><text x="60" y="43" font-size="12" text-anchor="middle">Paired run</text><rect x="190" y="20" width="100" height="36" fill="#fff" stroke="#404040"/><text x="240" y="43" font-size="12" text-anchor="middle">Faulty run</text><path d="M110 38H190" stroke="#404040"/></svg>';
+
+/** The figure environment a figure file of `format` is inserted as. */
+function figureEnvironment(format: string): string {
+  const file = format === "pptx" && NOLO
+    ? "\\IfFileExists{figures/fig_paired-runs.pdf}{\\includegraphics[width=\\linewidth]{figures/fig_paired-runs.pdf}}{\\fbox{\\parbox{0.9\\linewidth}{\\centering\\texttt{figures/fig\\_paired-runs.pptx}}}}"
+    : "\\includegraphics[width=\\linewidth]{figures/fig_paired-runs.pdf}";
+  return `\\begin{figure}[t]\n\\centering\n${file}\n\\caption{A faulty run and its paired run.}\n\\label{fig:paired-runs}\n\\end{figure}`;
+}
 
 const SAMPLE = `Graph neural networks can learn new tasks from a few examples in context.
 
@@ -128,6 +152,14 @@ const state = {
   paired: false,
   /** Saves asked for (Save, Save As), the only writes of the document. */
   saves: 0,
+  /** Answers checked by Smart apply, as asked for. */
+  checks: [] as Record<string, unknown>[],
+  /** The editor's text of each build asked for. */
+  compiled: [] as string[],
+  /** Keys given a new key in their place, by number. */
+  swapped: [] as number[],
+  /** Copies of figures saved, by kind, with the PNG's size. */
+  figureSaves: [] as { kind: string; png: number }[],
   /** Copies into a new folder asked for, with the dialog's title. */
   projectCopies: [] as { kind: "save" | "export"; title: string }[],
   revision: 1,
@@ -604,6 +636,24 @@ const TABLE_NOTES = {
   en: ["A booktabs table: two methods on four benchmarks, numbers from Section 5."],
 };
 
+const TIKZ =
+  "\\begin{figure}[t]\n  \\centering\n  \\begin{tikzpicture}\n    \\node[draw, fill=subsectioncolor!20] (a) {Paired run};\n    \\node[draw, right=of a] (b) {Faulty run};\n    \\draw[-{Stealth}] (a) -- (b);\n  \\end{tikzpicture}\n  \\caption{A faulty run and its paired run.}\n  \\label{fig:paired}\n\\end{figure}";
+
+/** A fix's change of line `index` (0-based) of `text` to `line`, as the backend gives it. */
+function mockHunk(text: string, index: number, line: string) {
+  const lines = text.split(/(?<=\n)/);
+  const old = lines[index];
+  const now = `${line}${old.endsWith("\n") ? "\n" : ""}`;
+  return {
+    line: index + 1,
+    old,
+    new: now,
+    before: lines.slice(Math.max(0, index - 2), index).join(""),
+    after: lines.slice(index + 1, index + 3).join(""),
+    diff: roughDiff(old, now),
+  };
+}
+
 function emitLater(delay: number, payload: unknown): void {
   setTimeout(() => void emit("assist", clone(payload)), delay);
 }
@@ -685,6 +735,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   latex_open_folder: () => session(),
   latex_compile: async (a): Promise<BuildView> => {
     const lang = a.lang === "zh" ? "zh" : "en";
+    state.compiled.push(String(a.text));
     const record: Built = { source: sourceNow(lang), direction: state.direction };
     await wait(1200);
     built[lang] = record;
@@ -708,6 +759,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
       untranslated: zh ? 2 : 0,
       output: "",
       projectRc: null,
+      unsavedLeftOut: LEFTOUT,
     };
   },
   latex_cancel: () => null,
@@ -834,7 +886,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
   latex_delete_template: () => null,
   latex_reveal_templates: () => null,
   assist_start: (a) => {
-    const req = a.request as { action: string; text: string; from: number; to: number; instruction: string };
+    const req = a.request as { action: string; text: string; from: number; to: number; instruction: string; figure?: string };
+    const asFile = req.action === "figure" && LATEX && (req.figure === "pdf" || req.figure === "pptx");
     state.lastAssist = clone(a.request) as Record<string, unknown>;
     const id = nextJob++;
     let [from, to] = req.from === req.to ? paragraphAround(req.text, req.from) : [req.from, req.to];
@@ -843,8 +896,12 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const original = insert ? req.text.slice(...paragraphAround(req.text, req.from)) : req.text.slice(from, to);
     const p = POLISHED.default;
     const revision =
-      req.action === "figure"
-        ? TABLE
+      asFile
+        ? figureEnvironment(req.figure ?? "")
+        : req.action === "figure"
+        ? FIGCOLOR
+          ? TIKZ
+          : TABLE
         : req.action === "write"
           ? WRITTEN.revision
           : req.action === "ask"
@@ -885,8 +942,21 @@ const handlers: Record<string, (args: Args) => unknown> = {
         usage: { inputTokens: 5210, outputTokens: 412 },
         durationMs: 9400,
         // The sample paper loads amsmath, graphicx, hyperref, natbib: the table needs booktabs.
-        missingPackages: req.action === "figure" && LATEX ? ["booktabs"] : [],
+        missingPackages: asFile ? [] : req.action === "figure" && LATEX ? [FIGCOLOR ? "tikz" : "booktabs"] : [],
+        libraries: [],
         preambleHere: req.action === "figure" && LATEX,
+        hunks: [],
+        fix: null,
+        figure: asFile
+          ? {
+              format: req.figure,
+              file: req.figure === "pptx" ? "figures/fig_paired-runs.pptx" : "figures/fig_paired-runs.pdf",
+              pdf: !(req.figure === "pptx" && NOLO),
+              pptx: req.figure === "pptx",
+              svg: req.figure === "pptx" && NOLO ? FIGURE_SVG : null,
+              export: req.figure === "pptx" && NOLO,
+            }
+          : null,
       },
     });
     return {
@@ -897,6 +967,98 @@ const handlers: Record<string, (args: Args) => unknown> = {
     };
   },
   assist_cancel: () => null,
+  assist_fix: (a) => {
+    const req = a.request as { text: string; instruction: string };
+    state.lastAssist = clone({ action: "fix", ...req }) as Record<string, unknown>;
+    const id = nextJob++;
+    const lines = req.text.split("\n");
+    // A color the template defined before xcolor, else a package the tables need.
+    const colored = lines.findIndex((l) => l.includes("subsectioncolor"));
+    const begin = lines.findIndex((l) => l.trim().startsWith("\\begin{document}"));
+    const hunks = FIXCLEAN
+      ? []
+      : colored >= 0
+        ? [mockHunk(req.text, colored, lines[colored].replaceAll("subsectioncolor", "black"))]
+        : begin >= 0
+          ? [mockHunk(req.text, begin, `\\usepackage{booktabs}\n${lines[begin]}`)]
+          : [];
+    emitLater(150, { kind: "stage", id, fixing: false, round: 0 });
+    if (hunks.length) {
+      emitLater(500, { kind: "stage", id, fixing: true, round: 1 });
+      emitLater(800, { kind: "partial", id, text: "<edit>\n<find>" });
+      emitLater(1100, { kind: "stage", id, fixing: false, round: 1 });
+    }
+    emitLater(1500, {
+      kind: "done",
+      id,
+      result: {
+        revision: null,
+        translation: null,
+        changesZh: hunks.length ? ["模板的颜色在加载 xcolor 之前定义，TikZ 用不了，改用 black。"] : [],
+        changesEn: hunks.length ? ["The template defined the color before xcolor was loaded; black instead."] : [],
+        answer: null,
+        removed: [],
+        repeated: [],
+        translationMatches: false,
+        diff: [],
+        usage: { inputTokens: hunks.length ? 9120 : 0, outputTokens: hunks.length ? 210 : 0 },
+        durationMs: 1500,
+        missingPackages: [],
+        libraries: [],
+        preambleHere: false,
+        hunks,
+        fix: { before: FIXCLEAN ? 0 : 6, errors: [], rounds: hunks.length ? 1 : 0, missed: 0 },
+      },
+    });
+    return {
+      id,
+      target: { from: 0, to: 0, text: "", wholeParagraph: false, insert: false },
+      model: "AnyRouter (GPT-6 Astra) · gpt-6-astra",
+      skill: "",
+    };
+  },
+  assist_check: (a) => {
+    const req = a.request as { id: number; revision: string; preamble: string };
+    state.checks.push(clone(a.request) as Record<string, unknown>);
+    const id = req.id;
+    const bad = req.revision.includes("subsectioncolor");
+    emitLater(150, { kind: "stage", id, fixing: false, round: 0 });
+    if (bad) {
+      emitLater(500, { kind: "stage", id, fixing: true, round: 1 });
+      emitLater(900, { kind: "stage", id, fixing: false, round: 1 });
+    }
+    const repaired = bad && !CHECKFAIL;
+    emitLater(bad ? 1300 : 600, {
+      kind: "checked",
+      id,
+      result: {
+        revision: repaired ? req.revision.replaceAll("subsectioncolor", "figBlue") : req.revision,
+        preamble: repaired
+          ? `${req.preamble}\\usetikzlibrary{arrows.meta,positioning}\n\\definecolor{figBlue}{RGB}{31,78,121}\n`
+          : req.preamble,
+        passed: !bad || repaired,
+        errors: bad && !repaired
+          ? [{ line: 52, file: "paper.tex", message: "Package xcolor Error: Undefined color model `'.", context: "" }]
+          : [],
+        before: 0,
+        rounds: bad ? 1 : 0,
+        changesZh: repaired ? ["模板颜色在 xcolor 之前定义，改用自定义颜色 figBlue，并在导言区加载箭头和定位库。"] : [],
+        changesEn: repaired ? ["The template color predates xcolor: own color figBlue, and the arrow and positioning libraries."] : [],
+        usage: { inputTokens: bad ? 8800 : 0, outputTokens: bad ? 320 : 0 },
+      },
+    });
+    return null;
+  },
+  figure_pdf: async () => (await fetch("/dev/figure.pdf")).arrayBuffer(),
+  figure_save: (a) => {
+    const png = a.png as number[] | null;
+    state.figureSaves.push({ kind: String(a.kind), png: png ? png.length : 0 });
+    return `/Users/me/papers/gnn-icl/fig_paired-runs.${String(a.kind)}`;
+  },
+  assist_check_cancel: (a) => {
+    emitLater(0, { kind: "check_failed", id: Number(a.id), message: "cancelled" });
+    return null;
+  },
   load_reference: () => ({ name: "uniclean.tex", text: UNICLEAN, chars: UNICLEAN.length, truncated: false }),
   assist_offer: (a) => {
     state.offers.push({ source: String(a.source), translation: String(a.translation) });
@@ -976,6 +1138,19 @@ const handlers: Record<string, (args: Args) => unknown> = {
   rename_api_key: (a) => {
     state.settings.providers[1].keyNames[String(a.fingerprint)] = String(a.name);
     return state.settings;
+  },
+  replace_api_key: (a) => {
+    const key = String(a.key).trim();
+    const k = POOL[Number(a.number) - 1];
+    if (!k || k.tail !== String(a.tail)) throw new Error("the keys have changed; reopen the settings and try again");
+    if (!key || /\s/.test(key)) throw new Error("paste one key");
+    const names = state.settings.providers[1].keyNames;
+    const fresh = `ff${Date.now().toString(16).slice(-10)}`;
+    if (names[k.fingerprint]) names[fresh] = names[k.fingerprint];
+    delete names[k.fingerprint];
+    Object.assign(k, { fingerprint: fresh, tail: key.slice(-4), lastThrough: null, state: "idle" });
+    state.swapped.push(Number(a.number));
+    return clone(state.settings);
   },
   test_api_key: () => "图神经网络可以从上下文中的少量示例学习新任务。",
   set_active_provider: (a) => {

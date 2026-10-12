@@ -184,6 +184,18 @@ pub(crate) async fn write_document(
         state.apply_doc_note();
     }
     log::info!("saved {}", display_name(Some(&path)));
+    // The figures it includes that wait for this save go next to the
+    // document's other figures.
+    let (figures, figures_kept) = match crate::latex_commands::project(state) {
+        Ok(p) if state.engine.mode() == Mode::Latex => {
+            let saved = state.file().file.text().to_owned();
+            state.figures.save(&p.dir, &saved)
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
+    for f in &figures {
+        log::info!("wrote the figure {f}");
+    }
     let mirror = match mirror_to {
         Some(dest) => pairing::save_mirror_as(state, dest).await?,
         None => pairing::save_mirror(state).await?,
@@ -193,6 +205,8 @@ pub(crate) async fn write_document(
         suggested_mode: Mode::from_path(&path),
         path: path.display().to_string(),
         mirror,
+        figures,
+        figures_kept,
     })
 }
 

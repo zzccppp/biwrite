@@ -11,6 +11,7 @@ import type {
   AttachmentView,
   BuildView,
   CacheView,
+  CheckRequest,
   ClearedView,
   Direction,
   ExportView,
@@ -117,6 +118,9 @@ export const settingsIpc = {
   listKeys: (id: string) => invoke<KeyEntry[]>("list_api_keys", { id }),
   renameKey: (id: string, fingerprint: string, name: string) =>
     invoke<SettingsView>("rename_api_key", { id, fingerprint, name }),
+  /** A new key in place of key `number` (its tail checked), keeping its name. */
+  replaceKey: (id: string, number: number, tail: string, key: string) =>
+    invoke<SettingsView>("replace_api_key", { id, number, tail, key }),
   testKey: (id: string, fingerprint: string) => invoke<string>("test_api_key", { id, fingerprint }),
   squeezeStatus: (id: string) => invoke<SqueezeView>("squeeze_status", { id }),
   squeezeStart: (id: string) => invoke<SqueezeView>("squeeze_start", { id }),
@@ -148,6 +152,16 @@ export const settingsIpc = {
 export const assistIpc = {
   start: (request: AssistRequest) => invoke<AssistStarted>("assist_start", { request }),
   cancel: (id: number) => invoke<void>("assist_cancel", { id }),
+  /** Make the document compile: TeX's errors go to the model, a few rounds at most. */
+  fix: (text: string, instruction: string) => invoke<AssistStarted>("assist_fix", { request: { text, instruction } }),
+  /** Check (and repair) an answer before it is applied; the result comes as an event. */
+  check: (request: CheckRequest) => invoke<void>("assist_check", { request }),
+  checkCancel: (id: number) => invoke<void>("assist_check_cancel", { id }),
+  /** The PDF a figure job made. */
+  figurePdf: (id: number) => invoke<ArrayBuffer>("figure_pdf", { id }),
+  /** Save a copy of a figure job's file (`png`: the preview drawn as PNG). */
+  figureSave: (id: number, kind: "pdf" | "pptx" | "png", png: number[] | null = null) =>
+    invoke<string | null>("figure_save", { id, kind, png }),
   /** Hand the engine an approved translation before the edit is applied. */
   offer: (source: string, translation: string) => invoke<void>("assist_offer", { source, translation }),
   attachImage: () => invoke<AttachmentView | null>("attach_image"),

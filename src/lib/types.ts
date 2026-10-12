@@ -264,6 +264,8 @@ export interface KeyEntry {
   state: "ready" | "cooling" | "rejected" | "idle";
   inFlight: number;
   detail: string | null;
+  /** When a relay that turns keys away last answered it (Unix ms); null: never. */
+  lastThrough: number | null;
 }
 
 /** One key of a provider getting through to a crowded relay. */
@@ -379,8 +381,24 @@ export const KIND_LABELS: Record<ProviderKind, string> = {
 
 // ── Writing assistant ────────────────────────────────────────────────
 
-export type AssistAction = "polish" | "edit" | "ask" | "figure" | "mirror" | "write";
+export type AssistAction = "polish" | "edit" | "ask" | "figure" | "mirror" | "write" | "fix";
 export type AssistScope = "target" | "neighbors" | "document";
+/** What a figure becomes in a LaTeX document: code, a PDF of its own, or a PowerPoint file and its PDF. */
+export type FigureFormat = "latex" | "pdf" | "pptx";
+
+/** A figure that is a file, as made for a card. */
+export interface FigureView {
+  format: FigureFormat;
+  /** Where it goes, relative to the folder TeX runs in. */
+  file: string;
+  /** There is a PDF to show and to save. */
+  pdf: boolean;
+  pptx: boolean;
+  /** A drawing of the diagram, when there is no PDF. */
+  svg: string | null;
+  /** No LibreOffice: the PDF is to be exported from PowerPoint. */
+  export: boolean;
+}
 
 /** What a job works on, in UTF-16 offsets of the text it started with. */
 export interface AssistTarget {
@@ -437,8 +455,78 @@ export interface AssistResult {
   durationMs: number;
   /** Packages a figure needs that the document does not load. */
   missingPackages: string[];
+  /** TikZ libraries a figure loads that the preamble does not (taken out of the revision). */
+  libraries: string[];
   /** The open file holds the preamble. */
   preambleHere: boolean;
+  /** The changes of a fix, in whole lines of the text it started from. */
+  hunks: Hunk[];
+  /** How a fix went. */
+  fix: FixReport | null;
+  /** A figure that is a file. */
+  figure: FigureView | null;
+}
+
+/** One change of a fix, in whole lines. */
+export interface Hunk {
+  /** 1-based line where it starts in the text the fix started from. */
+  line: number;
+  old: string;
+  new: string;
+  /** Up to two lines before and after, to find its place again. */
+  before: string;
+  after: string;
+  diff: DiffPart[];
+}
+
+/** An error TeX reported. */
+export interface TexError {
+  /** 1-based line in the checked text, when the error is in it. */
+  line: number | null;
+  file: string | null;
+  message: string;
+  context: string;
+}
+
+export interface FixReport {
+  /** Errors before the fix. */
+  before: number;
+  /** Errors left after it. */
+  errors: TexError[];
+  rounds: number;
+  /** Changes whose lines were not found. */
+  missed: number;
+}
+
+/** An answer checked (and repaired) before it is applied. */
+export interface CheckResult {
+  revision: string;
+  /** Lines to add before \begin{document} (empty for none). */
+  preamble: string;
+  passed: boolean;
+  /** Errors the answer brings that are left. */
+  errors: TexError[];
+  /** Errors the document had before. */
+  before: number;
+  rounds: number;
+  changesZh: string[];
+  changesEn: string[];
+  usage: { inputTokens: number; outputTokens: number };
+}
+
+/** An answer about to be applied, as the editor would put it in. */
+export interface CheckRequest {
+  id: number;
+  /** The document without the answer. */
+  text: string;
+  from: number;
+  to: number;
+  lead: string;
+  trail: string;
+  revision: string;
+  /** Where lines go before \begin{document}, when the preamble is in the open file. */
+  preambleAt: number | null;
+  preamble: string;
 }
 
 export type AssistEvent =
@@ -446,7 +534,11 @@ export type AssistEvent =
   /** The request failed for a passing reason and is sent again. */
   | { kind: "retrying"; id: number; attempt: number; of: number; message: string }
   | { kind: "done"; id: number; result: AssistResult }
-  | { kind: "failed"; id: number; message: string };
+  | { kind: "failed"; id: number; message: string }
+  /** A fix or a check moved on: building, or the model repairing (round from 1). */
+  | { kind: "stage"; id: number; fixing: boolean; round: number }
+  | { kind: "checked"; id: number; result: CheckResult }
+  | { kind: "check_failed"; id: number; message: string };
 
 export interface AssistRequest {
   action: AssistAction;
@@ -458,6 +550,8 @@ export interface AssistRequest {
   references: string[];
   images: number[];
   history: [string, string][];
+  /** What a figure becomes (LaTeX documents). */
+  figure: FigureFormat;
 }
 
 /** A reference image picked in Rust (the webview keeps only a preview). */
@@ -534,6 +628,8 @@ export interface BuildView {
   output: string;
   /** The project's own latexmkrc, which ran with the build: it can run any command. */
   projectRc: string | null;
+  /** Edits not saved yet are not in the PDF (built from the files as saved). */
+  unsavedLeftOut: boolean;
 }
 
 /** Where a source line is typeset, in PDF points from the page's top left. */

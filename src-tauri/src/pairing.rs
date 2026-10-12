@@ -303,6 +303,8 @@ pub fn open(
 ) -> biwrite_engine::Snapshot {
     // The note must be in place before the first requests start.
     state.engine.set_doc_note(Some(state.note_for(Some(&path))));
+    // Figures waiting for the last document's save are not this one's.
+    state.figures.clear();
     let mode = Mode::from_path(&path);
     let mut pair = None;
     // A Chinese file is the Chinese side: translated into English.

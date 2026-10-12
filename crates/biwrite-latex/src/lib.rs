@@ -20,7 +20,9 @@ pub use bundle::{Bundle, bundle, copy_bundle};
 pub use compile::{CompileError, Compiled, Job, Outcome, compile};
 pub use locate::{find_words, locate};
 pub use log::{Issue, Severity};
-pub use mirror::{EN_MIRROR_DIR, MIRROR_DIR, redirect_include, with_chinese};
+pub use mirror::{
+    CHECK_DIR, EN_MIRROR_DIR, MIRROR_DIR, bibliographies, redirect_include, with_chinese,
+};
 pub use project::{
     Engine, ProjectError, clean, engine_for, find_main, is_main, project_engine, root_for,
     tex_files,

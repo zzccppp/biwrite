@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { type AssistJob, type AssistStore, ACTION_LABEL, PLACEHOLDER, SCOPE_LABEL } from "../assist.svelte";
+  import { type AssistJob, type AssistStore, ACTION_LABEL, FIGURE_LABEL, PLACEHOLDER, SCOPE_LABEL } from "../assist.svelte";
   import { t } from "../i18n.svelte";
   import { ipc } from "../ipc";
-  import type { AssistAction, AssistScope } from "../types";
+  import type { AssistAction, AssistScope, FigureFormat } from "../types";
   import AssistJobCard from "./AssistJobCard.svelte";
 
   interface Props {
@@ -20,8 +20,13 @@
     ready: boolean;
     model: string;
     skill: string;
+    /** A LaTeX file that compiles: fixes and Smart apply build it. */
+    latex: boolean;
+    /** A LaTeX document: a figure can be a file of its own. */
+    latexDoc: boolean;
     onrun: () => void;
     onaccept: (job: AssistJob) => void;
+    onsmartapply: (job: AssistJob) => void;
     onrevert: (job: AssistJob) => void;
     onagain: (job: AssistJob) => void;
     onreapply: (job: AssistJob) => void;
@@ -30,8 +35,24 @@
     onclose: () => void;
   }
 
-  let { store, target, ready, model, skill, onrun, onaccept, onrevert, onagain, onreapply, onfollowup, onfocus, onclose }: Props =
-    $props();
+  let {
+    store,
+    target,
+    ready,
+    model,
+    skill,
+    latex,
+    latexDoc,
+    onrun,
+    onaccept,
+    onsmartapply,
+    onrevert,
+    onagain,
+    onreapply,
+    onfollowup,
+    onfocus,
+    onclose,
+  }: Props = $props();
 
   let instructionBox = $state<HTMLTextAreaElement>();
   let sampleDraft = $state("");
@@ -43,7 +64,13 @@
   let addingSample = $state(false);
 
   // Polishing takes an optional instruction, so it also does what "edit" did.
-  const actions: AssistAction[] = ["polish", "ask", "write", "figure", "mirror"];
+  // Fixing builds the document, so only a LaTeX file has it.
+  const actions = $derived<AssistAction[]>(
+    latex ? ["polish", "ask", "write", "figure", "mirror", "fix"] : ["polish", "ask", "write", "figure", "mirror"],
+  );
+  $effect(() => {
+    if (!latex && store.action === "fix") store.action = "polish";
+  });
   /** The paragraph whose translation the box was last filled with. */
   let prefilled: string | null = null;
 
@@ -56,13 +83,15 @@
     }
   });
   const scopes: AssistScope[] = ["target", "neighbors", "document"];
-  const needsInstruction = $derived(store.action !== "polish");
+  const formats: FigureFormat[] = ["latex", "pdf", "pptx"];
+  const fixing = $derived(store.action === "fix");
+  const needsInstruction = $derived(store.action !== "polish" && !fixing);
   const mirrorReady = $derived(
     store.action !== "mirror" ||
       (!!target?.translation && store.instruction.trim().length > 0 && store.instruction.trim() !== target.translation.trim()),
   );
   const canRun = $derived(
-    ready && !!target && (!needsInstruction || store.instruction.trim().length > 0) && mirrorReady,
+    ready && (fixing || !!target) && (!needsInstruction || store.instruction.trim().length > 0) && mirrorReady,
   );
 
   function addSample(): void {
@@ -106,10 +135,16 @@
       {/each}
     </div>
 
-    <div class="target" class:none={!target}>
-      <span class="label smallcaps">{target ? target.label : t("assist.target")}</span>
-      <span class="text">{target ? target.text : t("assist.target.none")}</span>
-    </div>
+    {#if fixing}
+      <div class="target">
+        <span class="label smallcaps">{t("assist.target.document")}</span>
+      </div>
+    {:else}
+      <div class="target" class:none={!target}>
+        <span class="label smallcaps">{target ? target.label : t("assist.target")}</span>
+        <span class="text">{target ? target.text : t("assist.target.none")}</span>
+      </div>
+    {/if}
 
     <textarea
       class="textarea"
@@ -124,6 +159,20 @@
       <p class="hint">{t("assist.mirrorNeedsParagraph")}</p>
     {/if}
 
+    {#if store.action === "figure" && latexDoc}
+      <div class="row options">
+        <span class="label smallcaps">{t("assist.figure.format")}</span>
+        <select
+          class="select"
+          value={store.figureFormat}
+          onchange={(e) => store.setFigureFormat(e.currentTarget.value as FigureFormat)}
+        >
+          {#each formats as f (f)}<option value={f}>{t(FIGURE_LABEL[f])}</option>{/each}
+        </select>
+      </div>
+    {/if}
+
+    {#if !fixing}
     <div class="row options">
       <span class="label smallcaps">{t("assist.scope")}</span>
       <select class="select" value={store.scope} onchange={(e) => store.setScope(e.currentTarget.value as AssistScope)}>
@@ -172,6 +221,7 @@
         </ul>
       {/if}
     </div>
+    {/if}
 
     <div class="row run">
       <button class="skill" onclick={() => ipc.openLink("skill")} title="github.com/qzkinhit/research-builder"
@@ -187,7 +237,10 @@
       <AssistJobCard
         {job}
         stale={job.epoch !== store.epoch}
+        {latex}
         {onaccept}
+        {onsmartapply}
+        oncancelcheck={(j) => store.cancelCheck(j)}
         {onrevert}
         ondiscard={(j) => store.discard(j)}
         onremove={(j) => store.remove(j)}
@@ -257,16 +310,17 @@
   }
   .actions {
     display: flex;
+    flex-wrap: wrap;
     padding: 2px;
     border: 1px solid var(--rule);
     border-radius: 5px;
     background: var(--paper-2);
   }
   .mode {
-    flex: 1;
+    flex: 1 0 auto;
     border: 0;
     background: transparent;
-    padding: 2px 6px 4px;
+    padding: 2px 4px 4px;
     border-radius: 3px;
     font-size: 13.5px;
     color: var(--muted);

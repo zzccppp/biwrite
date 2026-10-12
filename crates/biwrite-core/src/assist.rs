@@ -40,6 +40,9 @@ pub enum Action {
     /// Write new paragraphs as the instruction says, in the manner of the
     /// reference samples, to insert after the target.
     Write,
+    /// Make the document compile: fix the errors TeX reports (see
+    /// [`crate::repair`], which builds its prompt).
+    Fix,
 }
 
 impl Action {
@@ -52,6 +55,7 @@ impl Action {
             Self::Figure => "figure",
             Self::Mirror => "mirror",
             Self::Write => "write",
+            Self::Fix => "fix",
         }
     }
 
@@ -84,8 +88,39 @@ impl Action {
                 "knowledge/paper-anatomy.md",
                 "knowledge/storytelling.md",
             ],
+            Self::Fix => &[],
         }
     }
+
+    /// [`Self::skill_files`] for a figure that becomes `figure`: a
+    /// PowerPoint diagram follows the skill for system and motivation
+    /// figures (layout, arrows, type) instead of the one for data figures.
+    pub fn skill_files_for(self, figure: FigureFormat) -> &'static [&'static str] {
+        match (self, figure) {
+            (Self::Figure, FigureFormat::Pptx) => &[
+                "paper-figure-pptx/SKILL.md",
+                "paper-figure-pptx/references/layout-and-type.md",
+                "paper-figure-pptx/references/pptx-native.md",
+                "paper-figure-pptx/references/paper-styles.md",
+                "knowledge/figure-archetypes.md",
+                "writing-deai.md",
+            ],
+            _ => self.skill_files(),
+        }
+    }
+}
+
+/// What a figure becomes in a LaTeX document.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FigureFormat {
+    /// LaTeX source in the document (TikZ, pgfplots, a table).
+    #[default]
+    Latex,
+    /// A PDF of its own drawn with TikZ or pgfplots, included as a file.
+    Pdf,
+    /// A PowerPoint file of native shapes, included as its PDF.
+    Pptx,
 }
 
 /// How much of the document goes with the target.
@@ -101,7 +136,7 @@ pub enum Scope {
     Document,
 }
 
-/// A skill: its identity and the text of its files.
+/// A skill: its identity, the text of its files, and its icons.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Skill {
     pub name: String,
@@ -111,7 +146,27 @@ pub struct Skill {
     pub version: String,
     /// `(path in the skill, content)`.
     pub files: Vec<(String, String)>,
+    /// The icons of its icon libraries, for figures drawn for PowerPoint.
+    pub icons: Vec<SkillIcon>,
 }
+
+/// An icon of a skill's icon library.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SkillIcon {
+    /// How a scene names it.
+    pub id: String,
+    /// What it stands for (with its tags).
+    pub meaning: String,
+    /// The library it comes from.
+    pub library: String,
+    /// The SVG source.
+    pub svg: String,
+    /// The PNG the library keeps for programs without SVG.
+    pub png: Option<Vec<u8>>,
+}
+
+/// Most bytes of icon SVG shown to the model as the style to draw in.
+const ICON_STYLE_BYTES: usize = 6_000;
 
 impl Skill {
     pub fn file(&self, path: &str) -> Option<&str> {
@@ -146,6 +201,8 @@ pub struct Request<'a> {
     pub history: &'a [(String, String)],
     /// The packages the document loads (for a figure), when known.
     pub packages: Option<&'a [String]>,
+    /// What a figure becomes (LaTeX documents).
+    pub figure: FigureFormat,
 }
 
 /// The messages for a request, and the protector that restores the answer.
@@ -171,21 +228,32 @@ fn markup(mode: Mode) -> &'static str {
     }
 }
 
-fn block(out: &mut String, tag: &str, body: &str) {
+pub(crate) fn block(out: &mut String, tag: &str, body: &str) {
     out.push_str(&format!("<{tag}>\n{}\n</{tag}>\n\n", body.trim()));
 }
 
-/// The system prompt: the assistant's role and the skill's rules.
-pub fn system_prompt(action: Action, direction: Direction, skill: &Skill) -> String {
+/// The system prompt: the assistant's role and the skill's rules (for a
+/// figure, those of the format it becomes).
+pub fn system_prompt(
+    action: Action,
+    figure: FigureFormat,
+    direction: Direction,
+    skill: &Skill,
+) -> String {
+    let governs = if action == Action::Figure {
+        "the figures and the wording you produce"
+    } else {
+        "the wording you produce"
+    };
     let mut out = format!(
-        "You are the writing assistant of BiWrite, an editor in which an author writes an academic paper in {} and reads it in {} beside it. Apply the rules below. They come from the {} skill ({}, {}). They govern the wording you produce. The author decides what the paper claims, so keep the content.\n\n",
+        "You are the writing assistant of BiWrite, an editor in which an author writes an academic paper in {} and reads it in {} beside it. Apply the rules below. They come from the {} skill ({}, {}). They govern {governs}. The author decides what the paper claims, so keep the content.\n\n",
         language(direction, true),
         language(direction, false),
         skill.name,
         skill.source,
         skill.version
     );
-    for path in action.skill_files() {
+    for path in action.skill_files_for(figure) {
         if let Some(text) = skill.file(path).filter(|t| !t.trim().is_empty()) {
             out.push_str(&format!(
                 "<skill_file path=\"{path}\">\n{}\n</skill_file>\n\n",
@@ -238,6 +306,35 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
     {
         block(&mut user, "loaded_packages", &packages.join(", "));
     }
+    let icons = action == Action::Figure
+        && req.mode == Mode::Latex
+        && req.figure == FigureFormat::Pptx
+        && !skill.icons.is_empty();
+    if icons {
+        let list: Vec<String> = skill
+            .icons
+            .iter()
+            .map(|i| format!("{}: {}", i.id, i.meaning))
+            .collect();
+        block(&mut user, "icons", &list.join("\n"));
+        // A few sources (the starter library's first), to draw new ones alike.
+        let mut style = String::new();
+        let mut shown: Vec<&SkillIcon> = skill
+            .icons
+            .iter()
+            .filter(|i| i.library == "starter")
+            .collect();
+        shown.extend(skill.icons.iter().filter(|i| i.library != "starter"));
+        for icon in shown {
+            if style.len() + icon.svg.len() > ICON_STYLE_BYTES {
+                break;
+            }
+            style.push_str(&format!("<!-- {} -->\n{}\n", icon.id, icon.svg.trim()));
+        }
+        if !style.is_empty() {
+            block(&mut user, "icon_style", &style);
+        }
+    }
     for (i, sample) in req.references.iter().enumerate() {
         user.push_str(&format!(
             "<reference_text n=\"{}\">\n{}\n</reference_text>\n\n",
@@ -272,19 +369,37 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
         ),
         Action::Ask => format!(
             "Answer the question in <instruction> about the text in <target>{}. Answer what is asked, concretely, and quote the text where that helps. Give no rewritten version of the text. Answer in the language of the question.",
-            if req.document.is_some() { " and the document" } else { "" }
+            if req.document.is_some() {
+                " and the document"
+            } else {
+                ""
+            }
         ),
         Action::Mirror => format!(
             "The author rewrote the {other} version of the text in <target>; the new {other} version is in <instruction>. Revise <target>, {kind} written in {src}, so that it says what the new {other} version says. Keep every part the new version does not change word for word, with its terms, commands, citations and math, and follow the rules in the wording you write."
         ),
+        Action::Figure if req.mode == Mode::Latex && req.figure == FigureFormat::Pptx => format!(
+            "Draw the figure that <instruction> asks for as a diagram for PowerPoint: boxes with text, arrows between them and framed groups. It goes after the text in <target>. Follow the skill's rules for system and motivation figures in the scene: the layout archetype, the arrows, the type sizes, the colours and the checks. Its parts on scripts, icon files, SVG pictures and merging files do not apply here, since BiWrite writes the file from the scene. {SIZES} Keep it clean: boxes of a row aligned and of equal height, even gaps, few colours used for meaning, and text that fits its box (a line of 8 pt text holds about 2.5 characters per centimetre)."
+        ),
+        Action::Figure if req.mode == Mode::Latex && req.figure == FigureFormat::Pdf => format!(
+            "Draw the figure that <instruction> asks for in TikZ or pgfplots, following the figure rules. It becomes a PDF of its own, built with the standalone class, and is included after the text in <target>. {SIZES}"
+        ),
         Action::Figure => match req.mode {
-            Mode::Latex if req.packages.is_some() => "Write the LaTeX for the figure or table that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>. Give it a caption and a \\label. Prefer the packages in <loaded_packages>; beyond them use only common ones (tikz, pgfplots, booktabs, graphicx, multirow, xcolor), never \\usepackage, and name any package it needs that is not loaded in the change notes.".to_owned(),
-            Mode::Latex => "Write the LaTeX for the figure or table that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>. Use only common packages (tikz, pgfplots, booktabs, graphicx), give it a caption and a \\label, and make it compile on its own inside the document.".to_owned(),
-            _ => format!("Write the {kind} table or figure description that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>."),
+            Mode::Latex if req.packages.is_some() => format!(
+                "Write the LaTeX for the figure or table that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>. Give it a caption and a \\label. Prefer the packages in <loaded_packages>; beyond them use only common ones (tikz, pgfplots, booktabs, graphicx, multirow, xcolor), never \\usepackage, and name any package it needs that is not loaded in the change notes. {COLOURS}"
+            ),
+            Mode::Latex => format!(
+                "Write the LaTeX for the figure or table that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>. Use only common packages (tikz, pgfplots, booktabs, graphicx), give it a caption and a \\label, and make it compile on its own inside the document. {COLOURS}"
+            ),
+            _ => format!(
+                "Write the {kind} table or figure description that <instruction> asks for, following the figure and table rules. It is inserted after the text in <target>."
+            ),
         },
         Action::Write => format!(
             "Write new {kind} in {src} as <instruction> asks: the content, how many paragraphs and how long they are. It is inserted after the text in <target>, so it continues from there (<target> may be empty). Follow the rules. Write about the author's subject as the instruction and the context give it, and never invent results, numbers or citations the author did not give: leave a clearly marked placeholder such as [result] instead."
         ),
+        // Built by `repair::fix_prompt` instead.
+        Action::Fix => String::new(),
     };
     user.push_str(&task);
     if req.document.is_some() || req.before.is_some() || req.after.is_some() {
@@ -298,7 +413,16 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
     } else if !req.references.is_empty() {
         user.push_str(" The <reference_text> blocks show the style to follow (wording, sentence length, structure). Do not copy their content.");
     }
-    if req.images > 0 && action == Action::Figure {
+    if icons {
+        user.push_str(" Put icons of <icons> in by their id (the \"icon\" of a node, its own box) where one shows data, a model, an operation or a result, in space the layout already has, and label them with text nodes beside them. Leave out icons that show nothing. When no icon of <icons> shows a thing, draw one in \"svgs\" in the style of <icon_style>: the same canvas, stroke width, colours, corners and detail.");
+    }
+    if req.images > 0
+        && action == Action::Figure
+        && req.mode == Mode::Latex
+        && req.figure == FigureFormat::Pptx
+    {
+        user.push_str(" The attached images show the figure to draw. Redraw it as the scene in native shapes: the same layout and proportions, boxes, arrows, colours and icons (from <icons>, or drawn in \"svgs\" where none fits). Keep the text of the image as it is when the instruction asks to copy or trace the figure; otherwise use the labels the instruction and the paper give, and never take numbers from the image unless the instruction says so.");
+    } else if req.images > 0 && action == Action::Figure {
         user.push_str(" The attached images show the figure to imitate. Draw the same kind of chart or diagram with the same layout, colour scheme, marks, line styles, fonts and legend placement, in TikZ or pgfplots, with the data and labels the instruction and the paper give. Never take numbers or labels from the image unless the instruction says so.");
     } else if req.images > 0 {
         user.push_str(" The attached images are references the author chose: follow their layout and style where the task allows.");
@@ -326,19 +450,79 @@ pub fn build(req: &Request<'_>, skill: &Skill) -> Prompt {
             "\n\nReply in exactly this form:\n<revision>\nthe revised text in {src}, ready to replace <target>\n</revision>\n<translation>\na faithful {other} translation of the revised text\n</translation>\n<changes_zh>\nat most three short lines in Chinese on what changed and why\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>\nIf nothing should change, return the text unchanged in <revision> and say so in the change notes."
         ),
         Action::Ask => "\n\nReply with the answer in <answer>…</answer>.".to_owned(),
+        Action::Figure if req.mode == Mode::Latex && req.figure == FigureFormat::Pptx => format!(
+            "\n\nReply in exactly this form:\n<name>\na short file name of letters, digits and dashes\n</name>\n<scene>\n{SCENE_FORMAT}\n</scene>\n<caption>\nthe caption in {src}\n</caption>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\nat most three short lines in Chinese describing the figure\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
+        ),
+        Action::Figure if req.mode == Mode::Latex && req.figure == FigureFormat::Pdf => format!(
+            "\n\nReply in exactly this form:\n<name>\na short file name of letters, digits and dashes\n</name>\n<revision>\nthe picture alone, from \\begin{{tikzpicture}} to \\end{{tikzpicture}}\n</revision>\n<preamble>\nthe \\usepackage and \\usetikzlibrary lines it needs, one per line\n</preamble>\n<caption>\nthe caption in {src}\n</caption>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\nat most three short lines in Chinese describing the figure\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
+        ),
         Action::Figure => format!(
             "\n\nReply in exactly this form:\n<revision>\nthe source to insert\n</revision>\n<translation>\nthe caption in {other}\n</translation>\n<changes_zh>\nat most three short lines in Chinese describing the figure\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
         ),
         Action::Write => format!(
             "\n\nReply in exactly this form:\n<revision>\nthe new text in {src}, paragraphs separated by a blank line\n</revision>\n<translation>\na faithful {other} translation, paragraph for paragraph, separated the same way\n</translation>\n<changes_zh>\nat most three short lines in Chinese on what the text says and which features of the references it follows\n</changes_zh>\n<changes_en>\nthe same in English\n</changes_en>"
         ),
+        Action::Fix => String::new(),
     };
     user.push_str(&format);
     Prompt {
-        system: system_prompt(action, req.direction, skill),
+        system: system_prompt(action, req.figure, req.direction, skill),
         user,
         protector,
     }
+}
+
+/// Which colours a figure in LaTeX may use: a class or style file may
+/// define colours with the color package before xcolor is loaded, and TikZ
+/// cannot read those.
+const COLOURS: &str = "Use colours the preamble defines with \\definecolor, the standard xcolor names, or colours the figure defines itself with \\definecolor, never colours of the document class or its style files, which TikZ may not read.";
+
+/// How large a figure is drawn, for the formats that are files.
+const SIZES: &str = "Draw it at its printed size: about 8.5 cm wide for one column of a two-column paper and 17.5 cm when it spans both columns, with text of 7 to 9 pt.";
+
+/// The scene a PowerPoint figure is given as.
+const SCENE_FORMAT: &str = r##"{"wide": false,
+ "nodes": [{"id": "a", "x": 0, "y": 0, "w": 2.6, "h": 0.8, "text": "Label", "shape": "rect", "fill": "#DCE6F2", "line": "#1F4E79", "dashed": false, "fontSize": 8, "bold": false, "color": "#000000", "align": "center"}],
+ "edges": [{"from": "a", "to": "b", "kind": "arrow", "label": "", "dashed": false, "head": "end", "color": "#C00000", "elbow": false}],
+ "groups": [{"x": 0, "y": 0, "w": 6, "h": 2, "label": "Stage 1", "fill": "#F4F6F8", "line": "#8C96A0", "dashed": true}]}
+JSON in centimetres from the top left. "wide" is true when the figure spans both columns. A shape is one of rect, rounded, ellipse, diamond, parallelogram, cylinder, hexagon, or text (text alone, no frame). An edge of "kind" "arrow" is a native block arrow across the gap between two neighbouring boxes that face each other, all of the same thickness and head; an edge of "kind" "line" is a thin connector, for a long loop or a side flow. Without "kind", a short connection between boxes that face each other is an arrow and any other is a line. For a line, "head" is end, start, both or none, and "elbow" runs it across, down and across between a left and a right side. A line may also join two points: {"points": [[x1, y1], [x2, y2]]}. A node with "icon" (an id of <icons>, or a name in "svgs") is that icon fitted in its box, and its "text", if any, a label under it. "svgs" holds icons you draw: {"svgs": {"name": "<svg viewBox=\"0 0 64 64\" xmlns=\"http://www.w3.org/2000/svg\">…</svg>"}}. Text breaks with \n, and in a diamond, an ellipse or a hexagon only there, since those hold text in their middle half. Groups are drawn behind the nodes, so leave room at their top for the label."##;
+
+/// A figure that is a file: what the model answered.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FigureAnswer {
+    /// The file name it asked for (cleaned when used).
+    pub name: String,
+    /// The picture (a PDF figure) or the scene's JSON (a PowerPoint one).
+    pub body: String,
+    /// The lines a PDF figure's own document needs.
+    pub preamble: String,
+    pub caption: String,
+    /// The caption in the other language.
+    pub translation: Option<String>,
+    pub changes_zh: Vec<String>,
+    pub changes_en: Vec<String>,
+}
+
+/// Read the answer for a figure that becomes a file of `format`.
+pub fn parse_figure(format: FigureFormat, text: &str) -> Result<FigureAnswer, AssistError> {
+    let body = match format {
+        FigureFormat::Pptx => tag(text, "scene"),
+        _ => tag(text, "revision"),
+    }
+    .filter(|b| !b.trim().is_empty())
+    .ok_or(AssistError::NoRevision)?;
+    Ok(FigureAnswer {
+        name: tag(text, "name").unwrap_or_default().trim().to_owned(),
+        body: body.to_owned(),
+        preamble: tag(text, "preamble").unwrap_or_default().trim().to_owned(),
+        caption: tag(text, "caption").unwrap_or_default().trim().to_owned(),
+        translation: tag(text, "translation")
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned),
+        changes_zh: lines(tag(text, "changes_zh")),
+        changes_en: lines(tag(text, "changes_en")),
+    })
 }
 
 /// The model's answer, with protected spans restored.
@@ -386,12 +570,16 @@ impl fmt::Display for AssistError {
 impl std::error::Error for AssistError {}
 
 /// The blocks an answer is made of.
-const BLOCKS: [&str; 5] = [
+const BLOCKS: [&str; 9] = [
     "revision",
     "translation",
     "changes_zh",
     "changes_en",
     "answer",
+    "preamble",
+    "scene",
+    "caption",
+    "name",
 ];
 
 /// Content of the first `<name>…</name>` block, trimmed and without a
@@ -437,7 +625,7 @@ fn find_block(text: &str, name: &str) -> Option<(Range<usize>, Range<usize>)> {
     }
 }
 
-fn strip_fence(t: &str) -> &str {
+pub(crate) fn strip_fence(t: &str) -> &str {
     let Some(rest) = t.strip_prefix("```") else {
         return t;
     };
@@ -450,7 +638,7 @@ fn strip_fence(t: &str) -> &str {
     }
 }
 
-fn lines(text: Option<&str>) -> Vec<String> {
+pub(crate) fn lines(text: Option<&str>) -> Vec<String> {
     text.map(|t| {
         t.lines()
             .map(|l| {
@@ -463,6 +651,12 @@ fn lines(text: Option<&str>) -> Vec<String> {
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// The lines of the `<name>` block of a reply (change notes), without list
+/// marks.
+pub fn note_lines(reply: &str, name: &str) -> Vec<String> {
+    lines(tag(reply, name))
 }
 
 /// How often each placeholder number occurs in `text`.
@@ -566,6 +760,13 @@ pub fn streaming_preview(text: &str) -> String {
             "changes_zh",
             "changes_en",
             "answer",
+            "preamble",
+            "edit",
+            "find",
+            "replace",
+            "scene",
+            "caption",
+            "name",
         ]
         .iter()
         .any(|name| {

@@ -98,6 +98,8 @@ pub struct AppState {
     pub updates: UpdateState,
     /// Keys that got through to crowded relays, and squeezes running.
     pub squeeze: SqueezeState,
+    /// Figures that are files, waiting for the document's save.
+    pub figures: crate::figures::FigureStore,
 }
 
 impl AppState {
@@ -135,6 +137,7 @@ impl AppState {
             latex,
             updates: UpdateState::default(),
             squeeze: SqueezeState::default(),
+            figures: crate::figures::FigureStore::default(),
         }
     }
 
@@ -231,4 +234,9 @@ pub struct SavedView {
     pub suggested_mode: Mode,
     /// What happened to the paired file.
     pub mirror: Option<crate::pairing::MirrorSaved>,
+    /// Figure files the save wrote (the document includes them), relative
+    /// to the folder TeX runs in.
+    pub figures: Vec<String>,
+    /// Figure files it left, because a file of that name is there.
+    pub figures_kept: Vec<String>,
 }

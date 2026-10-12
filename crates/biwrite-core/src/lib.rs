@@ -8,6 +8,7 @@
 //! - [`glossary`]: term matching per segment, CSV import/export ([`csv`]).
 //! - [`lang`]: translation direction, CJK-aware tokens.
 //! - [`protect`]: placeholder protection of math, citations, references.
+//! - [`repair`]: prompts and answers for LaTeX that does not compile.
 //! - [`textfile`]: byte-exact file round-tripping (BOM, line endings).
 //! - [`utf16`]: byte offsets to editor (UTF-16) offsets.
 
@@ -22,6 +23,7 @@ pub mod lang;
 pub mod mode;
 pub mod pair;
 pub mod protect;
+pub mod repair;
 pub mod segment;
 pub mod textfile;
 pub mod utf16;

@@ -321,6 +321,7 @@ fn bundled_skill() -> biwrite_core::assist::Skill {
         source: "https://github.com/qzkinhit/research-builder".into(),
         version: "d227e92".into(),
         files,
+        icons: Vec::new(),
     }
 }
 

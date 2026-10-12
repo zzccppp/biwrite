@@ -99,6 +99,7 @@ pub async fn save_provider(
                 has_key: false,
                 key_count: 0,
                 key_names: Default::default(),
+                key_through: Default::default(),
                 key_parts: 0,
             }),
             None => return Err(not_found(&id)),
@@ -197,6 +198,7 @@ pub async fn set_api_key(
         let mut s = state.settings();
         if let Some(entry) = s.provider_mut(&id) {
             entry.key_names.clear();
+            entry.key_through.clear();
         }
     }
     remember_names(&state, &id, &named);
@@ -351,6 +353,9 @@ pub struct KeyEntryView {
     pub state: String,
     pub in_flight: u32,
     pub detail: Option<String>,
+    /// When a relay that turns keys away last answered it (Unix
+    /// milliseconds); none when it never got through.
+    pub last_through: Option<u64>,
 }
 
 /// The keys of provider `id` with their names and live state. Reads the
@@ -360,10 +365,14 @@ pub async fn list_api_keys(
     state: State<'_, AppState>,
     id: String,
 ) -> CommandResult<Vec<KeyEntryView>> {
-    let (names, pool) = {
+    let (names, through, pool) = {
         let s = state.settings();
         let entry = s.provider(&id).ok_or_else(|| not_found(&id))?;
-        (entry.key_names.clone(), entry.vouched())
+        (
+            entry.key_names.clone(),
+            entry.key_through.clone(),
+            entry.vouched(),
+        )
     };
     let store = state.secrets.clone();
     let account = id.clone();
@@ -382,10 +391,73 @@ pub async fn list_api_keys(
                 state: status.map_or("idle", |s| s.state).to_owned(),
                 in_flight: status.map_or(0, |s| s.in_flight),
                 detail: status.and_then(|s| s.detail.clone()),
+                last_through: through.get(&fingerprint).copied(),
                 fingerprint,
             }
         })
         .collect())
+}
+
+/// Put `key` in place of key `number` of the pool (whose tail is `tail`):
+/// a new key for the same account. It keeps the old one's name and place;
+/// it has not got through yet.
+#[tauri::command]
+pub async fn replace_api_key(
+    state: State<'_, AppState>,
+    id: String,
+    number: usize,
+    tail: String,
+    key: String,
+) -> CommandResult<SettingsView> {
+    let named = parse_named(&key)?;
+    let [new] = named.as_slice() else {
+        return Err(CommandError::Settings("paste one key".into()));
+    };
+    let new_key = new.key.clone();
+    let new_name = new
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned);
+    let _keys = state.keys_lock.lock().await;
+    let vouched = state
+        .settings()
+        .provider(&id)
+        .ok_or_else(|| not_found(&id))?
+        .vouched();
+    state.settings_writable()?;
+    let store = state.secrets.clone();
+    let account = id.clone();
+    let (count, parts, old) = blocking(move || {
+        let stored = secrets::read_stored(store.as_ref(), &account)?;
+        let mut pool = stored.keys(vouched);
+        let i = match number.checked_sub(1).filter(|&i| i < pool.len()) {
+            Some(i) if key_tail(&pool[i]) == tail => i,
+            _ => return Err("the keys have changed; reopen the settings and try again".into()),
+        };
+        if pool.contains(&new_key) {
+            return Err("this key is in the pool already".into());
+        }
+        let old = std::mem::replace(&mut pool[i], new_key);
+        let parts = secrets::set_keys(store.as_ref(), &account, &pool, Some(&stored))?;
+        Ok((pool.len(), parts, key_fingerprint(&old)))
+    })
+    .await?;
+    let fresh = key_fingerprint(&new.key);
+    if let Some(entry) = state.settings().provider_mut(&id) {
+        let name = entry.key_names.remove(&old);
+        entry.key_through.remove(&old);
+        match new_name.or(name) {
+            Some(name) => {
+                entry.key_names.insert(fresh, name);
+            }
+            None => {
+                entry.key_names.remove(&fresh);
+            }
+        }
+    }
+    update_key_count(&state, &id, count, parts)
 }
 
 /// Name (or rename) the key with this fingerprint. An empty name removes it.
@@ -580,6 +652,7 @@ pub async fn remove_api_key(
     let (count, parts, fingerprint) = count;
     if let Some(entry) = state.settings().provider_mut(&id) {
         entry.key_names.remove(&fingerprint);
+        entry.key_through.remove(&fingerprint);
     }
     update_key_count(&state, &id, count, parts)
 }

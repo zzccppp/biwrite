@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use biwrite_core::assist::{self, Action, Answer, DiffPart, Scope};
+use biwrite_core::assist::{self, Action, Answer, DiffPart, FigureFormat, Scope};
 use biwrite_core::glossary;
+use biwrite_core::repair::Hunk;
 use biwrite_core::utf16::{byte_to_utf16, utf16_to_byte};
 use biwrite_core::{Mode, Protector};
 use biwrite_engine::{PartialFn, TokenUsage, TranslateError};
@@ -43,7 +44,7 @@ const MAX_REFERENCE_CHARS: usize = 120_000;
 /// Largest reference file read (it is then cut to `MAX_REFERENCE_CHARS`).
 const MAX_REFERENCE_BYTES: u64 = 8_000_000;
 /// Minimum interval between streamed updates of one job.
-const PARTIAL_EVERY: Duration = Duration::from_millis(80);
+pub(crate) const PARTIAL_EVERY: Duration = Duration::from_millis(80);
 /// Retries of a request after a transient failure (a relay at capacity, a
 /// dropped connection) when the provider sets no number.
 const DEFAULT_RETRIES: u32 = 5;
@@ -56,8 +57,10 @@ const RETRY_HINT_MAX: Duration = Duration::from_secs(30);
 /// Running jobs and attached reference images.
 #[derive(Default)]
 pub struct AssistState {
-    next_job: AtomicU64,
+    pub(crate) next_job: AtomicU64,
     jobs: Mutex<HashMap<u64, AbortHandle>>,
+    /// Checks of answers being applied, by the job whose answer it is.
+    checks: Mutex<HashMap<u64, AbortHandle>>,
     next_image: AtomicU64,
     images: Mutex<HashMap<u64, Attachment>>,
 }
@@ -67,8 +70,12 @@ struct Attachment {
 }
 
 impl AssistState {
-    fn jobs(&self) -> std::sync::MutexGuard<'_, HashMap<u64, AbortHandle>> {
+    pub(crate) fn jobs(&self) -> std::sync::MutexGuard<'_, HashMap<u64, AbortHandle>> {
         self.jobs.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn checks(&self) -> std::sync::MutexGuard<'_, HashMap<u64, AbortHandle>> {
+        self.checks.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn images(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Attachment>> {
@@ -97,6 +104,9 @@ pub struct AssistStart {
     /// Earlier questions and answers of an ask conversation.
     #[serde(default)]
     pub history: Vec<(String, String)>,
+    /// What a figure becomes (LaTeX documents).
+    #[serde(default)]
+    pub figure: FigureFormat,
 }
 
 /// What a job works on, in the editor's coordinates.
@@ -137,8 +147,18 @@ pub struct AssistResult {
     pub duration_ms: u64,
     /// Packages a figure needs that the document does not load.
     pub missing_packages: Vec<String>,
+    /// TikZ libraries a figure loads that the preamble does not. They go
+    /// there with the packages, and the figure's own `\usetikzlibrary`
+    /// lines are taken out of the revision.
+    pub libraries: Vec<String>,
     /// The open file holds the preamble, so the packages can be added there.
     pub preamble_here: bool,
+    /// The changes of a fix, in whole lines of the text it started from.
+    pub hunks: Vec<Hunk>,
+    /// How a fix went.
+    pub fix: Option<crate::repair_commands::FixReport>,
+    /// A figure that is a file: what was made.
+    pub figure: Option<crate::figures::FigureView>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -164,9 +184,27 @@ pub enum AssistEvent {
         id: u64,
         message: String,
     },
+    /// A fix, or the check of an answer being applied, moved on: building
+    /// the document (`fixing` false) or asking the model to repair it, in
+    /// round `round` (0 before any repair).
+    Stage {
+        id: u64,
+        fixing: bool,
+        round: u32,
+    },
+    /// The answer of job `id`, checked (and repaired) for applying.
+    Checked {
+        id: u64,
+        result: Box<crate::repair_commands::CheckResult>,
+    },
+    /// The check of job `id`'s answer could not finish.
+    CheckFailed {
+        id: u64,
+        message: String,
+    },
 }
 
-fn emit(app: &AppHandle, event: &AssistEvent) {
+pub(crate) fn emit(app: &AppHandle, event: &AssistEvent) {
     if let Err(e) = app.emit(EVENT_ASSIST, event) {
         log::warn!("failed to emit {EVENT_ASSIST}: {e}");
     }
@@ -271,6 +309,11 @@ pub async fn assist_start(
     let text = &request.text;
     let a = utf16_to_byte(text, request.from);
     let b = utf16_to_byte(text, request.to);
+    if request.action == Action::Fix {
+        return Err(CommandError::Settings(
+            "a fix starts with assist_fix".into(),
+        ));
+    }
     let target = resolve(text, mode, request.action, a, b).map_err(CommandError::Settings)?;
     if request.action == Action::Mirror && request.instruction.trim().is_empty() {
         return Err(CommandError::Settings(
@@ -295,6 +338,28 @@ pub async fn assist_start(
         .flatten();
     let package_list: Option<Vec<String>> =
         packages.as_ref().map(|(p, _)| p.iter().cloned().collect());
+    // TikZ libraries the preamble here loads (a figure's own go there).
+    let libraries = packages
+        .as_ref()
+        .filter(|(_, here)| *here)
+        .map(|_| biwrite_latex::packages::loaded_libraries(text));
+    // A figure that is a file follows the document's figures.
+    let figure = if request.action == Action::Figure && mode == Mode::Latex {
+        request.figure
+    } else {
+        FigureFormat::Latex
+    };
+    let place = (figure != FigureFormat::Latex).then(|| {
+        let project = crate::latex_commands::project(&state).ok();
+        let (root_text, root_dir) = match &project {
+            Some(p) => (p.root_text.clone(), Some(p.dir.clone())),
+            None => (text.clone(), None),
+        };
+        (
+            crate::figures::place(&root_text, text, root_dir.as_deref()),
+            root_dir,
+        )
+    });
     let images: Vec<ImageInput> = {
         let all = state.assist.images();
         request
@@ -319,6 +384,7 @@ pub async fn assist_start(
             images: images.len(),
             history: &request.history,
             packages: package_list.as_deref(),
+            figure,
         },
         &skill,
     );
@@ -353,6 +419,9 @@ pub async fn assist_start(
         model,
         chat,
         packages,
+        libraries,
+        figure,
+        place,
     };
     let handle = tauri::async_runtime::spawn(run(job));
     state
@@ -375,6 +444,13 @@ struct Job {
     /// For a figure in LaTeX: the packages the document loads, and whether
     /// the open file holds the preamble.
     packages: Option<(BTreeSet<String>, bool)>,
+    /// For a figure whose preamble is in the open file: the TikZ libraries
+    /// it loads.
+    libraries: Option<BTreeSet<String>>,
+    figure: FigureFormat,
+    /// For a figure that is a file: how the document includes figures, and
+    /// the folder TeX runs in (unknown before the first save).
+    place: Option<(crate::figures::Place, Option<PathBuf>)>,
 }
 
 async fn run(job: Job) {
@@ -428,6 +504,19 @@ async fn run(job: Job) {
             id: job.id,
             message: e.to_string(),
         },
+        Ok(out) if job.place.is_some() => match figure_file(&job, &out.text, out.usage).await {
+            Ok(mut result) => {
+                result.duration_ms = started.elapsed().as_millis() as u64;
+                AssistEvent::Done {
+                    id: job.id,
+                    result: Box::new(result),
+                }
+            }
+            Err(message) => AssistEvent::Failed {
+                id: job.id,
+                message,
+            },
+        },
         Ok(out) => match assist::parse_for(job.action, &out.text, &job.protector, &job.original) {
             Err(e) => AssistEvent::Failed {
                 id: job.id,
@@ -446,12 +535,32 @@ async fn run(job: Job) {
                     ) => assist::diff(&job.original, revision),
                     _ => Vec::new(),
                 };
-                let (missing_packages, preamble_here) = match (&job.packages, &answer.revision) {
+                // The figure's TikZ libraries go to the preamble.
+                let mut libraries = Vec::new();
+                if let (Some(loaded), Some(revision)) = (&job.libraries, answer.revision.as_mut()) {
+                    let (wanted, rest) = biwrite_latex::packages::hoist_libraries(revision);
+                    if !wanted.is_empty() {
+                        *revision = rest.trim().to_owned();
+                        libraries = wanted.into_iter().filter(|l| !loaded.contains(l)).collect();
+                    }
+                }
+                let (mut missing_packages, preamble_here) = match (&job.packages, &answer.revision)
+                {
                     (Some((loaded, here)), Some(revision)) => {
                         (biwrite_latex::packages::missing(revision, loaded), *here)
                     }
                     _ => (Vec::new(), false),
                 };
+                if !libraries.is_empty()
+                    && let Some((loaded, _)) = &job.packages
+                    && !loaded.contains("tikz")
+                    && !loaded.contains("pgfplots")
+                    && !missing_packages
+                        .iter()
+                        .any(|p| p == "tikz" || p == "pgfplots")
+                {
+                    missing_packages.push("tikz".to_owned());
+                }
                 AssistEvent::Done {
                     id: job.id,
                     result: Box::new(AssistResult {
@@ -460,7 +569,11 @@ async fn run(job: Job) {
                         usage: out.usage,
                         duration_ms: started.elapsed().as_millis() as u64,
                         missing_packages,
+                        libraries,
                         preamble_here,
+                        hunks: Vec::new(),
+                        fix: None,
+                        figure: None,
                     }),
                 }
             }
@@ -475,9 +588,240 @@ async fn run(job: Job) {
     emit(&job.app, &event);
 }
 
+/// A figure that is a file, made from the model's `reply`: the PowerPoint
+/// file and its PDF (through LibreOffice, when it is installed), or the PDF
+/// of the picture (repaired by the model while it does not compile). The
+/// files wait for the document's save; the answer is the figure
+/// environment that includes them.
+async fn figure_file(job: &Job, reply: &str, usage: TokenUsage) -> Result<AssistResult, String> {
+    let state = tauri::Manager::try_state::<AppState>(&job.app).ok_or("the app is closing")?;
+    let place = job.place.clone().ok_or("not a figure file")?;
+    make_figure(
+        &state,
+        job.model.as_ref(),
+        job.id,
+        job.figure,
+        place,
+        job.packages.as_ref(),
+        reply,
+        usage,
+    )
+    .await
+}
+
+/// [`figure_file`] for job `id`, whose format is `format` and whose
+/// document includes figures as `place` says.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn make_figure(
+    state: &AppState,
+    model: &dyn ChatModel,
+    id: u64,
+    format: FigureFormat,
+    (place, root_dir): (crate::figures::Place, Option<PathBuf>),
+    packages: Option<&(BTreeSet<String>, bool)>,
+    reply: &str,
+    usage: TokenUsage,
+) -> Result<AssistResult, String> {
+    use crate::figures::{self, FigureView, Made, Waiting};
+    let answer = assist::parse_figure(format, reply).map_err(|e| e.to_string())?;
+    let work = std::env::temp_dir().join(format!("biwrite-figure-{}-{id}", std::process::id()));
+    let stem = figures::free_stem(&state.figures, &place, root_dir.as_deref(), &answer, "pdf");
+    let label = stem
+        .strip_prefix(&place.stem_prefix)
+        .unwrap_or(&stem)
+        .to_owned();
+    let pdf_file = format!("{}{stem}.pdf", place.dir);
+    let reference = format!("{}{stem}.pdf", place.prefix);
+    let mut usage = usage;
+    let mut changes_zh = answer.changes_zh.clone();
+    let mut changes_en = answer.changes_en.clone();
+    let (environment, view, made, files) = match format {
+        FigureFormat::Pptx => {
+            // The icons of the skill in use.
+            let icons = state
+                .skill()
+                .map(|(s, _)| s.icons.clone())
+                .unwrap_or_default();
+            let laid = figures::laid(&answer, &icons)?;
+            let pptx = laid.pptx()?;
+            let pptx_file = format!("{}{stem}.pptx", place.dir);
+            let pdf = match figures::soffice() {
+                Some(soffice) => match figures::convert(&soffice, &work, &stem, &pptx).await {
+                    Ok(pdf) => Some(pdf),
+                    Err(e) => {
+                        log::warn!("the figure was not converted: {e}");
+                        None
+                    }
+                },
+                None => None,
+            };
+            let environment = figures::environment(
+                &place,
+                &reference,
+                &answer.caption,
+                &label,
+                laid.wide || figures::wide(laid.width),
+                pdf.is_none().then_some(pptx_file.as_str()),
+            );
+            let mut files = vec![(pptx_file.clone(), pptx.clone())];
+            if let Some(pdf) = &pdf {
+                files.insert(0, (pdf_file.clone(), pdf.clone()));
+            }
+            let view = FigureView {
+                format: FigureFormat::Pptx,
+                file: pptx_file,
+                pdf: pdf.is_some(),
+                pptx: true,
+                svg: pdf.is_none().then(|| laid.svg()),
+                export: pdf.is_none(),
+            };
+            let made = Made {
+                stem: stem.clone(),
+                pdf,
+                pptx: Some(pptx),
+            };
+            (environment, view, made, files)
+        }
+        _ => {
+            let tc = crate::latex_commands::require_toolchain(state)
+                .await
+                .map_err(|e| e.to_string())?;
+            let picture = crate::repair_commands::picture_loop(
+                &tc,
+                model,
+                id,
+                &work,
+                &answer.body,
+                &answer.preamble,
+            )
+            .await?;
+            usage.input_tokens += picture.usage.input_tokens;
+            usage.output_tokens += picture.usage.output_tokens;
+            changes_zh.extend(picture.changes_zh);
+            changes_en.extend(picture.changes_en);
+            let wide = figures::pdf_width(&picture.pdf).is_some_and(figures::wide);
+            let environment =
+                figures::environment(&place, &reference, &answer.caption, &label, wide, None);
+            let view = FigureView {
+                format: FigureFormat::Pdf,
+                file: pdf_file.clone(),
+                pdf: true,
+                pptx: false,
+                svg: None,
+                export: false,
+            };
+            let made = Made {
+                stem: stem.clone(),
+                pdf: Some(picture.pdf.clone()),
+                pptx: None,
+            };
+            (
+                environment,
+                view,
+                made,
+                vec![(pdf_file.clone(), picture.pdf)],
+            )
+        }
+    };
+    let _ = std::fs::remove_dir_all(&work);
+    state.figures.wait(Waiting {
+        reference: reference.clone(),
+        files,
+    });
+    state.figures.made().insert(id, made);
+    let (missing_packages, preamble_here) = match packages {
+        Some((loaded, here)) => (
+            biwrite_latex::packages::missing(&environment, loaded),
+            *here,
+        ),
+        None => (Vec::new(), false),
+    };
+    Ok(AssistResult {
+        answer: Answer {
+            revision: Some(environment),
+            translation: answer.translation,
+            changes_zh,
+            changes_en,
+            ..Answer::default()
+        },
+        diff: Vec::new(),
+        usage,
+        duration_ms: 0,
+        missing_packages,
+        libraries: Vec::new(),
+        preamble_here,
+        hunks: Vec::new(),
+        fix: None,
+        figure: Some(view),
+    })
+}
+
+/// The PDF a figure job made, for its preview.
+#[tauri::command]
+pub async fn figure_pdf(
+    state: State<'_, AppState>,
+    id: u64,
+) -> CommandResult<tauri::ipc::Response> {
+    let pdf = state
+        .figures
+        .made()
+        .get(&id)
+        .and_then(|m| m.pdf.clone())
+        .ok_or_else(|| CommandError::Settings("this figure has no PDF".into()))?;
+    Ok(tauri::ipc::Response::new(pdf))
+}
+
+/// Save a copy of what a figure job made, where the author picks: its
+/// PowerPoint file, its PDF, or a PNG the preview drew (`png`).
+#[tauri::command]
+pub async fn figure_save(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: u64,
+    kind: String,
+    png: Option<Vec<u8>>,
+) -> CommandResult<Option<String>> {
+    let made = state
+        .figures
+        .made()
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| CommandError::Settings("this figure is no longer there".into()))?;
+    let (bytes, label) = match kind.as_str() {
+        "pptx" => (made.pptx, "PowerPoint"),
+        "pdf" => (made.pdf, "PDF"),
+        "png" => (png, "PNG"),
+        _ => (None, ""),
+    };
+    let bytes =
+        bytes.ok_or_else(|| CommandError::Settings(format!("this figure has no {kind} file")))?;
+    let dir = state
+        .file()
+        .path
+        .as_deref()
+        .and_then(std::path::Path::parent)
+        .map(std::path::Path::to_path_buf);
+    let name = format!("{}.{kind}", made.stem);
+    let Some(dest) = crate::files::pick_save_kind(
+        &app,
+        &window,
+        label,
+        &[kind.as_str()],
+        dir.as_deref(),
+        &name,
+    )
+    .await
+    else {
+        return Ok(None);
+    };
+    crate::files::write_file_atomic(dest.clone(), bytes).await?;
+    Ok(Some(dest.display().to_string()))
+}
+
 /// The wait before retry number `attempt` (from 1) after `err`: a rate
 /// limit's hint, else one second doubling up to [`RETRY_WAIT_MAX`].
-fn retry_wait(attempt: u32, err: &TranslateError) -> Duration {
+pub(crate) fn retry_wait(attempt: u32, err: &TranslateError) -> Duration {
     if let Some(hint) = err.retry_after() {
         return hint.min(RETRY_HINT_MAX);
     }
@@ -491,7 +835,7 @@ fn retry_wait(attempt: u32, err: &TranslateError) -> Duration {
 /// retry count (or [`DEFAULT_RETRIES`]), `wait` apart. Each retry is told to
 /// `on_retry` (the retry, the count, the failure) and clears the streamed
 /// output.
-async fn complete_with_retries(
+pub(crate) async fn complete_with_retries(
     model: &dyn ChatModel,
     chat: &ChatRequest,
     on_partial: PartialFn<'_>,
@@ -1100,3 +1444,7 @@ mod tests {
         assert!(truncated && text.chars().count() == MAX_REFERENCE_CHARS);
     }
 }
+
+#[cfg(test)]
+#[path = "figure_tests.rs"]
+mod figure_tests;

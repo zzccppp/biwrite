@@ -71,6 +71,7 @@ async fn added_keys_leave_requests_in_flight_alone() {
             has_key: true,
             key_count: 1,
             key_names: Default::default(),
+            key_through: Default::default(),
             key_parts: 0,
         });
         s.active_provider = "p-1".into();
@@ -149,6 +150,7 @@ async fn a_provider_built_for_another_host_is_not_reused() {
             has_key: true,
             key_count: 1,
             key_names: Default::default(),
+            key_through: Default::default(),
             key_parts: 0,
         });
         s.assistant_provider = "p-1".into();
@@ -208,6 +210,7 @@ async fn an_assistant_provider_built_across_a_key_change_is_not_kept() {
             has_key: true,
             key_count: 1,
             key_names: Default::default(),
+            key_through: Default::default(),
             key_parts: 0,
         });
         s.assistant_provider = "p-1".into();
@@ -235,5 +238,195 @@ async fn an_assistant_provider_built_across_a_key_change_is_not_kept() {
     // Nothing changed: kept.
     let epoch = state.assistant_epoch.load(Ordering::SeqCst);
     assert!(state.keep_assistant(epoch, "p-1", &http));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+const KEY_C: &str = "sk-keytest-cccccccccccccccccccc";
+const KEY_D: &str = "sk-keytest-dddddddddddddddddddd";
+
+/// A pool of `keys` for provider `p-1`, named and noted as given.
+fn pool_state(dir: &std::path::Path, keys: &[&str]) -> tauri::App<tauri::test::MockRuntime> {
+    use tauri::Manager;
+    let app = tauri::test::mock_app();
+    app.manage(app_state(dir));
+    let state = app.state::<crate::state::AppState>();
+    let keys: Vec<String> = keys.iter().map(|k| (*k).to_owned()).collect();
+    let parts = secrets::set_keys(state.secrets.as_ref(), "p-1", &keys, None).unwrap();
+    let mut s = state.settings();
+    s.providers.push(ProviderEntry {
+        config: ProviderConfig {
+            id: "p-1".into(),
+            name: "Relay".into(),
+            kind: ProviderKind::OpenaiCompatible,
+            base_url: "http://127.0.0.1:9/v1".into(),
+            model: "m".into(),
+            temperature: 0.0,
+            effort: Effort::Low,
+            wire_api: WireApi::Chat,
+            service_tier: None,
+            key_concurrency: Some(1),
+            max_retries: None,
+        }
+        .validated()
+        .unwrap(),
+        has_key: true,
+        key_count: keys.len(),
+        key_names: Default::default(),
+        key_through: Default::default(),
+        key_parts: parts,
+    });
+    drop(s);
+    app
+}
+
+/// A key that never got through gives way to a new key of the same
+/// account: in its place, with its name, and without the old key's record.
+#[tokio::test]
+async fn a_key_is_replaced_in_its_place_with_its_name() {
+    use biwrite_providers::{key_fingerprint, key_tail};
+    use tauri::Manager;
+
+    use crate::settings_commands::{list_api_keys, replace_api_key};
+    let dir = std::env::temp_dir().join(format!("biwrite-replace-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = pool_state(&dir, &[KEY_A, KEY_B]);
+    let state = app.state::<crate::state::AppState>();
+    {
+        let mut s = state.settings();
+        let entry = s.provider_mut("p-1").unwrap();
+        entry.key_names.insert(key_fingerprint(KEY_A), "lab".into());
+        entry
+            .key_names
+            .insert(key_fingerprint(KEY_B), "main".into());
+        entry
+            .key_through
+            .insert(key_fingerprint(KEY_A), 1_700_000_000_000);
+        entry
+            .key_through
+            .insert(key_fingerprint(KEY_B), 1_600_000_000_000);
+    }
+    replace_api_key(
+        state.clone(),
+        "p-1".into(),
+        2,
+        key_tail(KEY_B),
+        KEY_C.into(),
+    )
+    .await
+    .unwrap();
+    let vouched = state.settings().provider("p-1").unwrap().vouched();
+    assert_eq!(
+        secrets::get_keys(state.secrets.as_ref(), "p-1", vouched).unwrap(),
+        [KEY_A, KEY_C]
+    );
+    {
+        let s = state.settings();
+        let entry = s.provider("p-1").unwrap();
+        assert_eq!(
+            entry
+                .key_names
+                .get(&key_fingerprint(KEY_C))
+                .map(String::as_str),
+            Some("main")
+        );
+        assert!(!entry.key_names.contains_key(&key_fingerprint(KEY_B)));
+        assert!(!entry.key_through.contains_key(&key_fingerprint(KEY_B)));
+        assert!(entry.key_through.contains_key(&key_fingerprint(KEY_A)));
+    }
+    // The list shows which keys never got through.
+    let list = list_api_keys(state.clone(), "p-1".into()).await.unwrap();
+    assert_eq!(list[0].last_through, Some(1_700_000_000_000));
+    assert_eq!(list[1].last_through, None);
+    assert_eq!(list[1].name, "main");
+
+    // Refused: a key the pool has, a key that is no longer there, two keys.
+    let err =
+        |r: crate::error::CommandResult<crate::settings::SettingsView>| r.unwrap_err().to_string();
+    assert!(
+        err(replace_api_key(
+            state.clone(),
+            "p-1".into(),
+            2,
+            key_tail(KEY_C),
+            KEY_A.into()
+        )
+        .await)
+        .contains("already")
+    );
+    assert!(
+        err(replace_api_key(
+            state.clone(),
+            "p-1".into(),
+            2,
+            key_tail(KEY_B),
+            KEY_D.into()
+        )
+        .await)
+        .contains("changed")
+    );
+    assert!(
+        err(replace_api_key(
+            state.clone(),
+            "p-1".into(),
+            2,
+            key_tail(KEY_C),
+            format!("{KEY_D}\n{KEY_B}")
+        )
+        .await)
+        .contains("one key")
+    );
+    // A name written with the new key is taken.
+    replace_api_key(
+        state.clone(),
+        "p-1".into(),
+        1,
+        key_tail(KEY_A),
+        format!("backup {KEY_D}"),
+    )
+    .await
+    .unwrap();
+    let list = list_api_keys(state.clone(), "p-1".into()).await.unwrap();
+    assert_eq!(list[0].name, "backup");
+    assert_eq!(list[0].tail, key_tail(KEY_D));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Keys answered by a relay that turns keys away are noted with the time,
+/// once an hour at most, so the pool shows the ones that never got through.
+#[tokio::test]
+async fn keys_that_got_through_are_noted() {
+    use biwrite_providers::key_fingerprint;
+    use tauri::Manager;
+    let dir = std::env::temp_dir().join(format!("biwrite-noted-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = pool_state(&dir, &[KEY_A, KEY_B]);
+    let state = app.state::<crate::state::AppState>();
+    let entry = state.settings().provider("p-1").cloned().unwrap();
+    let board = state
+        .squeeze
+        .board_for(&entry)
+        .expect("a pool of two keys has a board");
+    board.answered(&key_fingerprint(KEY_A));
+    crate::squeeze_commands::record_through(&state);
+    let noted = state
+        .settings()
+        .provider("p-1")
+        .unwrap()
+        .key_through
+        .clone();
+    assert_eq!(noted.len(), 1);
+    let first = noted[&key_fingerprint(KEY_A)];
+    assert!(first > 1_700_000_000_000);
+    // Answered again soon after: the note stays as it was.
+    board.answered(&key_fingerprint(KEY_A));
+    crate::squeeze_commands::record_through(&state);
+    assert_eq!(
+        state.settings().provider("p-1").unwrap().key_through[&key_fingerprint(KEY_A)],
+        first
+    );
+    // The settings file holds it, never the key.
+    let file = std::fs::read_to_string(&state.paths.settings).unwrap();
+    assert!(file.contains(&key_fingerprint(KEY_A)));
+    assert!(!file.contains(KEY_A));
     std::fs::remove_dir_all(&dir).ok();
 }

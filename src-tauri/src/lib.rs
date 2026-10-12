@@ -3,6 +3,8 @@
 mod assist_commands;
 mod commands;
 mod error;
+mod figure_scene;
+mod figures;
 mod files;
 mod glossary_commands;
 mod latex_commands;
@@ -12,6 +14,7 @@ mod logging;
 mod pairing;
 mod project_copy;
 mod provider_state;
+mod repair_commands;
 mod request_log;
 mod secrets;
 mod settings;
@@ -36,6 +39,8 @@ mod pair_tests;
 mod pdf_click_tests;
 #[cfg(test)]
 mod project_copy_tests;
+#[cfg(test)]
+mod unsaved_build_tests;
 #[cfg(test)]
 mod upgrade_tests;
 #[cfg(test)]
@@ -197,6 +202,7 @@ pub fn run() {
             settings_commands::key_status,
             settings_commands::list_api_keys,
             settings_commands::rename_api_key,
+            settings_commands::replace_api_key,
             settings_commands::test_api_key,
             squeeze_commands::squeeze_status,
             squeeze_commands::squeeze_start,
@@ -223,6 +229,11 @@ pub fn run() {
             glossary_commands::export_bilingual,
             assist_commands::assist_start,
             assist_commands::assist_cancel,
+            assist_commands::figure_pdf,
+            assist_commands::figure_save,
+            repair_commands::assist_fix,
+            repair_commands::assist_check,
+            repair_commands::assist_check_cancel,
             assist_commands::assist_offer,
             assist_commands::attach_image,
             assist_commands::load_reference,

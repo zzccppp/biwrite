@@ -11,6 +11,10 @@ pub const MIRROR_DIR: &str = ".biwrite/zh";
 /// Where the English mirror of a Chinese document is built.
 pub const EN_MIRROR_DIR: &str = ".biwrite/en";
 
+/// Where a document is built to see whether it compiles, apart from the
+/// PDFs shown.
+pub const CHECK_DIR: &str = ".biwrite/check";
+
 /// pdfTeX registers that XeTeX lacks, defined as plain counters when
 /// missing so `\pdfoutput=1` and the like do not stop the build.
 const PDFTEX_GUARD: &str = "\\ifdefined\\pdfoutput\\else\\newcount\\pdfoutput\\fi\
@@ -85,9 +89,37 @@ pub fn redirect_include(root: &str, from: &str, to: &str) -> Option<String> {
     found.then_some(out)
 }
 
+/// The files a `\bibliography{a,b}` of `text` names (comments ignored), as
+/// written.
+pub fn bibliographies(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let code = uncommented(line);
+        for (i, _) in code.match_indices("\\bibliography{") {
+            let rest = &code[i + "\\bibliography{".len()..];
+            let Some(end) = rest.find('}') else { continue };
+            out.extend(
+                rest[..end]
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bibliographies_are_read_as_written() {
+        let text = "\\bibliographystyle{IEEEtran}\n% \\bibliography{old}\n\\bibliography{../refs, bib/more,IEEEabrv}\n";
+        assert_eq!(bibliographies(text), ["../refs", "bib/more", "IEEEabrv"]);
+        assert!(bibliographies("\\addbibresource{refs.bib}").is_empty());
+    }
 
     const DOC: &str = "\\pdfoutput=1\n\\documentclass{article}\n% \\begin{document} in a comment\n\\usepackage{amsmath}\n\\begin{document}\n中文段落。\n\\end{document}\n";
 
