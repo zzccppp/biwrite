@@ -1239,6 +1239,7 @@ mod tests {
     const BUSY: TranslateError = TranslateError::Server {
         status: 500,
         retry_after: None,
+        message: String::new(),
     };
 
     /// A relay at capacity answers once a try gets through: each failed try
@@ -1311,6 +1312,7 @@ mod tests {
         assert_eq!(retry_wait(40, &BUSY), RETRY_WAIT_MAX);
         let limited = TranslateError::RateLimited {
             retry_after: Some(Duration::from_secs(600)),
+            message: String::new(),
         };
         assert_eq!(retry_wait(1, &limited), RETRY_HINT_MAX);
     }

@@ -72,12 +72,17 @@ pub type BatchPartialFn<'a> = &'a (dyn Fn(usize, &str) + Send + Sync);
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TranslateError {
-    #[error("rate limited by the provider")]
-    RateLimited { retry_after: Option<Duration> },
-    #[error("provider server error (HTTP {status})")]
+    /// `message`: what the provider said (redacted), or empty.
+    #[error("rate limited by the provider{}", said(.message))]
+    RateLimited {
+        retry_after: Option<Duration>,
+        message: String,
+    },
+    #[error("provider server error (HTTP {status}){}", said(.message))]
     Server {
         status: u16,
         retry_after: Option<Duration>,
+        message: String,
     },
     #[error("network error: {0}")]
     Network(String),
@@ -88,6 +93,16 @@ pub enum TranslateError {
     /// Misconfiguration the user must fix (e.g. no API key). Not retried.
     #[error("{0}")]
     Config(String),
+}
+
+/// What the provider said, after an error's own words (nothing when it
+/// said nothing).
+fn said(message: &str) -> String {
+    if message.is_empty() {
+        String::new()
+    } else {
+        format!(": {message}")
+    }
 }
 
 impl TranslateError {
@@ -102,7 +117,9 @@ impl TranslateError {
     /// Server-provided `Retry-After`, if any.
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
-            Self::RateLimited { retry_after } | Self::Server { retry_after, .. } => *retry_after,
+            Self::RateLimited { retry_after, .. } | Self::Server { retry_after, .. } => {
+                *retry_after
+            }
             _ => None,
         }
     }

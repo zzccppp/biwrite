@@ -132,8 +132,27 @@ impl RequestLog {
     }
 }
 
+/// A line in the app's log for a request that failed, with the provider's
+/// words (keep-alives have lines of their own).
+fn log_failure(record: &RequestRecord) {
+    if record.state != RecordState::Error || record.purpose == biwrite_providers::KEEP_ALIVE {
+        return;
+    }
+    let key = record.key.as_ref().map_or(String::new(), |k| {
+        format!(" with key {} of {}", k.number, k.count)
+    });
+    log::info!(
+        "{} request to {}{key} failed after {} ms: {}",
+        record.purpose,
+        record.provider,
+        record.duration_ms.unwrap_or(0),
+        record.error.as_deref().unwrap_or("no details")
+    );
+}
+
 impl RequestObserver for RequestLog {
     fn record(&self, record: &RequestRecord) {
+        log_failure(record);
         let persist = {
             let mut inner = self.inner();
             match inner.records.iter().position(|r| r.id == record.id) {

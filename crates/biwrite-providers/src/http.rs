@@ -198,10 +198,14 @@ pub(crate) fn status_error(
         429 if lower.contains("insufficient_quota") || lower.contains("current quota") => {
             TranslateError::Rejected { status, message }
         }
-        429 => TranslateError::RateLimited { retry_after },
+        429 => TranslateError::RateLimited {
+            retry_after,
+            message,
+        },
         408 | 409 | 500..=599 => TranslateError::Server {
             status,
             retry_after,
+            message,
         },
         401 | 403 => TranslateError::Rejected {
             status,
@@ -456,6 +460,18 @@ mod tests {
             status_error(529, "overloaded".into(), None),
             TranslateError::Server { status: 529, .. }
         ));
+        // A relay's words on a full upstream stay with the error.
+        let full = error_message(
+            r#"{"error":{"message":"当前模型 m 负载已经达到上限，请稍后重试 (request id: 1)","type":"new_api_error","code":"get_channel_failed"}}"#,
+        );
+        assert_eq!(
+            status_error(500, full, None).to_string(),
+            "provider server error (HTTP 500): 当前模型 m 负载已经达到上限，请稍后重试 (request id: 1)"
+        );
+        assert_eq!(
+            status_error(429, "slow down".into(), None).to_string(),
+            "rate limited by the provider: slow down"
+        );
         assert!(matches!(
             status_error(400, "bad".into(), None),
             TranslateError::Rejected { status: 400, .. }

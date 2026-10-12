@@ -501,6 +501,7 @@ impl ChatModel for Down {
             Err(TranslateError::Server {
                 status: 503,
                 retry_after: None,
+                message: String::new(),
             })
         })
     }

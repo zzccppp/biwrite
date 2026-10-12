@@ -54,6 +54,7 @@ impl ChatModel for Scripted {
                 None => Err(TranslateError::Server {
                     status: 503,
                     retry_after: None,
+                    message: String::new(),
                 }),
             }
         })

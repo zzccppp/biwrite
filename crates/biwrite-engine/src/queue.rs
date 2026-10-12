@@ -690,11 +690,15 @@ mod tests {
         let server = TranslateError::Server {
             status: 500,
             retry_after: None,
+            message: String::new(),
         };
         for attempt in [0, 5, 50, 99] {
             assert!(retry_delay(attempt, &server, p) <= SERVER_RETRY_MAX);
         }
-        let limited = TranslateError::RateLimited { retry_after: None };
+        let limited = TranslateError::RateLimited {
+            retry_after: None,
+            message: String::new(),
+        };
         assert_eq!(retry_delay(30, &limited, p), Duration::from_secs(60));
     }
 }

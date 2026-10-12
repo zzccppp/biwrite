@@ -11,16 +11,22 @@
 //! relay, or a pool a squeeze was started for), and squeezes a key it kept
 //! back in when the key loses its place, unless a squeeze gave up on it. It
 //! does so however long the author is away (keeping alive forever, the
-//! default), or only for a provider used within [`KEEP_ALIVE_FOR`].
+//! default, which squeezes back in every few seconds as a squeeze the author
+//! started does), or only for a provider used within [`KEEP_ALIVE_FOR`].
+//! The keys kept are noted in the settings, and after a restart or an
+//! update they are squeezed back in. The app's log has a line for each key
+//! that gets through, each key given up on, what the relay said when it
+//! turned a key away (once per key while the words stay the same, at most
+//! every few minutes), and the end of each squeeze.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use biwrite_providers::{
-    ChangeFn, HttpProvider, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress, Squeeze, SqueezeBoard,
-    SqueezeChange, key_fingerprint, ping,
+    CROWDED_AFTER, ChangeFn, HttpProvider, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress, Squeeze,
+    SqueezeBoard, SqueezeChange, key_fingerprint, ping,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, UserAttentionType};
@@ -40,6 +46,15 @@ const KEEP_ALIVE_TICK: Duration = Duration::from_secs(30);
 /// fails now and then, and a retry soon keeps it before it counts as stale.
 const PING_RETRY: Duration = Duration::from_secs(30);
 const PING_WAIT_MAX: Duration = Duration::from_secs(10 * 60);
+/// The keeper's first round after a start, soon: keys kept before a restart
+/// are squeezed back in.
+const FIRST_ROUND_AFTER: Duration = Duration::from_secs(5);
+/// Updating from a version that did not note the keys kept alive, the keys
+/// of a crowded relay answered this lately are squeezed back in (a key
+/// through all along is noted once an hour, see [`THROUGH_NOTE_EVERY`]).
+const ANSWERED_LATELY: u64 = 90 * 60 * 1000;
+/// A key turned away with the same words is logged again after this long.
+const TURNED_AWAY_LOG_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// Boards and running squeezes, by provider id.
 #[derive(Default)]
@@ -76,7 +91,56 @@ impl SqueezeState {
     /// The keys of `board` are kept alive now: always while keeping alive
     /// forever, else when the author used them within [`KEEP_ALIVE_FOR`].
     fn in_use(&self, board: &SqueezeBoard) -> bool {
-        self.forever.load(Ordering::Relaxed) || board.used_within(KEEP_ALIVE_FOR)
+        self.forever() || board.used_within(KEEP_ALIVE_FOR)
+    }
+
+    fn forever(&self) -> bool {
+        self.forever.load(Ordering::Relaxed)
+    }
+
+    /// The keys kept alive, by provider id (fingerprints, in order), for
+    /// the settings.
+    fn kept_keys(&self) -> BTreeMap<String, Vec<String>> {
+        self.kept()
+            .iter()
+            .filter(|(_, keys)| !keys.is_empty())
+            .map(|(id, keys)| {
+                let mut keys: Vec<String> = keys.iter().cloned().collect();
+                keys.sort();
+                (id.clone(), keys)
+            })
+            .collect()
+    }
+
+    /// After a restart, the keys kept alive before it (`kept`, by provider
+    /// id) are kept again for providers among `entries`, so the keeper
+    /// finds them gone and squeezes them back in. Their relay counts as one
+    /// that turned keys away, and as used now. The number of keys.
+    pub fn restore_kept(
+        &self,
+        entries: &[ProviderEntry],
+        kept: &BTreeMap<String, Vec<String>>,
+    ) -> usize {
+        let mut restored = 0;
+        for e in entries.iter().filter(|e| e.squeezable()) {
+            let Some(prints) = kept.get(&e.config.id).filter(|p| !p.is_empty()) else {
+                continue;
+            };
+            let Some(board) = self.board_for(e) else {
+                continue;
+            };
+            board.allow_crowding();
+            for _ in 0..CROWDED_AFTER {
+                board.note_turned_away();
+            }
+            board.note_use();
+            self.kept()
+                .entry(e.config.id.clone())
+                .or_default()
+                .extend(prints.iter().cloned());
+            restored += prints.len();
+        }
+        restored
     }
 
     fn boards(&self) -> MutexGuard<'_, HashMap<String, (String, Arc<SqueezeBoard>)>> {
@@ -513,11 +577,20 @@ fn start_run(
         .map(|(i, (k, _))| (i + 1, k.clone()))
         .unzip();
     let auto = only.is_some();
+    let unattended = backs_off(&state.squeeze, auto);
+    let lines = Arc::new(SqueezeLog {
+        name: entry.config.name.clone(),
+        numbers: numbers.clone(),
+        run: OnceLock::new(),
+        said: Mutex::default(),
+        given_up: Mutex::default(),
+    });
     let on_change: ChangeFn = {
         let app = app.clone();
         let id = id.clone();
         let name = entry.config.name.clone();
         let board = Arc::clone(&board);
+        let lines = Arc::clone(&lines);
         Arc::new(move |change: SqueezeChange| {
             let state = app.state::<AppState>();
             let running = !matches!(change, SqueezeChange::Ended { .. });
@@ -543,10 +616,12 @@ fn start_run(
                     let _ = window.request_user_attention(Some(UserAttentionType::Critical));
                 }
             }
+            let through = fingerprints.iter().filter(|f| board.is_through(f)).count();
+            lines.note(&change, through, total);
             let event = SqueezeEvent {
                 provider_id: id.clone(),
                 provider_name: name.clone(),
-                through: fingerprints.iter().filter(|f| board.is_through(f)).count(),
+                through,
                 total,
                 running,
                 keeping: state.settings().keep_alive && keeps(&state.squeeze, &board),
@@ -564,11 +639,21 @@ fn start_run(
         state.prompts(),
         Arc::clone(&on_change),
         tauri::async_runtime::handle().inner(),
-        auto,
+        unattended,
     )?;
+    let _ = lines.run.set(Arc::downgrade(&run));
     on_change(SqueezeChange::Started);
     if auto {
-        log::info!("squeezing keys of {} back in", entry.config.name);
+        log::info!(
+            "squeezing keys {} of {} back in{}",
+            numbered(&lines.numbers),
+            entry.config.name,
+            if unattended {
+                ", more slowly while unused"
+            } else {
+                ""
+            }
+        );
         state.squeeze.auto().insert(id.clone());
     } else {
         log::info!("squeeze started for {}", entry.config.name);
@@ -591,12 +676,124 @@ pub async fn squeeze_stop(state: State<'_, AppState>, id: String) -> CommandResu
     Ok(view(&state.squeeze, &id))
 }
 
+/// A squeeze backs off while the author is away: one the keeper started
+/// (`auto`), unless keeping alive forever. Squeezing back in while keeping
+/// alive forever tries every few seconds, as a squeeze the author started
+/// does.
+fn backs_off(squeeze: &SqueezeState, auto: bool) -> bool {
+    auto && !squeeze.forever()
+}
+
+/// Lines in the app's log about a squeeze (see the module).
+struct SqueezeLog {
+    name: String,
+    /// The pool numbers of the keys tried, in their order.
+    numbers: Vec<usize>,
+    run: OnceLock<Weak<Squeeze>>,
+    /// Per key tried (by position): the relay's words last logged, and when.
+    said: Mutex<HashMap<usize, (String, Instant)>>,
+    /// Keys tried that were given up on, logged once.
+    given_up: Mutex<HashSet<usize>>,
+}
+
+impl SqueezeLog {
+    fn note(&self, change: &SqueezeChange, through: usize, total: usize) {
+        let Some(run) = self.run.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let progress = run.progress();
+        match change {
+            SqueezeChange::Through { number } => {
+                let tries = self
+                    .numbers
+                    .iter()
+                    .position(|n| n == number)
+                    .and_then(|i| progress.get(i))
+                    .map_or(0, |p| p.tries);
+                log::info!(
+                    "squeeze of {}: key {number} got through after {tries} tries ({through} of {total} through)",
+                    self.name
+                );
+            }
+            SqueezeChange::Tried => self.turned_away(&progress),
+            SqueezeChange::Ended { .. } => {
+                self.turned_away(&progress);
+                let tries: u32 = progress.iter().map(|p| p.tries).sum();
+                log::info!(
+                    "squeeze of {} ended: {through} of {total} keys through, {tries} tries",
+                    self.name
+                );
+            }
+            SqueezeChange::Started | SqueezeChange::Kept => {}
+        }
+    }
+
+    /// What the relay said to keys it turned away, and keys given up on.
+    fn turned_away(&self, progress: &[KeyProgress]) {
+        for (i, p) in progress.iter().enumerate() {
+            let number = self.numbers.get(i).copied().unwrap_or(i + 1);
+            let Some(error) = &p.last_error else {
+                continue;
+            };
+            if p.refused {
+                if self
+                    .given_up
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(i)
+                {
+                    log::info!(
+                        "squeeze of {}: gave up on key {number} after {} tries: {error}",
+                        self.name,
+                        p.tries
+                    );
+                }
+                continue;
+            }
+            let words = without_request_id(error);
+            let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
+            let due = said
+                .get(&i)
+                .is_none_or(|(w, at)| *w != words || at.elapsed() >= TURNED_AWAY_LOG_EVERY);
+            if due {
+                said.insert(i, (words, Instant::now()));
+                log::info!(
+                    "squeeze of {}: key {number} turned away, {} tries so far: {error}",
+                    self.name,
+                    p.tries
+                );
+            }
+        }
+    }
+}
+
+/// `words` without a relay's request id, which differs every time.
+fn without_request_id(words: &str) -> String {
+    let Some(at) = words.find("(request id:") else {
+        return words.to_owned();
+    };
+    let end = words[at..].find(')').map_or(words.len(), |e| at + e + 1);
+    format!("{}{}", words[..at].trim_end(), &words[end..])
+}
+
+/// Pool numbers as a list, "1, 3, 5".
+fn numbered(numbers: &[usize]) -> String {
+    numbers
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Keep the keys that got through alive, every [`KEEP_ALIVE_TICK`], while
 /// the setting is on, and note when each key got through.
 pub fn spawn_keeper(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        restore_kept(&app.state::<AppState>());
+        let mut wait = FIRST_ROUND_AFTER;
         loop {
-            tokio::time::sleep(KEEP_ALIVE_TICK).await;
+            tokio::time::sleep(wait).await;
+            wait = KEEP_ALIVE_TICK;
             record_through(&app.state::<AppState>());
             keep_alive(&app).await;
         }
@@ -610,6 +807,49 @@ const THROUGH_NOTE_EVERY: u64 = 60 * 60 * 1000;
 /// Note in the settings when each key of a relay that turns keys away was
 /// last answered, so the pool shows the keys that never got through, after
 /// a restart too.
+/// The keys kept alive before a restart (in the settings) are kept again,
+/// while keeping alive is on. Settings of a version that did not note them
+/// give the keys of a crowded relay answered lately instead.
+fn restore_kept(state: &AppState) {
+    let (entries, kept) = {
+        let s = state.settings();
+        if !s.keep_alive {
+            return;
+        }
+        state.squeeze.set_forever(s.keep_alive_forever);
+        let kept = s
+            .kept_keys
+            .clone()
+            .unwrap_or_else(|| answered_lately(&s.providers, now_ms()));
+        if kept.is_empty() {
+            return;
+        }
+        (s.providers.clone(), kept)
+    };
+    let restored = state.squeeze.restore_kept(&entries, &kept);
+    if restored > 0 {
+        log::info!("{restored} keys kept alive before the restart are squeezed back in");
+    }
+}
+
+/// The keys of each crowded relay among `entries` noted as answered within
+/// [`ANSWERED_LATELY`] of `now` (Unix milliseconds), by provider id.
+fn answered_lately(entries: &[ProviderEntry], now: u64) -> BTreeMap<String, Vec<String>> {
+    entries
+        .iter()
+        .filter(|e| e.squeezable() && e.crowded_relay())
+        .filter_map(|e| {
+            let keys: Vec<String> = e
+                .key_through
+                .iter()
+                .filter(|(_, at)| now.saturating_sub(**at) <= ANSWERED_LATELY)
+                .map(|(f, _)| f.clone())
+                .collect();
+            (!keys.is_empty()).then(|| (e.config.id.clone(), keys))
+        })
+        .collect()
+}
+
 pub(crate) fn record_through(state: &AppState) {
     let through: Vec<(String, Vec<(String, u64)>)> = state
         .squeeze
@@ -625,11 +865,13 @@ pub(crate) fn record_through(state: &AppState) {
         })
         .filter(|(_, t)| !t.is_empty())
         .collect();
-    if through.is_empty() {
-        return;
-    }
+    let kept = Some(state.squeeze.kept_keys());
     let mut s = state.settings();
-    let mut changed = false;
+    // The keys kept alive, squeezed back in after a restart.
+    let mut changed = s.kept_keys != kept;
+    if changed {
+        s.kept_keys = kept;
+    }
     for (id, keys) in through {
         let Some(entry) = s.provider_mut(&id) else {
             continue;
@@ -647,7 +889,7 @@ pub(crate) fn record_through(state: &AppState) {
         && !s.keep_file
         && let Err(e) = state.persist(&s)
     {
-        log::warn!("could not note the keys that got through: {e}");
+        log::warn!("could not note the keys that got through or are kept alive: {e}");
     }
 }
 
@@ -1019,6 +1261,106 @@ mod tests {
             state.dropped_keys(entries).is_empty(),
             "nothing through any more"
         );
+    }
+
+    /// The keys kept alive before a restart are noted, and after it they
+    /// count as dropped, so the keeper squeezes them back in.
+    #[test]
+    fn keys_kept_before_a_restart_are_squeezed_back_in() {
+        let state = SqueezeState::default();
+        let relay = entry("https://anyrouter.top/v1", 6);
+        let entries = std::slice::from_ref(&relay);
+        let board = state.board_for(&relay).unwrap();
+        board.answered("fp-a");
+        board.answered("fp-b");
+        board.note_turned_away();
+        board.note_turned_away();
+        board.note_use();
+        assert!(state.dropped_keys(entries).is_empty(), "both through");
+        let noted = state.kept_keys();
+        assert_eq!(noted["p-relay"], ["fp-a".to_owned(), "fp-b".to_owned()]);
+
+        // The restart: nothing is known until the keys kept are restored.
+        let after = SqueezeState::default();
+        assert!(after.dropped_keys(entries).is_empty());
+        assert_eq!(after.restore_kept(entries, &noted), 2);
+        let dropped = after.dropped_keys(entries);
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].2, ["fp-a".to_owned(), "fp-b".to_owned()]);
+        // Not used lately and not kept alive forever, it still counts as
+        // used: the restart is the author's.
+        assert!(dropped[0].1.used_within(KEEP_ALIVE_FOR));
+
+        // A provider getting through does not apply to is left alone.
+        let single = ProviderEntry {
+            config: ProviderConfig {
+                id: "p-one".into(),
+                base_url: "https://api.example.com/v1".into(),
+                ..relay.config.clone()
+            },
+            key_count: 1,
+            ..relay.clone()
+        };
+        let mut kept = BTreeMap::new();
+        kept.insert("p-one".to_owned(), vec!["fp-x".to_owned()]);
+        assert_eq!(
+            SqueezeState::default().restore_kept(std::slice::from_ref(&single), &kept),
+            0
+        );
+    }
+
+    /// Squeezing back in backs off while the author is away only when
+    /// keeping alive is not forever: forever, it tries every few seconds as
+    /// in a squeeze the author started.
+    /// Updating from a version that did not note the keys kept alive: the
+    /// keys of a crowded relay answered within the last 90 minutes.
+    #[test]
+    fn without_a_note_the_keys_answered_lately_are_squeezed_back_in() {
+        let now = 1_800_000_000_000;
+        let minute = 60 * 1000;
+        let mut relay = entry("https://anyrouter.top/v1", 6);
+        relay.key_through.insert("fp-new".into(), now - 5 * minute);
+        relay
+            .key_through
+            .insert("fp-hour".into(), now - 70 * minute);
+        relay
+            .key_through
+            .insert("fp-old".into(), now - 5 * 60 * minute);
+        let mut pool = entry("https://api.example.com/v1", 2);
+        pool.config.id = "p-pool".into();
+        pool.key_through.insert("fp-pool".into(), now - minute);
+        let lately = answered_lately(&[relay, pool], now);
+        assert_eq!(lately.len(), 1, "an ordinary pool is not kept alive");
+        assert_eq!(
+            lately["p-relay"],
+            ["fp-hour".to_owned(), "fp-new".to_owned()]
+        );
+    }
+
+    #[test]
+    fn squeezing_back_in_while_keeping_alive_forever_does_not_back_off() {
+        let state = SqueezeState::default();
+        state.set_forever(true);
+        assert!(!backs_off(&state, true));
+        assert!(!backs_off(&state, false), "the author's squeeze");
+        state.set_forever(false);
+        assert!(backs_off(&state, true));
+        assert!(!backs_off(&state, false));
+    }
+
+    #[test]
+    fn a_relays_request_id_is_left_out_when_comparing_its_words() {
+        assert_eq!(
+            without_request_id(
+                "provider server error (HTTP 500): 当前模型 m 负载已经达到上限，请稍后重试 (request id: 2026101300064)"
+            ),
+            "provider server error (HTTP 500): 当前模型 m 负载已经达到上限，请稍后重试"
+        );
+        assert_eq!(
+            without_request_id("network error: timed out"),
+            "network error: timed out"
+        );
+        assert_eq!(numbered(&[1, 3, 5]), "1, 3, 5");
     }
 
     /// Keys are kept alive, and squeezed back in, only while the author uses

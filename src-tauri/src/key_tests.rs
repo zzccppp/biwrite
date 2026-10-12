@@ -391,6 +391,49 @@ async fn a_key_is_replaced_in_its_place_with_its_name() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The keys kept alive are noted in the settings (fingerprints, never the
+/// keys), and forgotten there once keeping alive is turned off.
+#[tokio::test]
+async fn keys_kept_alive_are_noted_for_a_restart() {
+    use biwrite_providers::key_fingerprint;
+    use tauri::Manager;
+    let dir = std::env::temp_dir().join(format!("biwrite-kept-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = pool_state(&dir, &[KEY_A, KEY_B]);
+    let state = app.state::<crate::state::AppState>();
+    let entry = state.settings().provider("p-1").cloned().unwrap();
+    let board = state.squeeze.board_for(&entry).unwrap();
+    board.allow_crowding();
+    board.note_turned_away();
+    board.note_turned_away();
+    board.answered(&key_fingerprint(KEY_A));
+    state.squeeze.set_forever(true);
+    // The keeper keeps the key through.
+    assert!(
+        state
+            .squeeze
+            .dropped_keys(std::slice::from_ref(&entry))
+            .is_empty()
+    );
+    crate::squeeze_commands::record_through(&state);
+    assert_eq!(
+        state.settings().kept_keys.as_ref().unwrap()["p-1"],
+        [key_fingerprint(KEY_A)]
+    );
+    let file = std::fs::read_to_string(&state.paths.settings).unwrap();
+    assert!(file.contains("keptKeys"));
+    assert!(!file.contains(KEY_A));
+    // Keeping alive turned off: nothing to squeeze back in after a restart.
+    state.squeeze.keep_alive_off();
+    crate::squeeze_commands::record_through(&state);
+    assert_eq!(
+        state.settings().kept_keys,
+        Some(Default::default()),
+        "noted as none, not as unknown"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Keys answered by a relay that turns keys away are noted with the time,
 /// once an hour at most, so the pool shows the ones that never got through.
 #[tokio::test]

@@ -68,10 +68,14 @@ async fn concurrency_limit_is_respected() {
 async fn rate_limits_are_retried_with_backoff() {
     let h = harness(EngineSettings::default());
     h.translator.fail_next([
-        TranslateError::RateLimited { retry_after: None },
+        TranslateError::RateLimited {
+            retry_after: None,
+            message: String::new(),
+        },
         TranslateError::Server {
             status: 503,
             retry_after: Some(Duration::from_secs(2)),
+            message: String::new(),
         },
     ]);
     loaded(&h, "Only paragraph.").await;
@@ -256,8 +260,10 @@ async fn transient_errors_are_retried_on_the_next_pass() {
 #[tokio::test(start_paused = true)]
 async fn failed_attempt_partial_is_cleared_during_backoff() {
     let h = harness(EngineSettings::default());
-    h.translator
-        .fail_next([TranslateError::RateLimited { retry_after: None }]);
+    h.translator.fail_next([TranslateError::RateLimited {
+        retry_after: None,
+        message: String::new(),
+    }]);
     loaded(&h, "Paragraph.").await;
     let states = h.sink.states.lock().unwrap().clone();
     let partial_at = states

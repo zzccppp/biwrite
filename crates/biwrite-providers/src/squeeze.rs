@@ -623,6 +623,7 @@ mod tests {
         TranslateError::Server {
             status: 500,
             retry_after: None,
+            message: String::new(),
         }
     }
 
@@ -686,7 +687,10 @@ mod tests {
         assert!(fail(
             &board,
             "a",
-            &TranslateError::RateLimited { retry_after: None }
+            &TranslateError::RateLimited {
+                retry_after: None,
+                message: String::new()
+            }
         ));
         let bad = TranslateError::Rejected {
             status: 400,

@@ -148,6 +148,10 @@ pub struct AppSettings {
     /// They are kept alive however long the author is away; off, only
     /// within half an hour of the author's last use.
     pub keep_alive_forever: bool,
+    /// The keys kept alive when last noted (fingerprints, never the keys),
+    /// by provider id: after a restart or an update they are squeezed back
+    /// in. `None` from versions that did not note them.
+    pub kept_keys: Option<BTreeMap<String, Vec<String>>>,
     /// Accept and Revert in a LaTeX project go through the model and a
     /// build (the model fits an answer, judges the preamble lines a revert
     /// may take out); off, they apply and revert as they are.
@@ -192,6 +196,7 @@ impl Default for AppSettings {
             close_to_tray: true,
             keep_alive: true,
             keep_alive_forever: true,
+            kept_keys: None,
             assisted_apply: true,
             keep_file: false,
         }
@@ -553,6 +558,7 @@ mod tests {
     fn keeping_alive_always_and_assisted_apply_are_on_unless_turned_off() {
         let old: AppSettings = serde_json::from_str(r#"{"keepAlive": true}"#).unwrap();
         assert!(old.keep_alive_forever && old.assisted_apply);
+        assert_eq!(old.kept_keys, None, "not noted by an older version");
         let off: AppSettings =
             serde_json::from_str(r#"{"keepAliveForever": false, "assistedApply": false}"#).unwrap();
         assert!(!off.keep_alive_forever && !off.assisted_apply);

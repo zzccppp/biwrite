@@ -190,13 +190,20 @@ async fn openai_error_mapping() {
     assert_eq!(
         run(&t, &req).await.0.unwrap_err(),
         TranslateError::RateLimited {
-            retry_after: Some(Duration::from_secs(7))
+            retry_after: Some(Duration::from_secs(7)),
+            message: "Rate limit reached".into(),
         }
     );
+    // The provider's words are kept, for the logs and the request log.
+    let server_error = run(&t, &req).await.0.unwrap_err();
     assert!(matches!(
-        run(&t, &req).await.0.unwrap_err(),
+        server_error,
         TranslateError::Server { status: 503, .. }
     ));
+    assert_eq!(
+        server_error.to_string(),
+        "provider server error (HTTP 503): upstream unavailable"
+    );
     assert!(matches!(
         run(&t, &req).await.0.unwrap_err(),
         TranslateError::Rejected { status: 429, .. }

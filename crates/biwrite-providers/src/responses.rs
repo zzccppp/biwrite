@@ -217,6 +217,7 @@ pub(crate) async fn read_stream(
                     TranslateError::Server {
                         status: 500,
                         retry_after: None,
+                        message: String::new(),
                     }
                 });
             }

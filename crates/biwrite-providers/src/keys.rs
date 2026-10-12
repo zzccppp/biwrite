@@ -244,7 +244,7 @@ enum Fault {
 
 fn fault(err: &TranslateError) -> Fault {
     match err {
-        TranslateError::RateLimited { retry_after } => Fault::Cooldown(
+        TranslateError::RateLimited { retry_after, .. } => Fault::Cooldown(
             retry_after
                 .unwrap_or(DEFAULT_COOLDOWN)
                 .clamp(Duration::from_millis(200), MAX_COOLDOWN),
@@ -676,7 +676,10 @@ mod tests {
     }
 
     fn rate_limited() -> TranslateError {
-        TranslateError::RateLimited { retry_after: None }
+        TranslateError::RateLimited {
+            retry_after: None,
+            message: String::new(),
+        }
     }
 
     fn invalid_key() -> TranslateError {
@@ -769,6 +772,7 @@ mod tests {
         let busy = TranslateError::Server {
             status: 500,
             retry_after: None,
+            message: String::new(),
         };
         assert_eq!(p.report(&a, &busy), Failover::Now);
         drop(a);
@@ -889,6 +893,7 @@ mod tests {
             &b,
             &TranslateError::RateLimited {
                 retry_after: Some(Duration::from_millis(300)),
+                message: String::new(),
             },
         );
         drop(b);
@@ -966,7 +971,8 @@ mod tests {
         );
         assert_eq!(
             fault(&TranslateError::RateLimited {
-                retry_after: Some(Duration::from_secs(900))
+                retry_after: Some(Duration::from_secs(900)),
+                message: String::new(),
             }),
             Fault::Cooldown(MAX_COOLDOWN, true)
         );
@@ -1041,6 +1047,7 @@ mod tests {
             &first,
             &TranslateError::RateLimited {
                 retry_after: Some(Duration::from_secs(60)),
+                message: String::new(),
             },
         );
         std::thread::sleep(Duration::from_millis(2));
@@ -1051,6 +1058,7 @@ mod tests {
         let busy = TranslateError::Server {
             status: 502,
             retry_after: None,
+            message: String::new(),
         };
         p.report(&first, &busy);
         drop(first);
@@ -1092,6 +1100,7 @@ mod tests {
             &early,
             &TranslateError::RateLimited {
                 retry_after: Some(Duration::from_secs(120)),
+                message: String::new(),
             },
         );
         drop(early);
@@ -1127,6 +1136,7 @@ mod tests {
             &x,
             &TranslateError::RateLimited {
                 retry_after: Some(Duration::from_secs(60)),
+                message: String::new(),
             },
         );
         p.succeeded(&z);
@@ -1156,6 +1166,7 @@ mod tests {
         TranslateError::Server {
             status: 500,
             retry_after: None,
+            message: String::new(),
         }
     }
 
