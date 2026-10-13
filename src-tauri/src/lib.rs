@@ -15,6 +15,7 @@ mod log_commands;
 mod logging;
 mod materials;
 mod pairing;
+mod paper_view;
 mod project_copy;
 mod provider_state;
 mod repair_commands;
@@ -285,6 +286,7 @@ pub fn run() {
             latex_commands::latex_save_pdf,
             latex_commands::latex_export_tex,
             latex_commands::latex_save_flat,
+            paper_view::latex_paper,
             project_copy::latex_export_project,
             latex_commands::latex_inverse,
             latex_commands::latex_forward,

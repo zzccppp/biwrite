@@ -750,6 +750,10 @@ export const messages = {
     en: "Copies the class, styles, figures and bibliography the paper builds with, so it builds in the new folder.",
     zh: "复制论文用到的模板、样式、图片和参考文献，新文件夹里可以直接编译。",
   },
+  "pane.scope": { en: "What the translation shows", zh: "译文的范围" },
+  "pane.thisFile": { en: "This file", zh: "本文件" },
+  "pane.wholePaper": { en: "Whole paper", zh: "全文" },
+  "paper.open": { en: "Open {file} at this paragraph", zh: "打开 {file} 并选中这一段" },
   "toolbar.saveAsFlat": { en: "Save as one .tex (sections merged)…", zh: "另存为单个 .tex（合并各节）…" },
   "toolbar.saveAsFlatHint": {
     en: "The main file with every section it includes put in place, this file as edited. The project stays as it is.",

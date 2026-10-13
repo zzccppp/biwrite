@@ -845,3 +845,28 @@ export interface MirrorSaved {
   /** The paired file still lags behind the saved document. */
   behind: boolean;
 }
+
+/** A paragraph of another file of the paper, for the whole-paper view. */
+export interface PaperBlock {
+  /** UTF-16 range in its file as saved. */
+  from: number;
+  to: number;
+  heading: boolean;
+  source: string;
+  /** In the pane's language; null when not known. */
+  translation: string | null;
+}
+
+/** Paragraphs of one file in a row. */
+export interface PaperPart {
+  file: string;
+  blocks: PaperBlock[];
+}
+
+/** The whole paper around the open document, for the translation pane. */
+export interface PaperView {
+  before: PaperPart[];
+  after: PaperPart[];
+  /** What the open document includes, by the name its include gives (no ./ nor .tex). */
+  inside: { name: string; parts: PaperPart[] }[];
+}

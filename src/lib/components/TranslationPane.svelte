@@ -3,7 +3,8 @@
   import { language, parts, t } from "../i18n.svelte";
   import type { Session } from "../session.svelte";
   import { anchorsAgree, placeOf, samePlace, sentenceBounds, shownText, textRange } from "../sentences";
-  import type { SentenceMark, SentencePick } from "../types";
+  import type { PaperPart as Part, PaperView, SegmentLayout, SentenceMark, SentencePick } from "../types";
+  import PaperPart from "./PaperPart.svelte";
   import SegmentBlock from "./SegmentBlock.svelte";
 
   interface Props {
@@ -22,6 +23,10 @@
     onscroll: () => void;
     onresize: () => void;
     pane?: HTMLElement;
+    /** The whole paper around the open document (another file's paragraph
+     * opens that file there), or null for the open document alone. */
+    paper?: PaperView | null;
+    onopenpart?: (file: string, from: number, to: number) => void;
   }
 
   let {
@@ -36,7 +41,26 @@
     onresize,
     mark = null,
     pane = $bindable(),
+    paper = null,
+    onopenpart = () => {},
   }: Props = $props();
+
+  const paneLang = $derived(session.direction === "zh-en" ? "en" : "zh");
+
+  /** The parts of the paper a segment of the open document includes (its
+   * `\input` and `\include` lines). */
+  function inside(segment: SegmentLayout): Part[] {
+    if (!paper || paper.inside.length === 0) return [];
+    const out: Part[] = [];
+    for (const line of slice(segment.from, segment.to).split("\n")) {
+      const code = line.replace(/(^|[^\\])%.*$/, "$1");
+      for (const m of code.matchAll(/\\(?:input|include|subfile)\s*\{([^{}]+)\}/g)) {
+        const name = m[1].trim().replace(/^\.\//, "").replace(/\.tex$/, "");
+        out.push(...(paper.inside.find((i) => i.name === name)?.parts ?? []));
+      }
+    }
+    return out;
+  }
 
   let list: HTMLElement;
 
@@ -120,6 +144,9 @@
 
 <section class="gloss" bind:this={pane} {onscroll} aria-label={t("pane.gloss")}>
   <div class="list" bind:this={list}>
+    {#if paper}
+      {#each paper.before as part, k (k)}<PaperPart {part} lang={paneLang} macros={session.macros} onopen={onopenpart} />{/each}
+    {/if}
     {#each session.layout as segment, i (segment.id)}
       <SegmentBlock
         {segment}
@@ -139,6 +166,7 @@
         {onedit}
         ontoggle={(id) => session.toggleExpanded(id)}
       />
+      {#each inside(segment) as part, k (k)}<PaperPart {part} lang={paneLang} macros={session.macros} onopen={onopenpart} />{/each}
     {:else}
       <div class="empty">
         {#if session.direction === "zh-en"}
@@ -152,6 +180,9 @@
         {/if}
       </div>
     {/each}
+    {#if paper}
+      {#each paper.after as part, k (k)}<PaperPart {part} lang={paneLang} macros={session.macros} onopen={onopenpart} />{/each}
+    {/if}
   </div>
 </section>
 

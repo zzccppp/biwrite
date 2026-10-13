@@ -300,6 +300,32 @@ impl Engine {
         mirror_of(&doc, |seg| found.get(&seg.id).cloned())
     }
 
+    /// The translations the cache has for the segments of `text` toward
+    /// `direction`'s target, by the segment's index in `segment(text,
+    /// mode)`. Sends no request.
+    pub fn cached_translations(
+        &self,
+        text: &str,
+        mode: Mode,
+        direction: Direction,
+    ) -> HashMap<usize, String> {
+        let mut doc = DocumentModel::new(1);
+        doc.apply(text.to_owned(), mode);
+        let st = self.inner.lock();
+        doc.segments()
+            .iter()
+            .enumerate()
+            .filter(|(_, seg)| seg.kind().is_translatable())
+            .filter_map(|(i, seg)| {
+                let source = seg.segment.content(doc.text());
+                let fp = st.glossary_fp_toward(direction, source);
+                let key = st.cache_key_toward(direction, seg.hash, fp);
+                let text = self.inner.cache.get(&key).ok().flatten()?;
+                Some((i, text))
+            })
+            .collect()
+    }
+
     /// Bilingual Markdown: each paragraph in English, then in Chinese.
     /// Paragraphs without an up-to-date translation get a note instead.
     pub fn bilingual_markdown(&self) -> Bilingual {

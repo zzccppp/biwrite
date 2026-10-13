@@ -212,7 +212,7 @@ PDF 图和 PPT 图的结果卡片（\fig{f-pptx}）显示图的预览（①）�
 \label{sec:latex}
 
 \subsection{打开 LaTeX 项目}
-LaTeX 文件可以直接用\ui{打开}。也可以点\ui{新建}（\fig{l-files} ①），在弹出的窗口里选\ui{打开 LaTeX 文件夹…}，选择论文所在文件夹，软件会打开其中的主文件。多文件项目的标题栏显示文件列表（②），标有\ui{主文件}的是编译入口。LaTeX 文件的右侧窗格上方有\ui{译文}和\ui{PDF}两个页签（③）。编辑器里 \texttt{\textbackslash input}、\texttt{\textbackslash include} 引入的项目文件，文件名后有一个箭头，点它或按住 \cmdkey 点文件名即打开那个文件。打开某一节时，标题栏多一个\ui{主文件}按钮，点击回到主文件。
+LaTeX 文件可以直接用\ui{打开}。也可以点\ui{新建}（\fig{l-files} ①），在弹出的窗口里选\ui{打开 LaTeX 文件夹…}，选择论文所在文件夹，软件会打开其中的主文件。多文件项目的标题栏显示文件列表（②），标有\ui{主文件}的是编译入口。LaTeX 文件的右侧窗格上方有\ui{译文}和\ui{PDF}两个页签（③）。编辑器里 \texttt{\textbackslash input}、\texttt{\textbackslash include} 引入的项目文件，文件名后有一个箭头，点它或按住 \cmdkey 点文件名即打开那个文件。打开某一节时，标题栏多一个\ui{主文件}按钮，点击回到主文件。多文件项目的\ui{译文}页签右上角可以在\ui{本文件}和\ui{全文}之间切换。\ui{全文}按主文件的引入顺序显示整篇论文，嵌套几层都可以。其他文件的段落用配对的中文文件或缓存中的译文，没有译文的段落以浅色原文显示，查看不会发出翻译请求。点其中一段，左侧打开那个文件并选中这一段。
 
 软件按以下顺序确定主文件：文件开头的 \texttt{\% !TEX root = …} 注释，然后是通过 \texttt{\textbackslash input}、\texttt{\textbackslash include} 链引入当前文件的主文件，嵌套多层也能找到。编译引擎依次参考 \texttt{\% !TEX program} 注释、项目中 \texttt{latexmkrc} 的 \texttt{\$pdf\_mode} 设置，以及导言区加载的宏包。
 

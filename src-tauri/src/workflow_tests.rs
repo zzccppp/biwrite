@@ -2213,6 +2213,42 @@ async fn workflow_a_real_paper_of_sections_works_from_its_sections() {
     }
     eprintln!("whole document: {} characters", paper.chars().count());
 
+    // The pane's whole paper from the method: the introduction before it,
+    // in the Chinese of its paired file.
+    let view_paper = crate::paper_view::paper_view(&state, &view.text).unwrap();
+    let intro_part = view_paper
+        .before
+        .iter()
+        .find(|p| p.file == "sections_en/01_intro.tex")
+        .expect("the introduction before the method");
+    let known = intro_part
+        .blocks
+        .iter()
+        .filter(|b| {
+            b.translation
+                .as_deref()
+                .is_some_and(crate::pairing::is_chinese)
+        })
+        .count();
+    assert!(
+        known * 10 >= intro_part.blocks.len() * 8,
+        "{known} of {} paragraphs in Chinese",
+        intro_part.blocks.len()
+    );
+    assert!(
+        view_paper
+            .after
+            .iter()
+            .any(|p| p.file == "sections_en/05_experiments.tex"),
+        "the experiments after it"
+    );
+    eprintln!(
+        "pane's whole paper: {} parts before, {} after, introduction {known} of {} in Chinese",
+        view_paper.before.len(),
+        view_paper.after.len(),
+        intro_part.blocks.len()
+    );
+
     // The paper as one file builds as the project does.
     let flat = crate::latex_commands::flat_paper(&state, &view.text, None).unwrap();
     assert!(
@@ -2275,5 +2311,54 @@ async fn workflow_a_real_paper_of_sections_works_from_its_sections() {
         before,
         "the paper's files are as they were"
     );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn the_paper_view_puts_every_part_around_the_open_one() {
+    let dir = sectioned("paper-view");
+    let app = tauri::test::mock_app();
+    let (state, _, _) = workflow_state(&dir);
+    app.manage(state);
+    let state = app.state::<AppState>();
+    // The introduction translated once, the main file too.
+    for part in ["sections/intro.tex", "main.tex"] {
+        open_path(&state, dir.join(part)).await.unwrap();
+        settle(&state).await;
+    }
+    let view = open_path(&state, dir.join("sections/method.tex"))
+        .await
+        .unwrap();
+    let paper = crate::paper_view::paper_view(&state, &view.text).unwrap();
+    let files: Vec<&str> = paper.before.iter().map(|p| p.file.as_str()).collect();
+    assert_eq!(files, ["main.tex", "sections/intro.tex"], "in order");
+    assert!(paper.after.is_empty());
+    let intro = &paper.before[1].blocks;
+    assert!(intro[0].heading);
+    let second = &intro[1];
+    assert!(
+        second.source.starts_with("we clean tables"),
+        "{}",
+        second.source
+    );
+    assert_eq!(
+        second.translation.as_deref(),
+        Some(to_zh(&second.source).as_str()),
+        "the cached translation"
+    );
+    // Where it is in its file, to select it there.
+    let units: Vec<u16> = PROJECT_INTRO.encode_utf16().collect();
+    assert_eq!(
+        String::from_utf16_lossy(&units[second.from..second.to]),
+        second.source
+    );
+
+    // The main file open: what it includes, by name.
+    let view = open_path(&state, dir.join("main.tex")).await.unwrap();
+    let paper = crate::paper_view::paper_view(&state, &view.text).unwrap();
+    let names: Vec<&str> = paper.inside.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, ["sections/intro", "sections/method"]);
+    let method = &paper.inside[1].parts[0].blocks;
+    assert!(method[1].translation.is_none(), "never translated: none");
     std::fs::remove_dir_all(&dir).unwrap();
 }

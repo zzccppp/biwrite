@@ -96,6 +96,7 @@ LaTeX 功能需要 TeX 发行版：macOS 用 MacTeX，Windows 和 Linux 用 TeX 
 
 * 用**打开**选 `.tex` 文件，或者**新建**后选「打开 LaTeX 文件夹…」按主文件打开项目。多文件项目在标题栏列出文件，主文件通过 `\input` 和 `\include` 链、`% !TEX root = …` 注释，以及并列的 `sections_en/` 与 `sections_zh/` 文件夹确定。
 * 编辑器里 `\input`、`\include` 引入的项目文件，文件名后有一个 ↗，点它或按住 ⌘ 点文件名即打开那个文件。打开某一节时，标题栏多一个「主文件」按钮，点击回到主文件。
+* 多文件项目的译文页签右上角可以在「本文件」和「全文」之间切换。「全文」按主文件的引入顺序显示整篇论文，嵌套几层都可以。其他文件的段落用配对的中文文件或缓存中的译文，没有译文的段落以浅色原文显示，查看不会发出翻译请求。点其中一段，左侧打开那个文件并选中这一段。
 * **PDF** 页签用 `⌘B` 编译，每次保存后也会编译（设置中的「保存 .tex 文件后自动编译」）。错误和警告显示在 PDF 上方，点击跳到对应行。文档有错误时也会生成 PDF。列表右上角的「收起」把它收起，点编译结果可以再展开。「复制日志」把全部问题和编译输出复制到剪贴板。
 * **不保存也能编译**：`⌘B` 编译编辑器里现在的内容。未保存的修改写到论文旁边的 `.biwrite/` 缓存文件夹中编译，本地的 `.tex` 文件保持上次保存的内容，直到你点保存。写作助手生成的图片文件也先放在这里，保存时才写到论文的图片文件夹。
 * **点击 PDF 中的句子**：该句的源码被选中，位于其他文件时 BiWrite 会打开那个文件。旁边的小菜单提供「润色」「润色…」和「提问…」，「润色…」打开写作助手先写要求。
@@ -363,7 +364,13 @@ it the PowerPoint file alone is made.
   `% !TEX root = …` comments, and sibling `sections_en/` and `sections_zh/`
   folders.
 * A project file that `\input` or `\include` reads has a ↗ after its name in
-  the editor. A click on it, or a ⌘-click on the name, opens that file. With a
+  the editor. A click on it, or a ⌘-click on the name, opens that file.
+* In a project of several files, the Translation tab switches between *This
+  file* and *Whole paper*. The whole paper follows the main file's includes
+  to any depth. Other files' paragraphs come from their paired Chinese files
+  or the translations in the cache, a paragraph without one shows its own
+  words in a faint colour, and looking requests nothing. A click on one opens
+  its file with that paragraph selected. With a
   section open, *Main file* in the title bar goes back to the main file.
 * The **PDF** tab compiles with `⌘B` and after every save (Settings,
   *Compile after saving a .tex file*). Errors and warnings appear above the

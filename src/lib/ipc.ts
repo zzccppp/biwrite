@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  PaperView,
   AssistEvent,
   AssistRequest,
   AssistStarted,
@@ -237,6 +238,8 @@ export const latexIpc = {
   savePdf: (lang: PdfLang) => invoke<string | null>("latex_save_pdf", { lang }),
   /** Save the Chinese version as a .tex that compiles on its own. */
   exportTex: (text: string, document: number) => invoke<string | null>("latex_export_tex", { text, document }),
+  /** The whole paper around the open document, for the translation pane. */
+  paper: (text: string) => invoke<PaperView | null>("latex_paper", { text }),
   /** The whole paper of a project of several files saved as one .tex file. */
   saveFlat: (text: string, document: number) => invoke<string | null>("latex_save_flat", { text, document }),
   /** The same, into a new folder with the files the paper builds with. */

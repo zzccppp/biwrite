@@ -850,6 +850,36 @@ const handlers: Record<string, (args: Args) => unknown> = {
   latex_cancel: () => null,
   latex_export_tex: () => "/Users/me/papers/gnn-icl/paper_zh.tex",
   latex_save_flat: () => "/Users/me/papers/gnn-icl/paper-merged.tex",
+  // The whole paper: the appendix (half translated) where the main file
+  // reads it, and the main file's paragraph before the appendix.
+  latex_paper: () => {
+    if (!LATEX) return null;
+    const block = (text: string, source: string, translation: string | null, heading = false) => {
+      const at = text.indexOf(source);
+      return { from: at, to: at + source.length, heading, source, translation };
+    };
+    if (state.file === APPENDIX_FILE) {
+      const asked = "We answer this question affirmatively.";
+      return {
+        before: [{ file: "paper.tex", blocks: [block(PAPER, asked, "我们对这个问题给出肯定的回答。")] }],
+        after: [],
+        inside: [],
+      };
+    }
+    const appendix = {
+      file: APPENDIX_FILE,
+      blocks: [
+        block(APPENDIX, "Appendix", "附录", true),
+        block(
+          APPENDIX,
+          "The appendix lists the datasets used in the experiments. Each dataset comes with its split and its number of classes.",
+          "附录列出实验所用的数据集，每个数据集附有划分方式和类别数。",
+        ),
+        block(APPENDIX, "We also report the running time of every method on each dataset, measured on one machine.", null),
+      ],
+    };
+    return { before: [], after: [], inside: PARAMS.has("includes") ? [{ name: "sections/appendix", parts: [appendix] }] : [] };
+  },
   latex_export_project: (a) => {
     state.projectCopies.push({ kind: "export", title: String(a.title) });
     return {

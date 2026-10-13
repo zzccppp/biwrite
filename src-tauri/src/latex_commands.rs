@@ -307,7 +307,7 @@ fn is_tex(path: &Path) -> bool {
 }
 
 /// `path` relative to `dir`, `/`-separated.
-fn relative(path: &Path, dir: &Path) -> Option<String> {
+pub(crate) fn relative(path: &Path, dir: &Path) -> Option<String> {
     let rel = path.strip_prefix(dir).ok()?;
     let parts: Vec<String> = rel
         .components()

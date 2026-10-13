@@ -49,6 +49,7 @@
   import { Session } from "./lib/session.svelte";
   import { applyTheme, loadTheme, nextTheme, type ThemePref } from "./lib/theme";
   import type {
+    PaperView,
     AssistAction,
     AssistRequest,
     AssistScope,
@@ -81,6 +82,7 @@
   const SPLIT_KEY = "biwrite.split";
   const ASSIST_KEY = "biwrite.assist.open";
   const PANE_KEY = "biwrite.right";
+  const PAPER_KEY = "biwrite.paper";
   const isMac = navigator.platform.toLowerCase().includes("mac");
 
   const session = new Session();
@@ -210,6 +212,10 @@
   const latex = new LatexStore();
   /** Right pane of a LaTeX document: the translation or the PDF. */
   let rightTab = $state<"translation" | "pdf">(loadPane());
+  /** The translation pane shows the whole paper of a project of several
+   * files (the author's choice, remembered), and that paper as last read. */
+  let wholePaper = $state(loadWholePaper());
+  let paper = $state<PaperView | null>(null);
   let showTemplates = $state(false);
   let pdfMenu = $state<PdfMenu | null>(null);
   let pdfMarks = $state<{ lang: PdfLang; boxes: PdfBox[]; tick: number }>({ lang: "en", boxes: [], tick: 0 });
@@ -217,6 +223,7 @@
   let lastPick: PdfPick | null = null;
   const isLatex = $derived(session.mode === "latex");
   const showPdf = $derived(isLatex && rightTab === "pdf");
+  const severalFiles = $derived(isLatex && (latex.project?.files.length ?? 0) > 1);
   const compilable = $derived(!!session.path && session.path.toLowerCase().endsWith(".tex"));
 
   // Engine round-trip bookkeeping (not reactive).
@@ -340,6 +347,64 @@
     }
   }
 
+  function loadWholePaper(): boolean {
+    try {
+      return localStorage.getItem(PAPER_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function setWholePaper(on: boolean): void {
+    wholePaper = on;
+    try {
+      localStorage.setItem(PAPER_KEY, on ? "1" : "0");
+    } catch {
+      // Not persisted; harmless.
+    }
+  }
+
+  let paperTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Read the whole paper around the open document again (soon, after an
+   * edit, which may add or drop an \input). */
+  function refreshPaper(soon = false): void {
+    clearTimeout(paperTimer);
+    if (!wholePaper || !severalFiles || !editor) {
+      paper = null;
+      return;
+    }
+    const read = () => {
+      if (!editor) return;
+      const document = session.document;
+      latexIpc
+        .paper(editor.text())
+        .then((view) => {
+          if (session.document === document) paper = view;
+        })
+        .catch(() => (paper = null));
+    };
+    if (soon) paperTimer = setTimeout(read, 1500);
+    else read();
+  }
+  $effect(() => {
+    // Turned on or off, another file or project.
+    void wholePaper;
+    void severalFiles;
+    void latex.project;
+    void session.direction;
+    refreshPaper();
+  });
+
+  /** A paragraph of another file in the whole-paper view: that file opens
+   * with the paragraph selected. */
+  async function openPart(file: string, from: number, to: number): Promise<void> {
+    if (busyAdopting()) return;
+    const here = () => !!session.path && session.path.replaceAll("\\", "/").endsWith(`/${file}`);
+    if (!here()) await openProjectFile(file);
+    if (!editor || !here()) return;
+    editor.select(from, to);
+  }
+
   function setRightTab(tab: "translation" | "pdf"): void {
     rightTab = tab;
     pdfMenu = null;
@@ -399,6 +464,8 @@
     assist.map(update.changes);
     unsent = unsent.compose(update.changes);
     if (!session.dirty && !applyingFill && !loadingDisk) setDirty(true);
+    // An \input added or dropped changes what the whole paper holds.
+    if (wholePaper && severalFiles) refreshPaper(true);
     highlightTick++;
     clearTimeout(timer);
     timer = setTimeout(flush, DEBOUNCE_MS);
@@ -2328,6 +2395,16 @@
           <button class="tab smallcaps" class:on={showPdf} role="tab" aria-selected={showPdf} onclick={() => setRightTab("pdf")}
             >{t("pane.pdf")}{#if latex.building.en || latex.building.zh}<span class="busy" aria-hidden="true"></span>{/if}</button
           >
+          {#if severalFiles && !showPdf}
+            <div class="scope" role="radiogroup" aria-label={t("pane.scope")}>
+              <button class="smallcaps" class:on={!wholePaper} role="radio" aria-checked={!wholePaper} onclick={() => setWholePaper(false)}
+                >{t("pane.thisFile")}</button
+              >
+              <button class="smallcaps" class:on={wholePaper} role="radio" aria-checked={wholePaper} onclick={() => setWholePaper(true)}
+                >{t("pane.wholePaper")}</button
+              >
+            </div>
+          {/if}
         </div>
       {/if}
       <div
@@ -2350,6 +2427,8 @@
           onedit={editTranslation}
           onscroll={() => sync.onScroll("right")}
           onresize={() => sync.schedule()}
+          paper={wholePaper && severalFiles ? paper : null}
+          onopenpart={(file, from, to) => void openPart(file, from, to)}
         />
       </div>
       {#if showPdf}
@@ -2674,6 +2753,25 @@
   .tab.on {
     background: var(--paper-2);
     border-color: var(--rule);
+    color: var(--ink);
+  }
+  .scope {
+    display: inline-flex;
+    margin: 0 0 4px auto;
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    overflow: hidden;
+  }
+  .scope button {
+    border: 0;
+    background: transparent;
+    padding: 1px 9px 2px;
+    font-size: 12.5px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .scope button.on {
+    background: var(--paper-2);
     color: var(--ink);
   }
   .tab .busy {
