@@ -8,6 +8,7 @@ mod figure_scene;
 mod figures;
 mod files;
 mod glossary_commands;
+mod image_fetch;
 mod latex_commands;
 mod latex_sync;
 mod local_keys;
@@ -287,6 +288,8 @@ pub fn run() {
             latex_commands::latex_export_tex,
             latex_commands::latex_save_flat,
             paper_view::latex_paper,
+            image_fetch::latex_missing_images,
+            image_fetch::latex_download_images,
             project_copy::latex_export_project,
             latex_commands::latex_inverse,
             latex_commands::latex_forward,

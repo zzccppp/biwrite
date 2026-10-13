@@ -230,7 +230,7 @@ BiWrite finds the main file from a \texttt{\% !TEX root = …} comment, else fro
 \item Click \ui{Compile} \n{2} or press \cmdkey B (Ctrl+B on Windows). It compiles what the editor shows, with no need to save first (see the next section).
 \item The PDF appears. \n{3} shows the time taken and the numbers of errors and warnings, and the problem list \n{4} links each one to its line.
 \end{enumerate}
-\ui{Compile after saving a .tex file} is on by default, so every save compiles again. A document with errors still gets its PDF, with the errors listed. \ui{Fold} at the top right of the list folds it away, and a click on the build result \n{3} shows it again. \ui{Copy log} copies every problem and the build output.
+\ui{Compile after saving a .tex file} is on by default, so every save compiles again. A document with errors still gets its PDF, with the errors listed. \ui{Fold} at the top right of the list folds it away, and a click on the build result \n{3} shows it again. \ui{Copy log} copies every problem and the build output. When a picture the document names is not on disk yet and the document gives its web address (a download command in a comment, say, ending in the file's name), the PDF pane lists it, and \ui{Download into the paper's folder} fetches it and builds again. Only pictures and PDFs are fetched, only into the paper's folder, and never over a file that is there. A project with its own build settings, \texttt{latexmkrc}, is noted once, on its first build. Such a file can run any command, so look at it first in a project from someone else.
 
 \shot{l-compile}{(1) The PDF tab, (2) Compile, (3) the result, (4) the problem list}
 

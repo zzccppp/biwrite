@@ -424,9 +424,16 @@ export const messages = {
     zh: "这份 PDF 是配对或切换语言之前编译的，正在重新编译，完成后再点一次。",
   },
   "pdf.projectRc": {
-    en: "This project's own {file} ran with the build. It can run any command on your computer: build only projects you trust.",
-    zh: "本项目自带的 {file} 已随编译运行。它可以在你的电脑上执行任意命令，请只编译你信任的项目。",
+    en: "This project has its own build settings, {file}, and the build followed them. Such a file can run any command, so look at it first in a project from someone else. Shown once per project.",
+    zh: "这个项目自带编译设置文件 {file}，编译时已按它的设置进行。这类文件可以执行任意命令，别人发来的项目请先看一眼它的内容。每个项目只提示一次。",
   },
+  "pdf.missingImages": {
+    en: "{n} pictures the document names are not on disk yet ({files}), and the document gives their web addresses.",
+    zh: "文中引用的 {n} 张图片还不在磁盘上（{files}），文中写了它们的网址。",
+  },
+  "pdf.downloadImages": { en: "Download into the paper's folder", zh: "下载到论文文件夹" },
+  "pdf.imagesDownloaded": { en: "Downloaded {n} pictures.", zh: "已下载 {n} 张图片。" },
+  "pdf.imageFailed": { en: "{file} was not downloaded ({error}).", zh: "{file} 没有下载成功（{error}）。" },
   "pdf.untranslated": {
     en: "{n} paragraphs are not translated yet and appear in the original language.",
     zh: "有 {n} 段尚未翻译，暂以原文排版。",

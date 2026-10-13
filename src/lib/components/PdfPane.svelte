@@ -16,6 +16,10 @@
     /** The document can be compiled (a saved .tex file). */
     compilable: boolean;
     oncompile: (lang: PdfLang) => void;
+    /** Download the pictures the document names with their web addresses. */
+    ondownloadimages?: () => void;
+    /** A download of them is under way. */
+    downloading?: boolean;
     onpick: (pick: PdfPick) => void;
     onlocate: () => void;
     onissue: (issue: IssueView) => void;
@@ -38,6 +42,8 @@
     menu,
     compilable,
     oncompile,
+    ondownloadimages = () => {},
+    downloading = false,
     onpick,
     onlocate,
     onissue,
@@ -142,6 +148,29 @@
 
   const lang = $derived(store.lang);
   const build = $derived(store.builds[lang]);
+
+  const RC_KEY = "biwrite.rcSeen";
+  /** The build that first showed a project's own latexmkrc (the note
+   * shows with it only, once per project). */
+  let rcShown: { key: string; id: number } | null = null;
+  function rcFirst(b: { id: number; projectRc: string | null }): boolean {
+    const key = `${store.project?.folder ?? ""}/${b.projectRc ?? ""}`;
+    if (rcShown?.key === key) return rcShown.id === b.id;
+    let seen: string[] = [];
+    try {
+      seen = JSON.parse(localStorage.getItem(RC_KEY) ?? "[]");
+    } catch {
+      seen = [];
+    }
+    if (seen.includes(key)) return false;
+    rcShown = { key, id: b.id };
+    try {
+      localStorage.setItem(RC_KEY, JSON.stringify([...seen, key].slice(-200)));
+    } catch {
+      // Shown again next time; harmless.
+    }
+    return true;
+  }
   const problemsOpen = $derived(showProblems ?? build?.outcome !== "ok");
   const building = $derived(store.building[lang]);
   const failure = $derived(store.failure[lang]);
@@ -516,8 +545,16 @@
     </button>
   </header>
 
-  {#if build?.projectRc}
-    <div class="problems"><p class="note warn">{t("pdf.projectRc", { file: build.projectRc })}</p></div>
+  {#if build?.projectRc && rcFirst(build)}
+    <div class="problems"><p class="note">{t("pdf.projectRc", { file: build.projectRc })}</p></div>
+  {/if}
+  {#if store.missingImages.length}
+    <div class="problems">
+      <p class="note" title={store.missingImages.map((m) => `${m.file} ← ${m.url}`).join("\n")}>
+        {t("pdf.missingImages", { n: store.missingImages.length, files: store.missingImages.map((m) => m.file).join("、") })}
+        <button class="link" disabled={downloading} onclick={ondownloadimages}>{t("pdf.downloadImages")}</button>
+      </p>
+    </div>
   {/if}
   {#if build && store.stale[lang]}
     <div class="problems"><p class="note">{t("pdf.staleNote")}</p></div>
@@ -813,10 +850,6 @@
     margin: 2px 0 4px;
     color: var(--muted);
     font-style: italic;
-  }
-  .note.warn {
-    color: var(--error);
-    font-style: normal;
   }
   .link {
     border: 0;

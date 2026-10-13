@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   PaperView,
+  MissingImage,
+  DownloadedImage,
   AssistEvent,
   AssistRequest,
   AssistStarted,
@@ -238,6 +240,10 @@ export const latexIpc = {
   savePdf: (lang: PdfLang) => invoke<string | null>("latex_save_pdf", { lang }),
   /** Save the Chinese version as a .tex that compiles on its own. */
   exportTex: (text: string, document: number) => invoke<string | null>("latex_export_tex", { text, document }),
+  /** Pictures the document names that are not on disk, with their web addresses. */
+  missingImages: (text: string) => invoke<MissingImage[]>("latex_missing_images", { text }),
+  /** Download them into the folder TeX runs in (new files only). */
+  downloadImages: (text: string) => invoke<DownloadedImage[]>("latex_download_images", { text }),
   /** The whole paper around the open document, for the translation pane. */
   paper: (text: string) => invoke<PaperView | null>("latex_paper", { text }),
   /** The whole paper of a project of several files saved as one .tex file. */

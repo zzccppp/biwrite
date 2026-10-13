@@ -870,3 +870,14 @@ export interface PaperView {
   /** What the open document includes, by the name its include gives (no ./ nor .tex). */
   inside: { name: string; parts: PaperPart[] }[];
 }
+
+/** A picture the document names that is not on disk, and where the document says it comes from. */
+export interface MissingImage {
+  file: string;
+  url: string;
+}
+
+export interface DownloadedImage {
+  file: string;
+  error: string | null;
+}

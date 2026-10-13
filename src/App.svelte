@@ -1415,6 +1415,42 @@
     } finally {
       compiling = false;
     }
+    void checkImages();
+  }
+
+  /** Pictures the document names that are not on disk yet, with the web
+   * addresses it gives for them. */
+  async function checkImages(): Promise<void> {
+    if (!editor || !isLatex || !compilable) {
+      latex.missingImages = [];
+      return;
+    }
+    latex.missingImages = await latexIpc.missingImages(editor.text()).catch(() => []);
+  }
+
+  let downloading = $state(false);
+  /** Download them into the paper's folder (new files only), then build. */
+  async function downloadImages(): Promise<void> {
+    if (!editor || downloading) return;
+    downloading = true;
+    try {
+      const done = await latexIpc.downloadImages(editor.text());
+      const failed = done.filter((d) => d.error);
+      const got = done.length - failed.length;
+      if (failed.length > 0) {
+        session.error = failed.map((d) => t("pdf.imageFailed", { file: d.file, error: d.error ?? "" })).join(" ");
+      }
+      if (got > 0) {
+        session.flash(t("pdf.imagesDownloaded", { n: got }));
+        void compile(latex.lang);
+      } else {
+        void checkImages();
+      }
+    } catch (err) {
+      fail(err);
+    } finally {
+      downloading = false;
+    }
   }
 
   /** Build the PDF of `lang` when there is none yet, or again when it is stale. */
@@ -2439,6 +2475,8 @@
             menu={pdfMenu}
             {compilable}
             oncompile={(lang) => compile(lang)}
+            ondownloadimages={() => void downloadImages()}
+            {downloading}
             onpick={pickInPdf}
             onlocate={locateInPdf}
             onissue={gotoIssue}

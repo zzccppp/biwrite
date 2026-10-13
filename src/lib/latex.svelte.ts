@@ -2,7 +2,7 @@
 // and files), and the last build of each PDF (English, Chinese mirror).
 
 import { errorMessage, latexIpc } from "./ipc";
-import type { BuildView, PdfLang, ProjectView, TexStatus } from "./types";
+import type { BuildView, MissingImage, PdfLang, ProjectView, TexStatus } from "./types";
 
 const LANG_KEY = "biwrite.pdf.lang";
 
@@ -17,6 +17,9 @@ function loadLang(): PdfLang {
 export class LatexStore {
   status = $state<TexStatus | null>(null);
   project = $state<ProjectView | null>(null);
+  /** Pictures the open document names that are not on disk yet, with the
+   * web addresses it gives for them. */
+  missingImages = $state<MissingImage[]>([]);
   builds = $state<Record<PdfLang, BuildView | null>>({ en: null, zh: null });
   building = $state<Record<PdfLang, boolean>>({ en: false, zh: false });
   /** Why a build could not run (no TeX, unsaved document), per language. */

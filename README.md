@@ -98,6 +98,7 @@ LaTeX 功能需要 TeX 发行版：macOS 用 MacTeX，Windows 和 Linux 用 TeX 
 * 编辑器里 `\input`、`\include` 引入的项目文件，文件名后有一个 ↗，点它或按住 ⌘ 点文件名即打开那个文件。打开某一节时，标题栏多一个「主文件」按钮，点击回到主文件。
 * 多文件项目的译文页签右上角可以在「本文件」和「全文」之间切换。「全文」按主文件的引入顺序显示整篇论文，嵌套几层都可以。其他文件的段落用配对的中文文件或缓存中的译文，没有译文的段落以浅色原文显示，查看不会发出翻译请求。点其中一段，左侧打开那个文件并选中这一段。
 * **PDF** 页签用 `⌘B` 编译，每次保存后也会编译（设置中的「保存 .tex 文件后自动编译」）。错误和警告显示在 PDF 上方，点击跳到对应行。文档有错误时也会生成 PDF。列表右上角的「收起」把它收起，点编译结果可以再展开。「复制日志」把全部问题和编译输出复制到剪贴板。
+* **下载文中引用的图片**：文中引用的图片还不在磁盘上、而文中写了它的网址（注释里的下载命令、链接或宏参数里，网址以这个文件名结尾）时，PDF 上方会列出这些图片，点「下载到论文文件夹」即下载并重新编译。只下载图片和 PDF，只存进论文文件夹，不覆盖已有文件。
 * **不保存也能编译**：`⌘B` 编译编辑器里现在的内容。未保存的修改写到论文旁边的 `.biwrite/` 缓存文件夹中编译，本地的 `.tex` 文件保持上次保存的内容，直到你点保存。写作助手生成的图片文件也先放在这里，保存时才写到论文的图片文件夹。
 * **点击 PDF 中的句子**：该句的源码被选中，位于其他文件时 BiWrite 会打开那个文件。旁边的小菜单提供「润色」「润色…」和「提问…」，「润色…」打开写作助手先写要求。
 * `⌘⌥J`（Ctrl+Alt+J）在 PDF 中高亮光标所在段落。右侧显示译文时，则在译文中标出光标所在的句子。点译文中的某一句，左侧选中原文中对应的那一句。
@@ -377,6 +378,12 @@ it the PowerPoint file alone is made.
   PDF and open their line. A document with errors still gets its PDF. *Fold*
   folds the list away (click the build result to show it again), and *Copy
   log* copies every problem and the build output.
+* **Download the pictures the document names.** When a picture the document
+  names is not on disk yet and the document gives its web address (in a
+  download command in a comment, a link or a macro's argument, ending in the
+  file's name), the PDF pane lists it, and *Download into the paper's folder*
+  fetches it and builds again. Only pictures and PDFs are fetched, only into
+  the paper's folder, and never over a file that is there.
 * **Compile without saving.** `⌘B` compiles what the editor shows. Unsaved
   edits are written to the `.biwrite/` cache folder beside the paper and
   compiled there, and the `.tex` file on disk stays as last saved until you

@@ -155,6 +155,8 @@ We also report the running time of every method on each dataset, measured on one
 `;
 
 const state = {
+  /** The pictures of `missingimages` were downloaded. */
+  imagesDownloaded: false,
   /** The project file open (relative), and the text each other one had. */
   file: "",
   files: {} as Record<string, string>,
@@ -843,13 +845,29 @@ const handlers: Record<string, (args: Args) => unknown> = {
       root: "paper.tex",
       untranslated: zh ? 2 : 0,
       output: "",
-      projectRc: null,
+      projectRc: PARAMS.has("rc") ? "latexmkrc" : null,
       unsavedLeftOut: LEFTOUT,
     };
   },
   latex_cancel: () => null,
   latex_export_tex: () => "/Users/me/papers/gnn-icl/paper_zh.tex",
   latex_save_flat: () => "/Users/me/papers/gnn-icl/paper-merged.tex",
+  // `missingimages`: two pictures named with their web addresses, there
+  // once downloaded.
+  latex_missing_images: () =>
+    PARAMS.has("missingimages") && !state.imagesDownloaded
+      ? [
+          { file: "editor.jpg", url: "https://example.org/images/editor.jpg" },
+          { file: "assistant.jpg", url: "https://example.org/images/assistant.jpg" },
+        ]
+      : [],
+  latex_download_images: () => {
+    state.imagesDownloaded = true;
+    return [
+      { file: "editor.jpg", error: null },
+      { file: "assistant.jpg", error: null },
+    ];
+  },
   // The whole paper: the appendix (half translated) where the main file
   // reads it, and the main file's paragraph before the appendix.
   latex_paper: () => {
