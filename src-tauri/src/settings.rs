@@ -148,10 +148,20 @@ pub struct AppSettings {
     /// They are kept alive however long the author is away; off, only
     /// within half an hour of the author's last use.
     pub keep_alive_forever: bool,
+    /// API keys live in a file of the config folder only the user reads
+    /// (no keychain prompt at start or after an update), else in the
+    /// keychain.
+    pub keys_in_file: bool,
     /// The keys kept alive when last noted (fingerprints, never the keys),
     /// by provider id: after a restart or an update they are squeezed back
     /// in. `None` from versions that did not note them.
     pub kept_keys: Option<BTreeMap<String, Vec<String>>>,
+    /// Files paired by the author (Import translation), by the path of the
+    /// document, with the path of its other-language file: the pair comes
+    /// back when the document opens again, and builds of its project use
+    /// it. Pairs by name (`x.tex` and `x_zh.tex`) need no entry.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub pairs: BTreeMap<String, String>,
     /// Accept and Revert in a LaTeX project go through the model and a
     /// build (the model fits an answer, judges the preamble lines a revert
     /// may take out); off, they apply and revert as they are.
@@ -196,7 +206,9 @@ impl Default for AppSettings {
             close_to_tray: true,
             keep_alive: true,
             keep_alive_forever: true,
+            keys_in_file: true,
             kept_keys: None,
+            pairs: BTreeMap::new(),
             assisted_apply: true,
             keep_file: false,
         }
@@ -474,6 +486,7 @@ pub struct SettingsView {
     pub close_to_tray: bool,
     pub keep_alive: bool,
     pub keep_alive_forever: bool,
+    pub keys_in_file: bool,
     pub assisted_apply: bool,
     /// This build's version.
     pub version: String,
@@ -515,6 +528,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         close_to_tray: settings.close_to_tray,
         keep_alive: settings.keep_alive,
         keep_alive_forever: settings.keep_alive_forever,
+        keys_in_file: settings.keys_in_file,
         assisted_apply: settings.assisted_apply,
         version: env!("CARGO_PKG_VERSION").to_owned(),
     }

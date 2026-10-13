@@ -380,6 +380,15 @@ fn prepare_out_dir(dir: &Path, out: &Path) -> std::io::Result<()> {
             std::fs::create_dir_all(out.join(parent))?;
         }
     }
+    // Copies built from the output folder (in `.biwrite`) are included by
+    // their names from the project folder, which the output folder repeats.
+    if out.starts_with(dir) {
+        for file in tex_files(out) {
+            if let Some(parent) = file.parent().and_then(|p| p.strip_prefix(dir).ok()) {
+                std::fs::create_dir_all(out.join(parent))?;
+            }
+        }
+    }
     Ok(())
 }
 

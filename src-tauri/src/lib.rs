@@ -10,6 +10,7 @@ mod files;
 mod glossary_commands;
 mod latex_commands;
 mod latex_sync;
+mod local_keys;
 mod log_commands;
 mod logging;
 mod materials;
@@ -94,7 +95,13 @@ pub fn run() {
             paths.logs = log_dir;
             settings::ensure_prompt_files(&paths.prompts);
             let settings = settings::load(&paths.settings);
-            let secrets: Arc<dyn SecretStore> = Arc::new(Keychain);
+            // The keys in a file only the user reads, by default (no
+            // keychain prompt at start), else in the keychain.
+            let secrets: Arc<dyn SecretStore> = Arc::new(local_keys::KeyFile::new(
+                config_dir.join("keys.json"),
+                Arc::new(Keychain),
+                settings.keys_in_file,
+            ));
             let sink = Arc::new(TauriSink::new(app.handle().clone()));
             let request_log = Arc::new(RequestLog::new(
                 settings.request_log,
@@ -277,6 +284,7 @@ pub fn run() {
             latex_commands::latex_reveal_pdf,
             latex_commands::latex_save_pdf,
             latex_commands::latex_export_tex,
+            latex_commands::latex_save_flat,
             project_copy::latex_export_project,
             latex_commands::latex_inverse,
             latex_commands::latex_forward,
@@ -297,6 +305,7 @@ pub fn run() {
             settings_commands::set_check_updates,
             settings_commands::set_keep_alive,
             settings_commands::set_keep_alive_forever,
+            settings_commands::set_keys_in_file,
             settings_commands::set_assisted_apply,
             settings_commands::set_close_to_tray,
             settings_commands::set_tray_language,

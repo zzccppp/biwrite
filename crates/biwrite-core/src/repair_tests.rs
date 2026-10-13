@@ -15,6 +15,7 @@ fn error(line: usize, message: &str) -> TexError {
         file: Some("main.tex".into()),
         message: message.into(),
         context: format!("l.{line} \\node[fill=subsectioncolor] (a) {{A}};"),
+        ..TexError::default()
     }
 }
 

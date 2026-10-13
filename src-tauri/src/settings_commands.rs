@@ -599,6 +599,27 @@ pub async fn set_keep_alive(
     Ok(state.settings_view())
 }
 
+/// Keep the API keys in the local key file or in the keychain, moving them
+/// there (the keychain may ask for its password while they move).
+#[tauri::command]
+pub async fn set_keys_in_file(state: State<'_, AppState>, on: bool) -> CommandResult<SettingsView> {
+    let _keys = state.keys_lock.lock().await;
+    let accounts: Vec<String> = state
+        .settings()
+        .providers
+        .iter()
+        .flat_map(|p| crate::secrets::accounts_of(&p.config.id))
+        .collect();
+    let store = state.secrets.clone();
+    blocking(move || store.move_keys(on, &accounts)).await?;
+    {
+        let mut s = state.settings();
+        s.keys_in_file = on;
+        state.persist(&s)?;
+    }
+    Ok(state.settings_view())
+}
+
 /// Keep the keys alive however long the author is away, or only within
 /// half an hour of their last use.
 #[tauri::command]

@@ -177,6 +177,15 @@
         <span>{t("settings.closeToTray")}</span>
       </label>
       <p class="explain">{t("settings.closeToTrayHint")}</p>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={settings.keysInFile}
+          onchange={(e) => run(() => settingsIpc.setKeysInFile(e.currentTarget.checked))}
+        />
+        <span>{t("settings.keysInFile")}</span>
+      </label>
+      <p class="explain">{t("settings.keysInFileHint")}</p>
     </section>
 
     <section>

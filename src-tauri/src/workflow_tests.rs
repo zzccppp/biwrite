@@ -1588,3 +1588,692 @@ async fn paragraphs_left_by_an_early_swap_never_make_the_file_chinese() {
     assert!(state.left_in_other_language() >= 6);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// A project of a main file and its sections, in the Chinese PDF whichever
+// file is open.
+
+const PROJECT_ROOT: &str = "\\documentclass{article}\n\
+\\begin{document}\n\
+\\begin{abstract}\n\
+we study how to clean tables before a model reads them.\n\
+\\end{abstract}\n\
+\\input{sections/intro}\n\
+\\include{sections/method}\n\
+\\end{document}\n";
+
+const PROJECT_INTRO: &str = "\\section{Introduction}\n\
+we clean tables row by row before a model reads them.\n\n\
+the second paragraph of the introduction states the question.\n";
+
+const PROJECT_METHOD: &str = "\\section{Method}\n\
+our method assigns one action to each row.\n\n\
+it then checks the result on rows held out from the search.\n";
+
+/// A project folder with the main file and both sections, as the builds
+/// name it (the temporary folder may be behind a link).
+fn sectioned(name: &str) -> PathBuf {
+    let dir = std::fs::canonicalize(temp(name)).unwrap();
+    std::fs::create_dir_all(dir.join("sections")).unwrap();
+    std::fs::write(dir.join("main.tex"), PROJECT_ROOT).unwrap();
+    std::fs::write(dir.join("sections/intro.tex"), PROJECT_INTRO).unwrap();
+    std::fs::write(dir.join("sections/method.tex"), PROJECT_METHOD).unwrap();
+    dir
+}
+
+/// 1-based line of `needle` in `text`.
+fn line_with(text: &str, needle: &str) -> u32 {
+    let at = text
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle} in {text}"));
+    text[..at].matches('\n').count() as u32 + 1
+}
+
+/// Where `line` of `input` is in the Chinese PDF.
+async fn box_of(state: &AppState, input: &Path, line: u32) -> biwrite_latex::synctex::PdfBox {
+    let tc = crate::latex_commands::require_toolchain(state)
+        .await
+        .unwrap();
+    let pdf = crate::latex_commands::pdf_of(state, Lang::Zh).unwrap();
+    biwrite_latex::synctex::forward(&tc, &pdf, input, line, 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no box for {}:{line}", input.display()))
+}
+
+/// A click in the middle of `b` of the Chinese PDF, on the words `span`
+/// (as the PDF's text layer gives them).
+async fn click(
+    state: &tauri::State<'_, AppState>,
+    b: &biwrite_latex::synctex::PdfBox,
+    span: &str,
+    text: &str,
+) -> crate::latex_commands::SyncHit {
+    latex_inverse(
+        state.clone(),
+        Lang::Zh,
+        b.page,
+        b.left + b.width / 2.0,
+        b.top + b.height / 2.0,
+        span.to_owned(),
+        span.encode_utf16().count() / 2,
+        text.to_owned(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap()
+    .expect("a hit")
+}
+
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn workflow_sections_not_open_are_built_in_chinese_from_their_translations() {
+    let dir = sectioned("parts");
+    let app = tauri::test::mock_app();
+    let (state, _, _) = workflow_state(&dir);
+    app.manage(state);
+    let state = app.state::<AppState>();
+    // Each section translated once, as when the author read it.
+    for part in ["sections/method.tex", "sections/intro.tex"] {
+        open_path(&state, dir.join(part)).await.unwrap();
+        settle(&state).await;
+    }
+    let main = open_path(&state, dir.join("main.tex")).await.unwrap();
+    settle(&state).await;
+    let built = latex_compile(
+        state.clone(),
+        Lang::Zh,
+        main.text.clone(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    assert!(built.has_pdf, "{}", built.output);
+
+    // Both sections are read from Chinese copies, and the project's files
+    // stay as they were.
+    let copy = |part: &str| read(&dir.join(".biwrite/zh").join(part));
+    assert!(
+        copy("sections/intro.tex").contains(&to_zh("clean tables row by row")),
+        "{}",
+        copy("sections/intro.tex")
+    );
+    let method = copy("sections/method.tex");
+    assert!(
+        method.contains(&to_zh("it then checks the result")),
+        "{method}"
+    );
+    let root = read(&dir.join(".biwrite/zh/main.tex"));
+    assert!(
+        root.contains("\\input{.biwrite/zh/sections/intro}"),
+        "{root}"
+    );
+    assert!(
+        root.contains("\\include{.biwrite/zh/sections/method}"),
+        "{root}"
+    );
+    assert_eq!(read(&dir.join("main.tex")), PROJECT_ROOT);
+    assert_eq!(read(&dir.join("sections/intro.tex")), PROJECT_INTRO);
+    assert_eq!(read(&dir.join("sections/method.tex")), PROJECT_METHOD);
+
+    // A click on the method's second paragraph opens the method there.
+    let copy_line = line_with(&method, &to_zh("it then checks"));
+    let b = box_of(
+        &state,
+        &dir.join(".biwrite/zh/sections/method.tex"),
+        copy_line,
+    )
+    .await;
+    let span = to_zh("then checks the result");
+    let hit = click(&state, &b, &span, &main.text).await;
+    assert!(!hit.here);
+    assert_eq!(hit.open.as_deref(), Some("sections/method.tex"));
+    assert_eq!(hit.line, line_with(PROJECT_METHOD, "it then checks"));
+    // Opened, as the window does, the same click selects the paragraph.
+    let view = open_path(&state, dir.join("sections/method.tex"))
+        .await
+        .unwrap();
+    let hit = click(&state, &b, &span, &view.text).await;
+    assert!(hit.here, "{hit:?}");
+    let units: Vec<u16> = view.text.encode_utf16().collect();
+    let r = hit.range.expect("a range");
+    let picked = String::from_utf16_lossy(&units[r.from..r.to]);
+    assert!(picked.starts_with("it then checks"), "{picked}");
+    // And the paragraph is found from the editor in the same PDF.
+    let at = view.text.find("our method").unwrap();
+    let boxes = latex_forward(
+        state.clone(),
+        Lang::Zh,
+        utf16(&view.text, at),
+        view.text.clone(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    let first = boxes.first().expect("a box for the method's paragraph");
+    let back = click(&state, first, &to_zh("method assigns one"), &view.text).await;
+    let r = back.range.expect("a range");
+    let picked = String::from_utf16_lossy(&units[r.from..r.to]);
+    assert!(picked.starts_with("our method"), "{picked}");
+
+    // Built with the method open, the introduction comes from its copy.
+    let built = latex_compile(
+        state.clone(),
+        Lang::Zh,
+        view.text.clone(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    assert!(built.has_pdf, "{}", built.output);
+    let root = read(&dir.join(".biwrite/zh/main.tex"));
+    assert!(
+        root.contains("\\input{.biwrite/zh/sections/intro}"),
+        "{root}"
+    );
+    assert!(
+        root.contains("\\include{.biwrite/zh/sections/method}"),
+        "{root}"
+    );
+    assert!(copy("sections/intro.tex").contains(&to_zh("clean tables row by row")));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn workflow_a_section_paired_by_import_is_built_from_its_chinese_file() {
+    let dir = sectioned("imported-part");
+    let chinese = dir.join("sections/method_translated.tex");
+    std::fs::write(
+        &chinese,
+        "\\section{方法}\n我们的方法为每一行分配一个动作。\n\n随后在留出的行上检验结果。\n",
+    )
+    .unwrap();
+    let app = tauri::test::mock_app();
+    let (state, _, _) = workflow_state(&dir);
+    app.manage(state);
+    let state = app.state::<AppState>();
+    let method = dir.join("sections/method.tex");
+    let view = open_path(&state, method.clone()).await.unwrap();
+    pairing::pair_with(
+        &state,
+        view.text.clone(),
+        state.engine.document(),
+        method.clone(),
+        chinese.clone(),
+    )
+    .await
+    .unwrap();
+    settle(&state).await;
+    // Opened again, it pairs again.
+    let view = open_path(&state, method.clone()).await.unwrap();
+    assert!(view.pair.is_some(), "the pair is remembered");
+
+    let main = open_path(&state, dir.join("main.tex")).await.unwrap();
+    settle(&state).await;
+    assert!(main.pair.is_none());
+    let built = latex_compile(
+        state.clone(),
+        Lang::Zh,
+        main.text.clone(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    assert!(built.has_pdf, "{}", built.output);
+    let root = read(&dir.join(".biwrite/zh/main.tex"));
+    assert!(
+        root.contains("\\include{sections/method_translated}"),
+        "{root}"
+    );
+    // The introduction was never translated: it stays as it is.
+    assert!(root.contains("\\input{sections/intro}"), "{root}");
+    assert!(!dir.join(".biwrite/zh/sections/intro.tex").exists());
+
+    // A click in the Chinese method opens the English one, paired.
+    let b = box_of(&state, &chinese, 4).await;
+    let hit = click(&state, &b, "随后在留出的行上检验结果", &main.text).await;
+    assert_eq!(hit.open.as_deref(), Some("sections/method.tex"), "{hit:?}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The Chinese version of the whole project: its own main file (with the
+/// abstract, or only its `\\input`s), the introduction in `zh_parts`, and
+/// the method as it is (not translated yet, the English file).
+fn chinese_version(dir: &Path, root: &str, abstract_too: bool) {
+    std::fs::create_dir_all(dir.join("zh_parts")).unwrap();
+    let abstract_ = if abstract_too {
+        "\\begin{abstract}\n我们研究在模型读取表格之前如何清洗表格。\n\\end{abstract}\n"
+    } else {
+        ""
+    };
+    std::fs::write(
+        dir.join(root),
+        format!(
+            "\\documentclass{{article}}\n\\usepackage[UTF8]{{ctex}}\n\\begin{{document}}\n\
+{abstract_}\\input{{zh_parts/intro}}\n\\include{{sections/method}}\n\\end{{document}}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("zh_parts/intro.tex"),
+        "\\section{引言}\n我们在模型读取表格之前逐行清洗。\n\n第二段说明研究问题。\n",
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn workflow_a_chinese_main_file_paired_by_import_is_built_from_any_section() {
+    let dir = sectioned("imported-root");
+    chinese_version(&dir, "chinese_version.tex", true);
+    let app = tauri::test::mock_app();
+    let (state, _, _) = workflow_state(&dir);
+    app.manage(state);
+    let state = app.state::<AppState>();
+    let main = dir.join("main.tex");
+    let view = open_path(&state, main.clone()).await.unwrap();
+    pairing::pair_with(
+        &state,
+        view.text.clone(),
+        state.engine.document(),
+        main.clone(),
+        dir.join("chinese_version.tex"),
+    )
+    .await
+    .unwrap();
+    settle(&state).await;
+    let intro = dir.join("sections/intro.tex");
+    pairing::pair_with(
+        &state,
+        PROJECT_INTRO.to_owned(),
+        open_path(&state, intro.clone())
+            .await
+            .unwrap()
+            .snapshot
+            .document,
+        intro.clone(),
+        dir.join("zh_parts/intro.tex"),
+    )
+    .await
+    .unwrap();
+    settle(&state).await;
+
+    // The method has no Chinese file of its own, and the Chinese version
+    // reads it as it is: open, it is not paired, and the Chinese PDF is
+    // still the Chinese version's.
+    let view = open_path(&state, dir.join("sections/method.tex"))
+        .await
+        .unwrap();
+    assert!(view.pair.is_none());
+    let built = latex_compile(
+        state.clone(),
+        Lang::Zh,
+        view.text.clone(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    assert!(built.has_pdf, "{}", built.output);
+    assert_eq!(built.root, "chinese_version.tex");
+
+    // A click in the Chinese introduction opens the English one.
+    let span = "我们在模型读取表格之前逐行清洗";
+    let b = box_of(&state, &dir.join("zh_parts/intro.tex"), 2).await;
+    let hit = click(&state, &b, span, &view.text).await;
+    assert_eq!(hit.open.as_deref(), Some("sections/intro.tex"), "{hit:?}");
+    // Opened, it pairs with the Chinese introduction: the Chinese PDF is
+    // now the paired file's (built anew, as the window does on its stale
+    // mark), and a click selects the paragraph.
+    let view = open_path(&state, intro.clone()).await.unwrap();
+    assert!(view.pair.is_some());
+    settle(&state).await;
+    let built = latex_compile(
+        state.clone(),
+        Lang::Zh,
+        view.text.clone(),
+        state.engine.document(),
+    )
+    .await
+    .unwrap();
+    assert!(built.has_pdf, "{}", built.output);
+    let b = box_of(&state, &dir.join("zh_parts/intro.tex"), 2).await;
+    let hit = click(&state, &b, span, &view.text).await;
+    assert!(hit.here, "{hit:?}");
+    let units: Vec<u16> = view.text.encode_utf16().collect();
+    let r = hit.range.expect("a range");
+    let picked = String::from_utf16_lossy(&units[r.from..r.to]);
+    assert!(picked.starts_with("we clean tables"), "{picked}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn workflow_a_main_zh_file_is_the_chinese_pdf_of_every_section() {
+    let dir = sectioned("named-root");
+    chinese_version(&dir, "main_zh.tex", false);
+    let app = tauri::test::mock_app();
+    let (state, _, _) = workflow_state(&dir);
+    app.manage(state);
+    let state = app.state::<AppState>();
+    // The method, which the Chinese main file reads as it is: that file
+    // makes the Chinese PDF. The introduction, whose Chinese the main file
+    // has under a name nothing pairs with it: its translation does.
+    for (part, root) in [
+        ("sections/method.tex", "main_zh.tex"),
+        ("sections/intro.tex", "main.tex"),
+    ] {
+        let view = open_path(&state, dir.join(part)).await.unwrap();
+        assert!(view.pair.is_none(), "{part} has no Chinese file by name");
+        settle(&state).await;
+        let built = latex_compile(
+            state.clone(),
+            Lang::Zh,
+            view.text.clone(),
+            state.engine.document(),
+        )
+        .await
+        .unwrap();
+        assert!(built.has_pdf, "{}", built.output);
+        assert_eq!(built.root, root, "{part}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn the_whole_paper_for_the_assistant_puts_each_part_in_its_place() {
+    let dir = sectioned("whole");
+    let app = tauri::test::mock_app();
+    let (state, _, _) = workflow_state(&dir);
+    app.manage(state);
+    let state = app.state::<AppState>();
+    open_path(&state, dir.join("sections/method.tex"))
+        .await
+        .unwrap();
+    // Edited, not saved: the paper has the editor's text.
+    let edited = PROJECT_METHOD.replace("held out", "kept apart");
+    let target = edited.find("it then checks").unwrap();
+    let (paper, at) = crate::latex_commands::whole_paper(&state, &edited, target).unwrap();
+    assert!(paper.starts_with("\\documentclass{article}"), "{paper}");
+    assert!(paper.contains("clean tables row by row"), "{paper}");
+    assert!(
+        paper.contains("kept apart") && !paper.contains("held out"),
+        "{paper}"
+    );
+    assert!(
+        paper.contains("%% ===== sections/method.tex (the file open in the editor) ====="),
+        "{paper}"
+    );
+    assert!(
+        paper.contains("%% ===== sections/intro.tex ====="),
+        "{paper}"
+    );
+    assert!(!paper.contains("\\input{sections/intro}"), "{paper}");
+    assert!(paper.trim_end().ends_with("\\end{document}"), "{paper}");
+    assert!(
+        paper[at..].starts_with("it then checks"),
+        "{}",
+        &paper[at..]
+    );
+
+    // The root open: its own text, the parts as saved.
+    let view = open_path(&state, dir.join("main.tex")).await.unwrap();
+    let target = view.text.find("we study").unwrap();
+    let (paper, at) = crate::latex_commands::whole_paper(&state, &view.text, target).unwrap();
+    assert!(paper.contains("held out"), "{paper}");
+    assert!(paper[at..].starts_with("we study"), "{}", &paper[at..]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_document_of_one_file_has_no_whole_paper_of_its_own() {
+    let dir = std::fs::canonicalize(temp("single")).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\nOne file.\n\\end{document}\n",
+    )
+    .unwrap();
+    let app = tauri::test::mock_app();
+    let (state, _, _) = workflow_state(&dir);
+    app.manage(state);
+    let state = app.state::<AppState>();
+    let view = open_path(&state, dir.join("main.tex")).await.unwrap();
+    assert!(crate::latex_commands::whole_paper(&state, &view.text, 0).is_none());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn the_paper_as_one_file_has_every_section_in_place() {
+    let dir = sectioned("flat");
+    // `\includeonly` would leave parts out of the copy: one file has all.
+    std::fs::write(
+        dir.join("main.tex"),
+        PROJECT_ROOT.replace(
+            "\\begin{document}",
+            "\\includeonly{sections/method}\n\\begin{document}",
+        ),
+    )
+    .unwrap();
+    let app = tauri::test::mock_app();
+    let (state, _, _) = workflow_state(&dir);
+    app.manage(state);
+    let state = app.state::<AppState>();
+    open_path(&state, dir.join("sections/intro.tex"))
+        .await
+        .unwrap();
+    settle(&state).await;
+    let edited = PROJECT_INTRO.replace("row by row", "one row at a time");
+    let flat = crate::latex_commands::flat_paper(&state, &edited, None).unwrap();
+    assert!(flat.contains("one row at a time"), "{flat}");
+    assert!(flat.contains("our method assigns"), "{flat}");
+    assert!(
+        !flat.contains("\\input{") && !flat.contains("\\include{"),
+        "{flat}"
+    );
+    assert!(flat.contains("% \\includeonly{sections/method}"), "{flat}");
+    assert!(
+        flat.contains("\\clearpage\n\\section{Method}"),
+        "an \\include starts a page: {flat}"
+    );
+    assert!(!flat.contains("====="), "no marks: {flat}");
+
+    // The Chinese of the whole paper: the open section's translation, and
+    // the other's from the cache (the method was opened once).
+    open_path(&state, dir.join("sections/method.tex"))
+        .await
+        .unwrap();
+    settle(&state).await;
+    let view = open_path(&state, dir.join("sections/intro.tex"))
+        .await
+        .unwrap();
+    settle(&state).await;
+    let (name, body, root_dir) =
+        crate::latex_commands::translation_tex(&state, view.text.clone(), state.engine.document())
+            .unwrap();
+    assert_eq!(name, "main-merged_zh.tex", "no version of main.tex");
+    assert_eq!(root_dir.as_deref(), Some(dir.as_path()));
+    assert!(body.contains(&to_zh("clean tables row by row")), "{body}");
+    assert!(body.contains(&to_zh("our method assigns")), "{body}");
+    assert!(body.contains("ctex"), "{body}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Every `.tex` file of `dir` outside `.biwrite`, with its text.
+fn tex_sources(dir: &Path) -> std::collections::BTreeMap<PathBuf, String> {
+    biwrite_latex::tex_files(dir)
+        .into_iter()
+        .map(|f| {
+            let text = std::fs::read_to_string(&f).unwrap();
+            (f, text)
+        })
+        .collect()
+}
+
+/// A plain sentence of `text`: a long line without commands, cut at its
+/// first full stop.
+fn plain_sentence(text: &str) -> Option<&str> {
+    text.lines()
+        .filter(|l| l.len() > 80 && !l.contains('\\') && !l.contains('$') && !l.starts_with('%'))
+        .find_map(|l| l.split(". ").find(|s| s.len() > 50 && s.is_ascii()))
+}
+
+/// The author's own paper of several files (a copy; `BIWRITE_SECTIONED_PAPER`
+/// is its English main file, with `sections_en/` and `sections_zh/` beside
+/// it and a Chinese main file named after it): from a section, the Chinese
+/// PDF is the paper's and clicks go both ways, the assistant's whole
+/// document is the paper, the paper as one file builds, and the project
+/// saved from a section builds in its new folder. No source file changes.
+#[tokio::test]
+#[ignore = "needs a TeX distribution; uses BIWRITE_SECTIONED_PAPER"]
+async fn workflow_a_real_paper_of_sections_works_from_its_sections() {
+    let Ok(main) = std::env::var("BIWRITE_SECTIONED_PAPER") else {
+        eprintln!("skipped: BIWRITE_SECTIONED_PAPER names no paper (a copy of its main file)");
+        return;
+    };
+    let main = std::fs::canonicalize(main).unwrap();
+    let root = main.parent().unwrap().to_owned();
+    let before = tex_sources(&root);
+    let dir = temp("real-sections");
+    let app = tauri::test::mock_app();
+    let (state, _, _) = workflow_state(&dir);
+    app.manage(state);
+    let state = app.state::<AppState>();
+
+    for name in ["01_intro.tex", "04_method.tex"] {
+        let section = root.join("sections_en").join(name);
+        let view = open_path(&state, section.clone()).await.unwrap();
+        assert!(view.pair.is_some(), "{name} pairs with its Chinese file");
+        settle(&state).await;
+        let text = view.text.clone();
+        let zh = latex_compile(
+            state.clone(),
+            Lang::Zh,
+            text.clone(),
+            state.engine.document(),
+        )
+        .await
+        .unwrap();
+        assert!(zh.has_pdf, "{name}: Chinese PDF\n{}", zh.output);
+        assert!(zh.root.ends_with("_zh.tex"), "{name}: {}", zh.root);
+        let sentence = plain_sentence(&text).expect("a plain sentence");
+        let at = text.find(sentence).unwrap();
+        let boxes = latex_forward(
+            state.clone(),
+            Lang::Zh,
+            utf16(&text, at) + 3,
+            text.clone(),
+            state.engine.document(),
+        )
+        .await
+        .unwrap();
+        let b = boxes
+            .first()
+            .unwrap_or_else(|| panic!("{name}: found in the Chinese PDF"));
+        let hit = latex_inverse(
+            state.clone(),
+            Lang::Zh,
+            b.page,
+            b.left + b.width / 2.0,
+            b.top + b.height / 2.0,
+            String::new(),
+            0,
+            text.clone(),
+            state.engine.document(),
+        )
+        .await
+        .unwrap()
+        .expect("a hit");
+        assert!(hit.here, "{name}: back in the section, not {hit:?}");
+        let r = hit.range.expect("a range");
+        assert!(
+            r.from <= utf16(&text, at) + 3 && utf16(&text, at) <= r.to,
+            "{name}: the paragraph of the sentence"
+        );
+        eprintln!("{name}: Chinese PDF {} and clicks both ways", zh.root);
+    }
+
+    // The assistant's whole document from the method: every section, the
+    // method as edited.
+    let method = root.join("sections_en/04_method.tex");
+    let view = open_path(&state, method.clone()).await.unwrap();
+    settle(&state).await;
+    let edited = format!("{}\n% edited in the editor\n", view.text);
+    let (paper, at) = crate::latex_commands::whole_paper(&state, &edited, view.text.len()).unwrap();
+    let intro = std::fs::read_to_string(root.join("sections_en/01_intro.tex")).unwrap();
+    let intro_sentence = plain_sentence(&intro).unwrap();
+    assert!(paper.contains(intro_sentence), "the introduction is in it");
+    assert!(paper.contains("% edited in the editor"));
+    assert!(paper[at..].starts_with("\n% edited in the editor"));
+    for part in ["01_intro", "05_experiments", "07_appendix"] {
+        assert!(
+            paper.contains(&format!("%% ===== sections_en/{part}.tex")),
+            "{part} marked"
+        );
+    }
+    eprintln!("whole document: {} characters", paper.chars().count());
+
+    // The paper as one file builds as the project does.
+    let flat = crate::latex_commands::flat_paper(&state, &view.text, None).unwrap();
+    assert!(
+        !flat.contains("\\input{sections_en/"),
+        "every section in place"
+    );
+    let flat_path = root.join("merged-check.tex");
+    std::fs::write(&flat_path, &flat).unwrap();
+    let tc = crate::latex_commands::require_toolchain(&state)
+        .await
+        .unwrap();
+    let job = biwrite_latex::Job {
+        dir: root.clone(),
+        root: PathBuf::from("merged-check.tex"),
+        engine: biwrite_latex::engine_for(&flat),
+        out_dir: Some(PathBuf::from(".biwrite/merged")),
+        timeout: Duration::from_secs(600),
+    };
+    let built = biwrite_latex::compile(&tc, &job).await.unwrap();
+    let errors: Vec<_> = built
+        .issues
+        .iter()
+        .filter(|i| i.severity == biwrite_latex::Severity::Error)
+        .map(|i| format!("{:?}:{:?} {}", i.file, i.line, i.message))
+        .collect();
+    assert!(built.pdf.is_some(), "{}", built.output);
+    assert!(errors.is_empty(), "{errors:?}");
+    std::fs::remove_file(&flat_path).unwrap();
+    eprintln!("one file: built in {} ms", built.duration_ms);
+
+    // Saved as a project from the method, it builds in the new folder.
+    let bundle = crate::project_copy::paper_bundle(&state).await.unwrap();
+    let dest = dir.join("saved-project");
+    let _lock = state.save_lock.lock().await;
+    crate::project_copy::save_into(&state, edited.clone(), &bundle, dest.clone())
+        .await
+        .unwrap();
+    drop(_lock);
+    let saved_main = dest.join(main.file_name().unwrap());
+    assert!(saved_main.is_file());
+    assert_eq!(
+        std::fs::read_to_string(dest.join("sections_en/04_method.tex")).unwrap(),
+        edited,
+        "the method as edited"
+    );
+    assert!(dest.join("sections_zh/04_method.tex").is_file());
+    let job = biwrite_latex::Job {
+        dir: dest.clone(),
+        root: PathBuf::from(main.file_name().unwrap()),
+        engine: biwrite_latex::engine_for(&std::fs::read_to_string(&saved_main).unwrap()),
+        out_dir: Some(PathBuf::from(".biwrite/en")),
+        timeout: Duration::from_secs(600),
+    };
+    let built = biwrite_latex::compile(&tc, &job).await.unwrap();
+    assert!(built.pdf.is_some(), "{}", built.output);
+    eprintln!("saved project: built in {} ms", built.duration_ms);
+
+    assert_eq!(
+        tex_sources(&root),
+        before,
+        "the paper's files are as they were"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

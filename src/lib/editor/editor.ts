@@ -18,6 +18,7 @@ import {
 } from "@codemirror/view";
 import type { Direction, Mode } from "../types";
 import { activeSegment, setActiveRange } from "./activeSegment";
+import { type IncludeLinks, includeLinks } from "./includeLinks";
 import { editorHighlighting, editorTheme } from "./theme";
 
 export interface EditorHandlers {
@@ -69,7 +70,10 @@ export class SourceEditor {
   private readonly language = new Compartment();
   private readonly editable = new Compartment();
   private readonly phrases = new Compartment();
+  private readonly includes = new Compartment();
   private uiLanguage: "en" | "zh" = "en";
+  private mode: Mode = "plain";
+  private links: IncludeLinks | null = null;
   private readonly handlers: EditorHandlers;
 
   constructor(parent: HTMLElement, handlers: EditorHandlers) {
@@ -79,6 +83,7 @@ export class SourceEditor {
 
   private createState(text: string, mode: Mode, direction: Direction): EditorState {
     const zh = direction === "zh-en";
+    this.mode = mode;
     return EditorState.create({
       doc: text,
       extensions: [
@@ -96,6 +101,7 @@ export class SourceEditor {
         this.language.of(languageFor(mode)),
         this.editable.of(EditorView.editable.of(true)),
         this.phrases.of(this.phrasesFor(this.uiLanguage)),
+        this.includes.of(this.includesFor()),
         editorHighlighting,
         editorTheme,
         activeSegment(),
@@ -122,6 +128,17 @@ export class SourceEditor {
     this.view.setState(this.createState(text, mode, direction));
   }
 
+  private includesFor(): Extension {
+    return this.mode === "latex" && this.links ? includeLinks(this.links) : [];
+  }
+
+  /** Links from the files a LaTeX document includes to those files (none
+   * with `null`). */
+  setIncludeLinks(links: IncludeLinks | null): void {
+    this.links = links;
+    this.view.dispatch({ effects: this.includes.reconfigure(this.includesFor()) });
+  }
+
   private phrasesFor(lang: "en" | "zh"): Extension {
     return lang === "zh" ? EditorState.phrases.of(ZH_PHRASES) : [];
   }
@@ -139,7 +156,10 @@ export class SourceEditor {
   }
 
   setMode(mode: Mode): void {
-    this.view.dispatch({ effects: this.language.reconfigure(languageFor(mode)) });
+    this.mode = mode;
+    this.view.dispatch({
+      effects: [this.language.reconfigure(languageFor(mode)), this.includes.reconfigure(this.includesFor())],
+    });
   }
 
   get doc(): Text {

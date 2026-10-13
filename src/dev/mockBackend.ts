@@ -5,7 +5,7 @@
 
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import PAPER from "../../samples/paper.tex?raw";
+import PAPER_FILE from "../../samples/paper.tex?raw";
 import PAPER_ZH from "../../dev/sample-zh.json";
 import { sentenceBounds } from "../lib/sentences";
 import type {
@@ -45,6 +45,14 @@ function clone<T>(value: T): T {
 /** `dev/mock.html?latex` opens the sample LaTeX paper (its PDF: dev/sample.pdf). */
 const PARAMS = new URLSearchParams(window.location.search);
 const LATEX = PARAMS.has("latex");
+/** `includes`: the sample paper also reads its appendix (and names a file
+ * the project lacks, and one in a comment). */
+const PAPER = PARAMS.has("includes")
+  ? PAPER_FILE.replace(
+      "\\bibliographystyle",
+      "\\input{sections/appendix}\n% \\include{sections/appendix}\n\\input{sections/missing}\n\n\\bibliographystyle",
+    )
+  : PAPER_FILE;
 /** `pending=N`: the last N paragraphs are still being translated. */
 const PENDING = Number(PARAMS.get("pending") ?? 0);
 /** With `failed=N` the last N paragraphs failed to translate (the provider answered with errors). */
@@ -138,7 +146,18 @@ function paragraphIndices(): number[] {
   return out;
 }
 
+/** A part of the sample project, opened from the file menu. */
+const APPENDIX_FILE = "sections/appendix.tex";
+const APPENDIX = `\\section{Appendix}
+The appendix lists the datasets used in the experiments. Each dataset comes with its split and its number of classes.
+
+We also report the running time of every method on each dataset, measured on one machine.
+`;
+
 const state = {
+  /** The project file open (relative), and the text each other one had. */
+  file: "",
+  files: {} as Record<string, string>,
   direction: (ZH_FILE && !WRONG ? "zh-en" : "en-zh") as "en-zh" | "zh-en",
   /** The direction in which the editor holds the file's own language. */
   home: (ZH_FILE && !WRONG ? "zh-en" : "en-zh") as "en-zh" | "zh-en",
@@ -267,6 +286,7 @@ const state = {
     closeToTray: true,
     keepAlive: true,
     keepAliveForever: true,
+    keysInFile: true,
     assistedApply: true,
     version: "0.1.1",
   } as SettingsView,
@@ -372,9 +392,9 @@ function session(): SessionView {
   const swappedPair = state.paired && state.direction !== (ZH_FILE && !WRONG ? "zh-en" : "en-zh");
   const own = ZH_FILE ? "paper_zh.tex" : LATEX ? "paper.tex" : "notes.txt";
   const other = ZH_FILE ? "paper.tex" : "paper_zh.tex";
-  const name = swappedPair ? other : own;
+  const name = state.file ? state.file.split("/").pop()! : swappedPair ? other : own;
   return {
-    path: LATEX ? `/Users/me/papers/gnn-icl/${name}` : "/Users/me/paper/notes.txt",
+    path: LATEX ? `/Users/me/papers/gnn-icl/${state.file || name}` : "/Users/me/paper/notes.txt",
     name,
     text: state.text,
     dirty: false,
@@ -782,9 +802,21 @@ const handlers: Record<string, (args: Args) => unknown> = {
   latex_project: () => {
     if (!LATEX) return null;
     const main = ZH_FILE ? "paper_zh.tex" : "paper.tex";
-    return { folder: "gnn-icl", root: main, current: main, engine: ZH_FILE ? "xelatex" : "pdflatex", files: [main, "sections/appendix.tex"] };
+    return { folder: "/Users/me/papers/gnn-icl", root: main, current: state.file || main, engine: ZH_FILE ? "xelatex" : "pdflatex", files: [main, APPENDIX_FILE] };
   },
-  latex_open: () => session(),
+  // Another file of the project: the open one keeps its text for later.
+  latex_open: (a) => {
+    const main = ZH_FILE ? "paper_zh.tex" : "paper.tex";
+    const file = String(a.file);
+    const now = state.file || main;
+    if (file === now) return session();
+    state.files[now] = state.text;
+    state.file = file === main ? "" : file;
+    state.text = state.files[file] ?? (file === APPENDIX_FILE ? APPENDIX : PAPER);
+    state.pending.clear();
+    state.failed.clear();
+    return session();
+  },
   latex_open_folder: () => session(),
   latex_compile: async (a): Promise<BuildView> => {
     const lang = a.lang === "zh" ? "zh" : "en";
@@ -817,6 +849,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   },
   latex_cancel: () => null,
   latex_export_tex: () => "/Users/me/papers/gnn-icl/paper_zh.tex",
+  latex_save_flat: () => "/Users/me/papers/gnn-icl/paper-merged.tex",
   latex_export_project: (a) => {
     state.projectCopies.push({ kind: "export", title: String(a.title) });
     return {
@@ -987,6 +1020,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
   },
   set_close_to_tray: (a) => {
     state.settings.closeToTray = Boolean(a.on);
+    return state.settings;
+  },
+  set_keys_in_file: (a) => {
+    state.settings.keysInFile = Boolean(a.on);
     return state.settings;
   },
   set_keep_alive: (a) => {

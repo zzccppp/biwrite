@@ -86,7 +86,44 @@ pub fn redirect_include(root: &str, from: &str, to: &str) -> Option<String> {
         }
         out.push_str(&line[copied..]);
     }
-    found.then_some(out)
+    // An `\includeonly` list names it too, or the copy is left out.
+    found.then(|| includeonly_to(&out, from, to))
+}
+
+/// `root` with `from` in its `\includeonly{…}` list read as `to`.
+fn includeonly_to(root: &str, from: &str, to: &str) -> String {
+    const COMMAND: &str = "\\includeonly{";
+    let mut out = String::with_capacity(root.len());
+    for line in root.split_inclusive('\n') {
+        let code = uncommented(line).len().min(line.len());
+        let list = line[..code].find(COMMAND).and_then(|i| {
+            let arg = i + COMMAND.len();
+            line[arg..code].find('}').map(|len| (arg, arg + len))
+        });
+        let Some((start, end)) = list else {
+            out.push_str(line);
+            continue;
+        };
+        let names: Vec<String> = line[start..end]
+            .split(',')
+            .map(|name| {
+                if name
+                    .trim()
+                    .trim_end_matches(".tex")
+                    .trim_start_matches("./")
+                    == from
+                {
+                    to.to_owned()
+                } else {
+                    name.to_owned()
+                }
+            })
+            .collect();
+        out.push_str(&line[..start]);
+        out.push_str(&names.join(","));
+        out.push_str(&line[end..]);
+    }
+    out
 }
 
 /// The files a `\bibliography{a,b}` of `text` names (comments ignored), as
@@ -113,6 +150,24 @@ pub fn bibliographies(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_includeonly_list_names_the_copy_too() {
+        let root = "\\includeonly{sections/intro,sections/method}\n\\begin{document}\n\\include{sections/method}\n% \\includeonly{sections/method}\n\\end{document}\n";
+        let out = redirect_include(root, "sections/method", ".biwrite/zh/sections/method").unwrap();
+        assert!(
+            out.starts_with("\\includeonly{sections/intro,.biwrite/zh/sections/method}\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("\\include{.biwrite/zh/sections/method}"),
+            "{out}"
+        );
+        assert!(
+            out.contains("% \\includeonly{sections/method}"),
+            "a comment stays: {out}"
+        );
+    }
 
     #[test]
     fn bibliographies_are_read_as_written() {

@@ -30,6 +30,10 @@
     onrevert: (job: AssistJob) => void;
     onagain: (job: AssistJob) => void;
     onreapply: (job: AssistJob) => void;
+    /** Load the document a job was made on. */
+    onswitch: (job: AssistJob) => void;
+    /** Open another file of the project at a line. */
+    onopenfile: (file: string, line: number) => void;
     onfollowup: (job: AssistJob, question: string) => Promise<boolean>;
     onfocus: (job: AssistJob) => void;
     onclose: () => void;
@@ -48,6 +52,8 @@
     onrevert,
     onagain,
     onreapply,
+    onswitch,
+    onopenfile,
     onfollowup,
     onfocus,
     onclose,
@@ -317,6 +323,9 @@
       <AssistJobCard
         {job}
         stale={job.epoch !== store.epoch}
+        elsewhere={store.elsewhere(job)}
+        {onswitch}
+        {onopenfile}
         held={store.adopting}
         {onaccept}
         oncancelcheck={(j) => store.cancelCheck(j)}

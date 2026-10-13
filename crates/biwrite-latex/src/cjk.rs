@@ -49,7 +49,7 @@ pub fn is_cjk(c: char) -> bool {
 }
 
 /// Whether the preamble `text` loads CJK support.
-pub(crate) fn supported(text: &str) -> bool {
+pub fn supported(text: &str) -> bool {
     let pre = uncommented(preamble(text));
     SUPPORT.iter().any(|p| pre.contains(p))
 }

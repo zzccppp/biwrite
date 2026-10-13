@@ -146,6 +146,8 @@ pub(crate) async fn save_into(
         }
     }
     let saved = crate::commands::write_document(state, new_path, own, mirror_to).await?;
+    // Sections paired by import stay paired in the copy.
+    pairing::remember_copies(state, &bundle.base, &dest);
     log::info!("saved with {copied} project files into {}", dest.display());
     Ok(ProjectCopy {
         folder: dest.display().to_string(),
@@ -170,27 +172,30 @@ pub async fn latex_export_project(
     document: u64,
     title: String,
 ) -> CommandResult<Option<ProjectCopy>> {
-    let (name, body) = translation_tex(&state, text, document)?;
+    let (name, body, whole) = translation_tex(&state, text, document)?;
     let bundle = bundle_of(vec![project(&state)?.root]).await?;
     let Some(dest) = files::pick_new_folder(&app, &window, &title, &suggested(&bundle.base)).await
     else {
         return Ok(None);
     };
-    export_into(&state, &name, body, &bundle, dest)
+    export_into(&state, &name, body, whole.is_some(), &bundle, dest)
         .await
         .map(Some)
 }
 
-/// [`latex_export_project`] into `dest`, the translation `body` as `name`.
+/// [`latex_export_project`] into `dest`, the translation `body` as `name`,
+/// next to the document, or next to the root for the whole paper
+/// (`whole`).
 pub(crate) async fn export_into(
     state: &AppState,
     name: &str,
     body: String,
+    whole: bool,
     bundle: &latex::Bundle,
     dest: PathBuf,
 ) -> CommandResult<ProjectCopy> {
-    let rel_dir = project(state)?
-        .path
+    let p = project(state)?;
+    let rel_dir = if whole { &p.root } else { &p.path }
         .parent()
         .and_then(|d| d.strip_prefix(&bundle.base).ok())
         .ok_or_else(|| fail("The document is outside its project folder."))?

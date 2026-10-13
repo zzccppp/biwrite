@@ -7,8 +7,16 @@
 
   interface Props {
     job: AssistJob;
-    /** The job's document is no longer open. */
+    /** The job cannot be applied here: its document is not the one loaded,
+     * or its text was not found when that came back. */
     stale: boolean;
+    /** Its document (another file, or the other side of a pair) is not
+     * the one loaded. */
+    elsewhere: boolean;
+    /** Load the job's document. */
+    onswitch: (job: AssistJob) => void;
+    /** Open another file of the project at a line. */
+    onopenfile: (file: string, line: number) => void;
     /** Another accept or revert is under way: this card's wait. */
     held: boolean;
     /** Apply (in a LaTeX project after a build with the answer in it,
@@ -34,6 +42,9 @@
   let {
     job,
     stale,
+    elsewhere,
+    onswitch,
+    onopenfile,
     held,
     onaccept,
     oncancelcheck,
@@ -99,7 +110,8 @@
   }
 
   function fixSummary(f: FixReport): string {
-    if (f.before === 0) return t("assist.fix.clean");
+    const others = f.elsewhere?.length ?? 0;
+    if (f.before === 0) return others ? t("assist.fix.cleanHere", { n: others }) : t("assist.fix.clean");
     if (!f.errors.length) return t("assist.fix.passed", { n: f.before });
     return t("assist.fix.left", { n: f.before, left: f.errors.length });
   }
@@ -230,8 +242,17 @@
     {@render body(r)}
 
     {#if stale}
-      <p class="warn">{t("assist.stale")}</p>
+      {#if elsewhere && job.doc.path}
+        <p class="warn">{t("assist.elsewhere", { doc: job.doc.label })}</p>
+      {:else if elsewhere}
+        <p class="warn">{t("assist.stale")}</p>
+      {:else}
+        <p class="warn">{t("assist.lost")}</p>
+      {/if}
       <div class="row">
+        {#if elsewhere && job.doc.path}
+          <button class="btn small primary" onclick={() => onswitch(job)}>{t("assist.switchTo")}</button>
+        {/if}
         <span class="spacer"></span>
         <button class="btn small" onclick={() => onremove(job)}>{t("common.delete")}</button>
       </div>
@@ -326,6 +347,22 @@
         <ul class="errors">
           {#each r.fix.errors.slice(0, 6) as e, i (i)}<li>{where(e)}{e.message}</li>{/each}
         </ul>
+      </section>
+    {/if}
+    {#if r.fix.elsewhere?.length}
+      <section class="elsewhere">
+        <h4 class="smallcaps">{t("assist.fix.elsewhere")}</h4>
+        <ul class="errors">
+          {#each r.fix.elsewhere.slice(0, 8) as e, i (i)}
+            <li>
+              {#if e.file}<button class="file" onclick={() => onopenfile(e.file ?? "", e.fileLine ?? 0)}
+                  >{e.file}{e.fileLine ? `:${e.fileLine}` : ""}</button
+                >{/if}
+              {e.message}
+            </li>
+          {/each}
+        </ul>
+        <p class="note">{t("assist.fix.elsewhereHint")}</p>
       </section>
     {/if}
   {/if}
@@ -590,6 +627,17 @@
     font-family: var(--font-mono);
     color: var(--ink-2);
     overflow-wrap: anywhere;
+  }
+  .errors .file {
+    margin-right: 6px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    color: var(--accent);
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+    cursor: pointer;
   }
   .note {
     margin: 0;

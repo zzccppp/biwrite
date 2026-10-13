@@ -280,4 +280,8 @@ pub struct SavedView {
     pub figures: Vec<String>,
     /// Figure files it left, because a file of that name is there.
     pub figures_kept: Vec<String>,
+    /// A part saved under a new name: the main file that still includes
+    /// the old one (its PDF leaves the new file out).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_in_root: Option<String>,
 }

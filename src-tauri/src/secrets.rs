@@ -9,6 +9,19 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<String>, String>;
     fn set(&self, account: &str, secret: &str) -> Result<(), String>;
     fn delete(&self, account: &str) -> Result<(), String>;
+    /// Keep `accounts` in the local key file (`to_file`) or the keychain
+    /// from now on, moving what the other holds (see
+    /// [`crate::local_keys`]). Stores of one place ignore it.
+    fn move_keys(&self, _to_file: bool, _accounts: &[String]) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Every account a provider's keys may be stored under.
+pub fn accounts_of(id: &str) -> Vec<String> {
+    std::iter::once(id.to_owned())
+        .chain((0..MAX_PARTS).map(|part| pool_account(id, part)))
+        .collect()
 }
 
 /// The platform credential store. Calls may block (and may show an OS

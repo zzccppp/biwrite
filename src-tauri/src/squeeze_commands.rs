@@ -548,8 +548,10 @@ pub async fn squeeze_start(
         )));
     }
     // Asked for: the keys that get through are kept alive (so are those
-    // getting through later, see `Squeeze::start`).
+    // getting through later, see `Squeeze::start`), even when no request
+    // of the author's was turned away yet.
     board.note_use();
+    board.note_squeezed();
     start_run(&app, &entry, board, &keys, None)?;
     Ok(view(&state.squeeze, &id))
 }
@@ -1109,6 +1111,28 @@ mod tests {
                 .board_for(&entry("https://api.deepseek.com/v1", 1))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn keys_a_squeeze_of_the_authors_got_through_are_kept_alive() {
+        let state = SqueezeState::default();
+        state.set_forever(true);
+        let relay = entry("https://api.example.com/v1", 6);
+        let board = state.board_for(&relay).unwrap();
+        board.answered("fp-a");
+        let zero = Duration::ZERO;
+        assert!(
+            state
+                .due_for_keep_alive(std::slice::from_ref(&relay), zero)
+                .is_empty(),
+            "no key was turned away"
+        );
+        // Its tries failed to connect: no request was turned away, yet the
+        // keys that got through are kept alive.
+        board.note_squeezed();
+        let due = state.due_for_keep_alive(std::slice::from_ref(&relay), zero);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].2, ["fp-a".to_owned()]);
     }
 
     #[test]

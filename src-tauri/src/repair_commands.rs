@@ -32,7 +32,7 @@ use crate::assist_commands::{
     emit, retry_wait,
 };
 use crate::error::{CommandError, CommandResult};
-use crate::latex_commands::check_build;
+use crate::latex_commands::{check_build, check_build_with};
 use crate::state::AppState;
 
 /// Most rounds of repairs by the model.
@@ -48,8 +48,11 @@ const BEFORE_FOLDER: &str = ".biwrite/check-before";
 pub struct FixReport {
     /// Errors of the document before the fix.
     pub before: usize,
-    /// Errors left in the last build.
+    /// Errors of the document left in the last build.
     pub errors: Vec<TexError>,
+    /// Errors of the last build in other files of the project, which a fix
+    /// of those files mends.
+    pub elsewhere: Vec<TexError>,
     /// Rounds of repairs the model made.
     pub rounds: u32,
     /// Changes the model gave whose lines were not found.
@@ -179,19 +182,21 @@ pub(crate) async fn fix_loop(
     let packages = crate::latex_commands::document_packages(state, start)
         .map(|(p, _)| p.into_iter().collect::<Vec<_>>());
     on_stage(false, 0);
-    let mut checked = check_build(state, start, CHECK_FOLDER).await?;
-    let before = checked.errors.len();
+    // Only the open document's errors go to the model: those of the
+    // project's other files are not in the text it changes.
+    let (mut errors, mut elsewhere) = check_build(state, start, CHECK_FOLDER).await?.split();
+    let before = errors.len();
     let mut text = start.to_owned();
     let mut notes = Notes::default();
     let mut usage = TokenUsage::default();
     let mut rounds = 0;
     let mut missed = 0;
-    while !checked.errors.is_empty() && rounds < MAX_ROUNDS {
+    while !errors.is_empty() && rounds < MAX_ROUNDS {
         rounds += 1;
         on_stage(true, rounds);
         let (system, user) = repair::fix_prompt(&repair::FixRequest {
             text: &text,
-            errors: &checked.errors,
+            errors: &errors,
             instruction,
             packages: packages.as_deref(),
         });
@@ -210,7 +215,7 @@ pub(crate) async fn fix_loop(
             assist::note_lines(&out.text, "changes_en"),
         );
         let replacements = repair::parse_replacements(&out.text);
-        let near: Vec<usize> = checked.errors.iter().filter_map(|e| e.line).collect();
+        let near: Vec<usize> = errors.iter().filter_map(|e| e.line).collect();
         let (next, miss) = repair::apply_replacements(&text, &replacements, &near);
         missed += miss.len();
         if next == text {
@@ -218,13 +223,14 @@ pub(crate) async fn fix_loop(
         }
         text = next;
         on_stage(false, rounds);
-        checked = check_build(state, &text, CHECK_FOLDER).await?;
+        (errors, elsewhere) = check_build(state, &text, CHECK_FOLDER).await?.split();
     }
     Ok(Fixed {
         text,
         report: FixReport {
             before,
-            errors: checked.errors,
+            errors,
+            elsewhere,
             rounds,
             missed,
         },
@@ -353,6 +359,11 @@ pub struct CheckStart {
     /// The lines put there for the answer.
     #[serde(default)]
     pub preamble: String,
+    /// Lines the answer needs in the root's preamble when the open file is
+    /// a part: the builds of the check have them in the root's copy, and
+    /// the card asks the author to add them.
+    #[serde(default)]
+    pub root_lines: String,
     /// The model fits the answer to the document before the first build
     /// (Accept with the model's help). A model that cannot be reached is an
     /// error, and the answer is applied as it is.
@@ -488,7 +499,7 @@ pub(crate) async fn check_loop(
     }
     on_stage(false, 0);
     let (mut text, mut answer, mut lines) = compose(start, &revision, &preamble);
-    let mut checked = check_build(state, &text, CHECK_FOLDER).await?;
+    let mut checked = check_build_with(state, &text, CHECK_FOLDER, &start.root_lines).await?;
     // The errors the document had without the answer, read only when
     // there are errors at all.
     let before = if checked.errors.is_empty() {
@@ -536,7 +547,7 @@ pub(crate) async fn check_loop(
         preamble = next_preamble;
         (text, answer, lines) = compose(start, &revision, &preamble);
         on_stage(false, rounds);
-        checked = check_build(state, &text, CHECK_FOLDER).await?;
+        checked = check_build_with(state, &text, CHECK_FOLDER, &start.root_lines).await?;
         new = new_errors(&checked.errors, &before, &text, &answer, lines.as_ref());
     }
     Ok(CheckResult {

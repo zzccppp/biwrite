@@ -5,6 +5,7 @@
   import {
     type AssistJob,
     AssistStore,
+    type DocPlace,
     askedAbout,
     asParagraph,
     insertionAt,
@@ -254,6 +255,14 @@
     void assist.adopting;
     relock();
   });
+
+  /** A card is being accepted or reverted: the document it works on stays
+   * open (another file, the other language) until it is done. */
+  function busyAdopting(): boolean {
+    if (!assist.adopting) return false;
+    session.flash(t("doc.busyAdopting"));
+    return true;
+  }
   /** An open file changed on disk elsewhere: `changed` asks whether to load
    * the versions there (`which`); `save`, the document's save was refused
    * over such a change; `mirror`, the paired file's write was. */
@@ -484,6 +493,26 @@
     editor?.highlightRange(id === null ? null : session.index.range(id));
   });
 
+  // \input and \include in the editor open the project file they name.
+  $effect(() => {
+    const project = latex.project;
+    void highlightTick;
+    const files = new Set(project?.files ?? []);
+    editor?.setIncludeLinks(
+      project && files.size > 1
+        ? {
+            resolve: (name) => {
+              const file = name.trim().replace(/^\.\//, "");
+              const tex = file.endsWith(".tex") ? file : `${file}.tex`;
+              return files.has(tex) && tex !== project.current ? tex : null;
+            },
+            open: (file) => void openProjectFile(file),
+            title: (file) => t("editor.openInclude", { file }),
+          }
+        : null,
+    );
+  });
+
   // ── Files ────────────────────────────────────────────────────────
 
   /** Show `view`. `keep`: the same text paired anew, so the editor (cursor,
@@ -504,7 +533,7 @@
     const same = keep && editor.text() === view.text;
     if (!same) {
       editor.setDocument(view.text, view.snapshot.mode, view.snapshot.direction);
-      assist.newDocument();
+      assist.newDocument(docPlaceOf(view), view.text);
       selection = { from: 0, to: 0 };
     }
     savedDoc = view.dirty ? null : editor.doc;
@@ -523,6 +552,44 @@
     });
   }
 
+  /** The file `view` loads and the language edited, for the assistant's
+   * cards: a card made on another file, or on the other side of a pair,
+   * waits for it. */
+  function docPlaceOf(view: SessionView): DocPlace {
+    const direction = view.snapshot.direction;
+    return {
+      key: `${view.path ?? `untitled:${view.snapshot.document}`}|${direction}`,
+      path: view.path,
+      direction,
+      // A pair's side is named: both sides are the same file here.
+      label: view.pair || direction !== view.home ? `${view.name} · ${langName(direction)}` : view.name,
+    };
+  }
+
+  /** Load the document a card was made on: its file of the project, then
+   * its side of a pair. */
+  async function switchToJob(job: AssistJob): Promise<void> {
+    const { path, direction } = job.doc;
+    if (!path || !editor || busyAdopting()) return;
+    // The other side of the pair open now: a swap.
+    if (path !== session.path && session.pair?.path === path) {
+      await swapLanguages();
+      return;
+    }
+    if (path !== session.path) {
+      const folder = latex.project?.folder;
+      const file = folder && path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : null;
+      if (!file || !latex.project?.files.includes(file)) {
+        session.flash(t("assist.openFirst", { doc: job.doc.label }));
+        return;
+      }
+      await openProjectFile(file);
+      // Not loaded (unsaved changes kept, say).
+      if (session.path !== path) return;
+    }
+    if (session.direction !== direction) await swapLanguages();
+  }
+
   async function refreshSettings(): Promise<void> {
     try {
       settings = await settingsIpc.get();
@@ -533,7 +600,7 @@
   }
 
   async function open(): Promise<void> {
-    if (opening) return;
+    if (opening || busyAdopting()) return;
     opening = true;
     // Don't let a debounced update for the old text race the new file.
     clearTimeout(timer);
@@ -603,6 +670,7 @@
       const leftOut = copy && copy.leftOut.length > 0 ? [t("doc.projectLeftOut", { files: copy.leftOut.join(", ") })] : [];
       reportMirror(saved.name, saved.mirror, saved.otherLanguage, leftOut);
       if (copy) session.flash(t("doc.projectSaved", { folder: copy.folder, n: copy.copied }));
+      if (saved.notInRoot) session.error = t("doc.notInRoot", { root: saved.notInRoot, name: saved.name });
       if (wasUntitled && saved.suggestedMode !== session.mode) changeMode(saved.suggestedMode);
       if (saved.path.toLowerCase().endsWith(".tex")) {
         // Saved elsewhere, the PDFs on show belong to the old file.
@@ -677,6 +745,7 @@
 
   /** Load the versions on disk of `which`. */
   async function loadFromDisk(which: DiskView): Promise<void> {
+    if (busyAdopting()) return;
     if (!editor || reloading) return;
     if (swapping || saving) {
       session.flash(t(swapping ? "doc.busySwapping" : "doc.busySaving"));
@@ -841,7 +910,7 @@
 
   /** Swap languages: edit the translation, read the original on the right. */
   async function swapLanguages(): Promise<void> {
-    if (!editor || swapping || reloading) return;
+    if (!editor || swapping || reloading || busyAdopting()) return;
     // A save records its file when it ends: not on the document swapped in.
     if (saving) {
       session.flash(t("doc.busySaving"));
@@ -971,7 +1040,7 @@
 
   /** Read the document as written in the other language. */
   async function retargetLanguage(): Promise<void> {
-    if (!editor || swapping) return;
+    if (!editor || swapping || busyAdopting()) return;
     if (saving) {
       session.flash(t("doc.busySaving"));
       return;
@@ -1200,7 +1269,7 @@
 
   /** Pair the open document with its translation in a file the user picks. */
   async function importMirror(): Promise<void> {
-    if (!editor) return;
+    if (!editor || busyAdopting()) return;
     if (swapping) {
       session.flash(t("doc.busySwapping"));
       return;
@@ -1218,6 +1287,7 @@
   }
 
   async function closeMirror(): Promise<void> {
+    if (busyAdopting()) return;
     try {
       await pairIpc.close();
       session.pair = null;
@@ -1330,7 +1400,7 @@
       } else if (hit.here && hit.range) {
         editor.select(hit.range.from, hit.range.to, false);
         pdfMenu = { ...near, here: true, paragraph: hit.paragraph, file: hit.file, line: hit.line };
-      } else if (hit.open && !session.dirty && !reopening) {
+      } else if (hit.open && !session.dirty && !reopening && !assist.adopting) {
         // Another file of the project: open it, then find the click in it.
         reopening = true;
         try {
@@ -1367,6 +1437,7 @@
   /** Open another file of the project and select `line` (or the clicked words on it). */
   async function openProjectFile(file: string, line = 0, pick: PdfPick | null = null): Promise<void> {
     pdfMenu = null;
+    if (busyAdopting()) return;
     try {
       const view = await latexIpc.open(file);
       if (!view || !editor) return;
@@ -1385,6 +1456,7 @@
   /** "Open" in the PDF menu (unsaved changes are asked about first). */
   async function openFromMenu(file: string, line: number): Promise<void> {
     pdfMenu = null;
+    if (busyAdopting()) return;
     const pick = lastPick;
     try {
       const view = await latexIpc.open(file);
@@ -1425,6 +1497,18 @@
       }
       const path = await latexIpc.exportTex(editor.text(), session.document);
       if (path) session.flash(t("pdf.texExported", { path }));
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** The whole paper of a project of several files as one .tex file. */
+  async function saveFlat(): Promise<void> {
+    if (!editor) return;
+    try {
+      await settleEdits();
+      const path = await latexIpc.saveFlat(editor.text(), session.document);
+      if (path) session.flash(t("doc.flatSaved", { path }));
     } catch (err) {
       fail(err);
     }
@@ -1648,6 +1732,15 @@
     return packages + libraries;
   }
 
+  /** The lines a figure of a part needs in the main file's preamble. */
+  function rootLines(job: AssistJob): string {
+    const r = job.result;
+    if (job.action !== "figure" || !r || r.preambleHere) return "";
+    const packages = r.missingPackages.map((p) => `\\usepackage{${p}}\n`).join("");
+    const libraries = r.libraries.length ? `\\usetikzlibrary{${r.libraries.join(",")}}\n` : "";
+    return packages + libraries;
+  }
+
   /** Where lines go before \begin{document}: at its line, when that comes
    * before `from`. */
   function preambleAt(whole: string, from: number): number | null {
@@ -1792,6 +1885,9 @@
         preambleAt: preambleAt(whole, place.from),
         // As they will be applied: none the preamble has already.
         preamble: newPreambleLines(whole.slice(0, preambleAt(whole, place.from) ?? 0), figureLines(job)),
+        // A part's figure: what the main file's preamble needs, in the
+        // check's copy of it (the card asks the author to add the lines).
+        rootLines: rootLines(job),
         // The model fits it to the document first.
         fit: true,
       });
@@ -2167,12 +2263,15 @@
     onimportmirror={importMirror}
     onclosemirror={closeMirror}
     swapWaiting={swapWhenReady}
-    onnew={() => (showTemplates = true)}
+    onnew={() => {
+      if (!busyAdopting()) showTemplates = true;
+    }}
     onfile={(file) => openProjectFile(file)}
     onopen={open}
     onsave={() => save(false)}
     onsaveas={() => save(true)}
     onsaveproject={() => save("project")}
+    onsaveflat={() => void saveFlat()}
     saveAsChoice={compilable}
     onhelp={() => ipc.openManual(language.current).catch(fail)}
     onexport={exportBilingual}
@@ -2292,6 +2391,8 @@
         onrevert={revertJob}
         onagain={againJob}
         onreapply={reapplyJob}
+        onswitch={(j) => void switchToJob(j)}
+        onopenfile={(file, line) => void openProjectFile(file, line)}
         onfollowup={followUp}
         onfocus={focusJob}
         onclose={() => setAssistOpen(false)}

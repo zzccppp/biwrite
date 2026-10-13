@@ -95,11 +95,13 @@ LaTeX 功能需要 TeX 发行版：macOS 用 MacTeX，Windows 和 Linux 用 TeX 
 ![点击 PDF 中的句子，源码中对应的句子被选中](docs/images/zh/pdf-click.jpg)
 
 * 用**打开**选 `.tex` 文件，或者**新建**后选「打开 LaTeX 文件夹…」按主文件打开项目。多文件项目在标题栏列出文件，主文件通过 `\input` 和 `\include` 链、`% !TEX root = …` 注释，以及并列的 `sections_en/` 与 `sections_zh/` 文件夹确定。
-* **PDF** 页签用 `⌘B` 编译，每次保存后也会编译（设置中的「保存 .tex 文件后自动编译」）。错误和警告显示在 PDF 上方，点击跳到对应行。文档有错误时也会生成 PDF。
+* 编辑器里 `\input`、`\include` 引入的项目文件，文件名后有一个 ↗，点它或按住 ⌘ 点文件名即打开那个文件。打开某一节时，标题栏多一个「主文件」按钮，点击回到主文件。
+* **PDF** 页签用 `⌘B` 编译，每次保存后也会编译（设置中的「保存 .tex 文件后自动编译」）。错误和警告显示在 PDF 上方，点击跳到对应行。文档有错误时也会生成 PDF。列表右上角的「收起」把它收起，点编译结果可以再展开。「复制日志」把全部问题和编译输出复制到剪贴板。
 * **不保存也能编译**：`⌘B` 编译编辑器里现在的内容。未保存的修改写到论文旁边的 `.biwrite/` 缓存文件夹中编译，本地的 `.tex` 文件保持上次保存的内容，直到你点保存。写作助手生成的图片文件也先放在这里，保存时才写到论文的图片文件夹。
 * **点击 PDF 中的句子**：该句的源码被选中，位于其他文件时 BiWrite 会打开那个文件。旁边的小菜单提供「润色」「润色…」和「提问…」，「润色…」打开写作助手先写要求。
 * `⌘⌥J`（Ctrl+Alt+J）在 PDF 中高亮光标所在段落。右侧显示译文时，则在译文中标出光标所在的句子。点译文中的某一句，左侧选中原文中对应的那一句。
 * **英文和中文 PDF**：「中文」开关用 XeLaTeX 和 `ctex` 由译文编译中文 PDF（尚未翻译的段落保持英文）。「另存 PDF…」和「导出中文 .tex…」保存副本。
+* **多文件项目的中文 PDF**：打开哪个文件都编译整篇论文的中文。项目有自己的中文主文件（例如 `main_zh.tex`，或用「导入译文」与英文主文件配对过的文件），并且它引入了这一节或这一节的中文文件时，直接编译它。其余情况下，其余各节优先用与它配对的中文文件，其次用缓存中已有的译文，不为此发出新的翻译请求。点击中文 PDF 会打开对应的英文章节并选中那一段。
 
 ### 模板
 
@@ -136,6 +138,8 @@ LaTeX 功能需要 TeX 发行版：macOS 用 MacTeX，Windows 和 Linux 用 TeX 
 * 「上下文」可选只发送目标段落、含前后段或整篇论文。「参照样例」可以添加文字、文件（`.tex`、`.md`、`.txt`）、图片，或者用「+ 素材」从[素材文件夹](#我的素材)中选论文和图。
 
 每个任务都在后台运行。结果以差异显示改动，附修订稿的中文和中英文两份改动说明。「采纳」把结果写入文字当前所在的位置，即使你在等待期间继续输入。LaTeX 论文中采纳会先让模型把结果改成适合这篇文档的样子（改用文档已有的宏包和颜色，补上需要的导言区行），再放进文档编译一次，如果带来新的错误（缺宏包、缺 TikZ 库、模板颜色等），先让模型修好再写入，修不好或模型、编译不可用时按原样写入。如果目标文字本身在等待期间被改过，「让模型重新套用」会把修订套用到当前文本上。「还原」撤回已采纳的结果。还原插入的图表时，导言区补加的行由模型判断是否还有用，模型选出的行删掉后先编译一次，没有新的错误才真正删除。模型无法连接时只撤掉正文，导言区不动。一张卡片在采纳或还原时，其他卡片要等它结束，编辑器也暂不接受输入。「设置」中的「采纳和还原由模型辅助」默认勾选，不勾时采纳直接写入，还原只撤掉正文。
+
+多文件项目中，每张卡片属于提出它的那个文件和那种语言。切到别的文件或在中英之间切换后，卡片注明它属于哪个文件，点「切换过去」回到那里再采纳。离开期间那段文字被改动、找不到原来的位置时，卡片会说明，不能采纳。采纳或还原进行期间，切换文件和切换语言都要等它结束。上下文选「全文」时，模型读到的是按主文件拼起来的整篇论文，正在编辑的文件用编辑器里的内容。语法修复只修改当前文件，项目其他文件中的错误另外列出，点文件名打开它再修。
 
 规则来自 [research-builder](https://github.com/qzkinhit/research-builder)，每项操作使用 skill 中对应的部分：润色和修改用去 AI 腔规则与写作手册，仿写还用论文骨架和讲故事的套路，图表用图表风格，PPT 图用 `paper-figure-pptx` 的插图规则与图标库。BiWrite 自带一份 skill，「设置」中的「写作技能」可以从 GitHub 更新，也可以换成你自己的 skill 文件夹。
 
@@ -358,9 +362,14 @@ it the PowerPoint file alone is made.
   bar, and the main file is found through `\input` and `\include` chains,
   `% !TEX root = …` comments, and sibling `sections_en/` and `sections_zh/`
   folders.
+* A project file that `\input` or `\include` reads has a ↗ after its name in
+  the editor. A click on it, or a ⌘-click on the name, opens that file. With a
+  section open, *Main file* in the title bar goes back to the main file.
 * The **PDF** tab compiles with `⌘B` and after every save (Settings,
   *Compile after saving a .tex file*). Errors and warnings appear above the
-  PDF and open their line. A document with errors still gets its PDF.
+  PDF and open their line. A document with errors still gets its PDF. *Fold*
+  folds the list away (click the build result to show it again), and *Copy
+  log* copies every problem and the build output.
 * **Compile without saving.** `⌘B` compiles what the editor shows. Unsaved
   edits are written to the `.biwrite/` cache folder beside the paper and
   compiled there, and the `.tex` file on disk stays as last saved until you
@@ -377,6 +386,14 @@ it the PowerPoint file alone is made.
 * **English and Chinese PDFs.** The *Chinese* switch builds the Chinese PDF
   from the translation with XeLaTeX and `ctex` (paragraphs not translated
   yet stay English). *Save PDF as…* and *Export Chinese .tex…* save copies.
+* **The Chinese PDF of a project of several files** is the whole paper,
+  whichever file is open. A Chinese main file of the project's own
+  (`main_zh.tex`, or one paired with the main file by *Pair*) that includes
+  the open section, or its Chinese file, is built as it is. Otherwise each
+  other section comes from its paired Chinese file,
+  else from the translations in the cache, and no translation is requested
+  for it. A click in the Chinese PDF opens the English section at that
+  paragraph.
 
 ### Templates
 
@@ -472,6 +489,16 @@ card is accepted or reverted, the others wait for it and the editor takes
 no typing. *Accept and Revert
 with the model's help*, in Settings, is on by default. Off, Accept applies
 the result at once and Revert takes out only the text.
+
+In a project of several files, each card belongs to the file and the
+language it was made in. With another file open, or the other language, the
+card names its file, and *Switch there* goes back to accept it. A card whose
+text changed meanwhile so that its place is gone says so and cannot be
+accepted. While a card is accepted or reverted, opening another file or
+swapping languages waits for it. With *Whole document* as the context, the
+model reads the whole paper, put together from the main file, with the open
+file as the editor has it. A fix changes only the open file, and lists the
+errors of the project's other files apart. A click on one opens its file there.
 
 The rules come from [research-builder](https://github.com/qzkinhit/research-builder),
 each action with its part of the skill. Polishing and edits use the rules on

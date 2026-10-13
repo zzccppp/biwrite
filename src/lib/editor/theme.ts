@@ -31,6 +31,16 @@ export const editorTheme = EditorView.theme({
     boxShadow: "inset 3px 0 0 var(--seal)",
   },
   ".cm-placeholder": { color: "var(--faint)", fontStyle: "italic" },
+  ".cm-includeName": { textDecoration: "underline dotted var(--accent)", textUnderlineOffset: "3px" },
+  ".cm-includeOpen": {
+    marginLeft: "4px",
+    padding: "0 3px",
+    borderRadius: "3px",
+    color: "var(--accent)",
+    cursor: "pointer",
+    userSelect: "none",
+  },
+  ".cm-includeOpen:hover": { backgroundColor: "var(--accent-soft)" },
   ".cm-searchMatch": { backgroundColor: "var(--search-match)", outline: "1px solid var(--search-outline)" },
   ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "var(--search-selected)" },
   ".cm-panels": {

@@ -92,6 +92,7 @@ fn err(message: &str) -> TexError {
         file: None,
         message: message.into(),
         context: String::new(),
+        ..TexError::default()
     }
 }
 

@@ -32,6 +32,7 @@ import type {
   ImageUse,
   MaterialEntry,
   CheckResult,
+  Direction,
   FigureFormat,
   Sample,
 } from "./types";
@@ -92,6 +93,51 @@ function save(key: string, value: string): void {
   }
 }
 
+/** Where the editor's text comes from: a file (or none yet) and the
+ * language edited, which a swap of a pair changes. */
+export interface DocPlace {
+  /** `path|direction`, or a key of its own for a file never saved. */
+  key: string;
+  /** The file, when it has one. */
+  path: string | null;
+  direction: Direction;
+  /** Its name for a card, with the side when it is the other language. */
+  label: string;
+}
+
+/** The only place of `part` in `text`, or -1 (none, or several). */
+function onlyIndex(text: string, part: string): number {
+  if (!part) return -1;
+  const at = text.indexOf(part);
+  return at >= 0 && text.indexOf(part, at + 1) < 0 ? at : -1;
+}
+
+/** Where `job` is in `text`, its document loaded again: what it put in,
+ * else its target (for an insertion, the end of the paragraph it follows).
+ * `null` when that is not found exactly once. A fix finds its changes by
+ * the lines around them anyway, and a question puts nothing in. */
+function refind(job: AssistJob, text: string): { from: number; to: number } | null {
+  if (job.action === "ask") return { from: job.from, to: job.to };
+  if (job.action === "fix") {
+    const hunks = job.applied?.hunks ?? [];
+    const found = hunks.map((h) => onlyIndex(text, h.text));
+    if (found.some((at) => at < 0)) return null;
+    hunks.forEach((h, i) => {
+      h.from = found[i];
+      h.to = found[i] + h.text.length;
+    });
+    return { from: 0, to: text.length };
+  }
+  if (job.state === "applied" && job.applied) {
+    const at = onlyIndex(text, job.applied.text);
+    return at < 0 ? null : { from: at, to: at + job.applied.text.length };
+  }
+  const at = onlyIndex(text, job.target.text);
+  if (at < 0) return null;
+  const end = at + job.target.text.length;
+  return job.target.insert ? { from: end, to: end } : { from: at, to: end };
+}
+
 export class AssistJob {
   readonly id: number;
   readonly action: AssistAction;
@@ -101,8 +147,12 @@ export class AssistJob {
   readonly skill: string;
   /** The target as the job started. */
   readonly target: AssistTarget;
-  /** The document the job belongs to (a newly opened file is another one). */
-  readonly epoch: number;
+  /** The loading of the document its positions belong to: they are kept
+   * in step with edits while that stays loaded, and found again by text
+   * when the document comes back (see `AssistStore.newDocument`). */
+  epoch = $state(0);
+  /** The file and side it was made on (see `AssistStore.doc`). */
+  readonly doc: DocPlace;
   readonly startedAt = Date.now();
   /** Questions and answers before this one (ask follow-ups). */
   readonly history: [string, string][];
@@ -159,6 +209,7 @@ export class AssistJob {
     started: AssistStarted,
     request: AssistRequest,
     epoch: number,
+    doc: DocPlace,
     reapplies: number | null = null,
   ) {
     this.id = started.id;
@@ -169,6 +220,7 @@ export class AssistJob {
     this.skill = started.skill;
     this.target = started.target;
     this.epoch = epoch;
+    this.doc = doc;
     this.history = request.history;
     this.reapplies = reapplies;
     this.from = started.target.from;
@@ -274,6 +326,8 @@ export class AssistStore {
   }
   /** Bumped when another document is loaded (reactive: cards turn stale). */
   epoch = $state(0);
+  /** The document loaded now (see `DocPlace`). */
+  doc = $state<DocPlace>({ key: "", path: null, direction: "en-zh", label: "" });
   /** Edits made while jobs were being started, to map their targets through. */
   #starting = new Set<{ changes: ChangeSet | null }>();
   /** Events of jobs whose start has not returned yet (they can come first). */
@@ -315,7 +369,7 @@ export class AssistStore {
     } finally {
       this.#starting.delete(edits);
     }
-    const job = new AssistJob(started, request, epoch, reapplies);
+    const job = new AssistJob(started, request, epoch, this.doc, reapplies);
     // Edits of its own document only (another one may have loaded since).
     if (edits.changes && epoch === this.epoch) mapTarget(job, edits.changes);
     this.jobs = [job, ...this.jobs];
@@ -378,11 +432,35 @@ export class AssistStore {
     }
   }
 
-  /** Another document was loaded: open jobs can no longer be applied, and
-   * edits of the new one don't concern jobs still being started. */
-  newDocument(): void {
+  /** Another document was loaded (another file, or the other side of a
+   * pair), its text `text`: the jobs of another document wait for it, and
+   * edits of this one don't concern jobs still being started. The jobs made
+   * on this one before (it was open earlier) take it up again where their
+   * text is found exactly once; one not found stays apart (`lost`). */
+  newDocument(doc: DocPlace, text: string): void {
     this.epoch++;
     this.#starting.clear();
+    this.doc = doc;
+    for (const job of this.jobs) {
+      if (job.doc.key !== doc.key) continue;
+      const place = refind(job, text);
+      if (!place) continue;
+      job.from = place.from;
+      job.to = place.to;
+      job.epoch = this.epoch;
+    }
+  }
+
+  /** The job was made on another document (file or side) than the one
+   * loaded. */
+  elsewhere(job: AssistJob): boolean {
+    return job.doc.key !== this.doc.key;
+  }
+
+  /** The job was made on this document, but its text was not found again
+   * when the document came back. */
+  lost(job: AssistJob): boolean {
+    return !this.elsewhere(job) && job.epoch !== this.epoch;
   }
 
   cancel(job: AssistJob): void {

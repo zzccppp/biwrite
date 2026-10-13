@@ -63,6 +63,43 @@ struct Build {
     direction: Direction,
     /// The paired file, built from a copy with translations not saved yet.
     mirror: Option<MirrorCopy>,
+    /// Other parts of the project built from copies in this language (see
+    /// [`stage_parts`]).
+    parts: Vec<PartCopy>,
+}
+
+/// A part of the project (not the open document) built in the other
+/// language from a copy composed of the translations in the cache: the copy
+/// TeX read, the part's own file (both canonical), and the line of the part
+/// where each paragraph of the copy starts (`(line in the copy, line in the
+/// part)`, from 1, in order), so a click in the copy opens the part there.
+#[derive(Clone)]
+struct PartCopy {
+    copy: PathBuf,
+    file: PathBuf,
+    lines: Vec<(usize, usize)>,
+}
+
+impl PartCopy {
+    /// The line of the part for `line` of the copy: where its paragraph
+    /// starts.
+    fn line(&self, line: usize) -> usize {
+        self.lines
+            .iter()
+            .rev()
+            .find(|(copy, _)| *copy <= line)
+            .map_or(line, |(_, part)| *part)
+    }
+
+    /// The line of the copy for `line` of the part: where its paragraph
+    /// starts there.
+    fn copy_line(&self, line: usize) -> usize {
+        self.lines
+            .iter()
+            .rev()
+            .find(|(_, part)| *part <= line)
+            .map_or(line, |(copy, _)| *copy)
+    }
 }
 
 /// A copy of the paired file in the `.biwrite` folder, with the current
@@ -294,7 +331,15 @@ pub(crate) fn project(state: &AppState) -> CommandResult<Project> {
     let path = path
         .filter(|p| is_tex(p))
         .ok_or_else(|| fail("Save the document as a .tex file first."))?;
-    project_of(state, &path, saved)
+    let p = project_of(state, &path, saved)?;
+    // The open document's root, for a part no main file reaches later (a
+    // paired file's or another language's root is not).
+    *state
+        .latex
+        .last_root
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(p.root.clone());
+    Ok(p)
 }
 
 /// The project of the `.tex` file at `path` whose text on disk is `saved`.
@@ -313,11 +358,6 @@ fn project_of(state: &AppState, path: &Path, saved: String) -> CommandResult<Pro
             .filter(|r| r.is_file() && r.parent().is_some_and(|d| path.starts_with(d)))
             .ok_or_else(|| fail(e.to_string()))?,
     };
-    *state
-        .latex
-        .last_root
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(root.clone());
     let root_text = if root == path {
         saved.clone()
     } else {
@@ -466,10 +506,24 @@ fn original(name: &str) -> String {
         .to_owned()
 }
 
-fn issue_views(issues: Vec<Issue>, doc_rel: &str, doc_is_root: bool) -> Vec<IssueView> {
+fn issue_views(
+    issues: Vec<Issue>,
+    doc_rel: &str,
+    doc_is_root: bool,
+    dir: &Path,
+    parts: &[PartCopy],
+) -> Vec<IssueView> {
     issues
         .into_iter()
-        .map(|i| {
+        .map(|mut i| {
+            // A part built from a copy of its translations: the line of the
+            // part where the paragraph starts.
+            if let (Some(name), Some(line)) = (i.file.as_deref(), i.line) {
+                let copy = canonical(&dir.join(name.trim_start_matches("./")));
+                if let Some(part) = parts.iter().find(|p| p.copy == copy) {
+                    i.line = Some(part.line(line as usize) as u32);
+                }
+            }
             let file = i.file.as_deref().map(original);
             // Warnings name no file: in a one-file project they are ours.
             let here = match &file {
@@ -514,6 +568,7 @@ fn stage(
     folder: &str,
     text: &str,
     prepare: fn(&str) -> String,
+    redirects: &[(String, String)],
 ) -> CommandResult<Option<(PathBuf, PathBuf)>> {
     let doc_rel = relative(&p.path, &p.dir)
         .ok_or_else(|| fail("The document is outside its project folder."))?;
@@ -530,6 +585,8 @@ fn stage(
         let Some(root) = latex::redirect_include(&p.root_text, from, &to) else {
             return Ok(None);
         };
+        // The other parts read from where `redirects` says.
+        let root = redirect_all(&root, redirects);
         let root = state.figures.staged(&p.dir, &root);
         write_file(&doc_out, text)?;
         write_file(&out.join(&root_rel), &prepare(&root))?;
@@ -650,11 +707,22 @@ pub async fn latex_compile(
             .filter(|_| lang != source_lang(direction))
             .map(|pair| (pair.path.clone(), pair.file.text().to_owned()))
     };
-    let p = match mirror {
-        Some((path, saved)) => project_of(&state, &path, saved)?,
-        None => project(&state)?,
-    };
     let paired = state.file().pair.is_some();
+    // The project's root in this language, built as saved whichever part
+    // is open (see [`root_in`]).
+    let other_root = if !paired && lang != file_lang {
+        root_in(&state, lang)
+    } else {
+        None
+    };
+    let p = match (mirror, &other_root) {
+        (Some((path, saved)), _) => project_of(&state, &path, saved)?,
+        (None, Some(root)) => {
+            let saved = std::fs::read_to_string(root).map_err(|e| CommandError::io(root, e))?;
+            project_of(&state, root, saved)?
+        }
+        (None, None) => project(&state)?,
+    };
     let doc_rel = relative(&p.path, &p.dir)
         .ok_or_else(|| fail("The document is outside its project folder."))?;
     let root_rel = relative(&p.root, &p.dir).unwrap_or_default();
@@ -664,6 +732,7 @@ pub async fn latex_compile(
     let mut unsaved_left_out = false;
     let mut unsaved_built = false;
     let mut mirror_copy = None;
+    let mut parts = Vec::new();
     let (job, doc_file, basis, source) = match lang {
         _ if paired || lang == file_lang => {
             let now = text_now(&state, lang, direction, &text);
@@ -673,7 +742,7 @@ pub async fn latex_compile(
             let unsaved = now.as_ref().is_none_or(|now| now.text != disk);
             let staged = match &now {
                 Some(now) if unsaved => {
-                    stage(&state, &p, copies_dir(lang), &now.text, str::to_owned)?
+                    stage(&state, &p, copies_dir(lang), &now.text, str::to_owned, &[])?
                 }
                 _ => None,
             };
@@ -735,6 +804,25 @@ pub async fn latex_compile(
                 ),
             }
         }
+        // Not the open document's file: no line of it stands for one of the
+        // editor's (a part both roots read is found as another file).
+        _ if other_root.is_some() => (
+            Job {
+                dir: p.dir.clone(),
+                root: PathBuf::from(&root_rel),
+                engine: latex::project_engine(&p.root, &p.root_text),
+                out_dir: None,
+                timeout: BUILD_TIMEOUT,
+            },
+            PathBuf::new(),
+            Basis {
+                compiled: as_on_disk(&p.path, &p.saved),
+                editor: text,
+                same_language,
+                mode: Mode::Latex,
+            },
+            Source::Files,
+        ),
         _ => {
             // The editor's text if it is in this language, else composed
             // from the translations.
@@ -754,7 +842,50 @@ pub async fn latex_compile(
                 Lang::En => str::to_owned,
             };
             let folder = copies_dir(lang);
-            let (root, copy) = stage(&state, &p, folder, &other, prepare)?.ok_or_else(|| {
+            // The project's other parts in this language too, where they
+            // have it.
+            let toward = match lang {
+                Lang::Zh => Direction::EnZh,
+                Lang::En => Direction::ZhEn,
+            };
+            let (redirects, staged) = stage_parts(&state, &p, folder, lang, toward);
+            parts = staged;
+            let other = redirect_all(&other, &redirects);
+            // The root's own words (title, abstract) in this language too,
+            // when a part is open.
+            let root_mirror = (p.path != p.root)
+                .then(|| {
+                    state
+                        .engine
+                        .compose_cached(&p.root_text, Mode::Latex, toward)
+                })
+                .filter(|m| m.pairs.len() > m.untranslated);
+            let translated = root_mirror.as_ref().map(|m| Project {
+                path: p.path.clone(),
+                saved: p.saved.clone(),
+                root: p.root.clone(),
+                root_text: m.text.clone(),
+                dir: p.dir.clone(),
+            });
+            if let Some(m) = &root_mirror {
+                parts.push(PartCopy {
+                    copy: p.dir.join(folder).join(&root_rel),
+                    file: canonical(&p.root),
+                    lines: part_lines(&p.root_text, m),
+                });
+            }
+            let staged = stage(
+                &state,
+                translated.as_ref().unwrap_or(&p),
+                folder,
+                &other,
+                prepare,
+                &redirects,
+            )?;
+            if let Some(part) = parts.last_mut().filter(|_| root_mirror.is_some()) {
+                part.copy = canonical(&part.copy);
+            }
+            let (root, copy) = staged.ok_or_else(|| {
                 fail(format!(
                     "The translated PDF needs {root_rel} to \\input or \\include {doc_rel} directly."
                 ))
@@ -817,7 +948,15 @@ pub async fn latex_compile(
         outcome: built.outcome,
         has_pdf: built.pdf.is_some(),
         stale: built.stale,
-        issues: issue_views(built.issues, &doc_rel, doc_is_root),
+        issues: if other_root.is_some() {
+            // The open document is in this build only as a part both roots
+            // read.
+            let open = state.file().path.as_deref().map(canonical);
+            let open_rel = open.and_then(|o| relative(&o, &p.dir)).unwrap_or_default();
+            issue_views(built.issues, &open_rel, false, &p.dir, &parts)
+        } else {
+            issue_views(built.issues, &doc_rel, doc_is_root, &p.dir, &parts)
+        },
         duration_ms: built.duration_ms,
         tool: built.tool,
         engine,
@@ -836,16 +975,21 @@ pub async fn latex_compile(
             pdf: built.pdf,
             dir: p.dir,
             doc_file,
-            doc_path: state
-                .file()
-                .path
-                .as_deref()
-                .map(canonical)
-                .unwrap_or_default(),
+            doc_path: if other_root.is_some() {
+                PathBuf::new()
+            } else {
+                state
+                    .file()
+                    .path
+                    .as_deref()
+                    .map(canonical)
+                    .unwrap_or_default()
+            },
             basis,
             source,
             direction,
             mirror: mirror_copy,
+            parts,
         },
     );
     Ok(view)
@@ -861,6 +1005,20 @@ pub(crate) struct Checked {
     /// Its errors; the line is that of the text when TeX found the error
     /// in it.
     pub(crate) errors: Vec<TexError>,
+    /// The open document, relative to the project folder (as errors name
+    /// their files).
+    pub(crate) doc: String,
+}
+
+impl Checked {
+    /// The errors of the open document, and those TeX found in other files
+    /// of the project, which only those files can fix.
+    pub(crate) fn split(self) -> (Vec<TexError>, Vec<TexError>) {
+        let doc = self.doc;
+        self.errors
+            .into_iter()
+            .partition(|e| e.file.as_deref().is_none_or(|f| f == doc))
+    }
 }
 
 /// Build the open document as `text` in `folder` of its project (a folder
@@ -872,6 +1030,18 @@ pub(crate) async fn check_build(
     state: &AppState,
     text: &str,
     folder: &str,
+) -> CommandResult<Checked> {
+    check_build_with(state, text, folder, "").await
+}
+
+/// [`check_build`] with `root_lines` before `\begin{document}` of the
+/// root's copy when the open document is a part (what an answer of it
+/// needs there).
+pub(crate) async fn check_build_with(
+    state: &AppState,
+    text: &str,
+    folder: &str,
+    root_lines: &str,
 ) -> CommandResult<Checked> {
     let tc = require_toolchain(state).await?;
     let lang = source_lang(state.engine.direction());
@@ -888,11 +1058,23 @@ pub(crate) async fn check_build(
     } else {
         str::to_owned
     };
-    let (root, _) = stage(state, &p, folder, text, prepare)?.ok_or_else(|| {
+    let (root, _) = stage(state, &p, folder, text, prepare, &[])?.ok_or_else(|| {
         fail(format!(
             "{root_rel} includes {doc_rel} through a macro, so it cannot be built on its own."
         ))
     })?;
+    if !root_lines.trim().is_empty() && p.path != p.root {
+        let copy = p.dir.join(&root);
+        let staged = std::fs::read_to_string(&copy).map_err(|e| CommandError::io(&copy, e))?;
+        if let Some(at) = staged.find("\\begin{document}") {
+            let lines = if root_lines.ends_with('\n') {
+                root_lines.to_owned()
+            } else {
+                format!("{root_lines}\n")
+            };
+            write_file(&copy, &format!("{}{lines}{}", &staged[..at], &staged[at..]))?;
+        }
+    }
     let engine = if own {
         latex::project_engine(&p.root, if p.path == p.root { text } else { &p.root_text })
     } else {
@@ -942,7 +1124,10 @@ pub(crate) async fn check_build(
         errors.len(),
         built.duration_ms
     );
-    Ok(Checked { errors })
+    Ok(Checked {
+        errors,
+        doc: doc_rel,
+    })
 }
 
 /// The errors of a build to repair, from its log: each with what TeX
@@ -972,8 +1157,10 @@ pub(crate) fn tex_errors(
                 .find(|c| c.message == i.message && c.line == i.line)
                 .map(|c| c.context.clone())
                 .unwrap_or_default();
+            let here = here(file.as_deref());
             TexError {
-                line: i.line.filter(|_| here(file.as_deref())).map(|l| l as usize),
+                line: i.line.filter(|_| here).map(|l| l as usize),
+                file_line: i.line.filter(|_| !here).map(|l| l as usize),
                 file,
                 message: i.message.clone(),
                 context,
@@ -985,6 +1172,7 @@ pub(crate) fn tex_errors(
         errors.push(TexError {
             line: None,
             file: None,
+            file_line: None,
             message: match built.outcome {
                 Outcome::TimedOut => "The build did not finish in time.".to_owned(),
                 _ => "No PDF was produced.".to_owned(),
@@ -997,11 +1185,363 @@ pub(crate) fn tex_errors(
 
 /// What a build of `lang` is made from now (as [`latex_compile`] decides).
 fn source_now(state: &AppState, lang: Lang) -> Source {
-    let fs = state.file();
-    if fs.pair.is_some() || lang == source_lang(fs.home) {
+    let own = {
+        let fs = state.file();
+        fs.pair.is_some() || lang == source_lang(fs.home)
+    };
+    if own || root_in(state, lang).is_some() {
         Source::Files
     } else {
         Source::Translation
+    }
+}
+
+/// The root of the project in `lang`, when a part of it is open, its root
+/// has a file in that language (`paper_zh.tex` for `paper.tex`, or one the
+/// author paired it with), and that file includes the open part, or the
+/// part's own file in that language: that root, as saved, makes the PDF
+/// of `lang`. Otherwise (the root itself open, a part the other root
+/// lacks) the PDF is built from the translations.
+fn root_in(state: &AppState, lang: Lang) -> Option<PathBuf> {
+    let p = project(state).ok()?;
+    if p.path == p.root {
+        return None;
+    }
+    let other = canonical(&crate::pairing::mirror_path(state, &p.root)?);
+    let text = std::fs::read_to_string(&other).ok()?;
+    // Chinese by its words, or, for a main file of hardly more than its
+    // `\input`s, by loading Chinese support where the root does not.
+    let chinese = crate::pairing::is_chinese(&text)
+        || (latex::cjk::supported(&text) && !latex::cjk::supported(&p.root_text));
+    if chinese != (lang == Lang::Zh) || !latex::is_main(&text) {
+        return None;
+    }
+    let reads = |file: &Path| latex::project::reaches(&other, &text, &canonical(file));
+    let part_there =
+        reads(&p.path) || crate::pairing::mirror_path(state, &p.path).is_some_and(|m| reads(&m));
+    part_there.then_some(other)
+}
+
+/// `text` with each part `(from, to)` it includes read from `to` instead
+/// (names relative to the project folder, without `.tex`).
+fn redirect_all(text: &str, redirects: &[(String, String)]) -> String {
+    let mut text = text.to_owned();
+    for (from, to) in redirects {
+        if let Some(t) = latex::redirect_include(&text, from, to) {
+            text = t;
+        }
+    }
+    text
+}
+
+/// The line (from 1) of byte `at` in `text`.
+fn line_number(text: &str, at: usize) -> usize {
+    text[..at].matches('\n').count() + 1
+}
+
+/// Where each paragraph of `mirror` (composed from `source`) starts in
+/// both: `(line in the mirror, line in the source)`.
+fn part_lines(source: &str, mirror: &biwrite_engine::Mirror) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let (mut in_mirror, mut in_source) = (0, 0);
+    for (put, from) in &mirror.pairs {
+        if put.is_empty() || from.is_empty() {
+            continue;
+        }
+        let (Some(m), Some(s)) = (
+            mirror.text[in_mirror..].find(put.as_str()),
+            source[in_source..].find(from.as_str()),
+        ) else {
+            continue;
+        };
+        let (m, s) = (in_mirror + m, in_source + s);
+        out.push((line_number(&mirror.text, m), line_number(source, s)));
+        in_mirror = m + put.len();
+        in_source = s + from.len();
+    }
+    out
+}
+
+/// The other parts of the project in `lang`, for a build of the open
+/// document's translation in `folder`: a part paired with a file in that
+/// language is read from that file, else from a copy in `folder` holding
+/// the translations the cache has (`toward` that language; none are
+/// requested), else as it is. Returns the includes to point elsewhere
+/// (`(part, file to read)`, relative to the project folder, without `.tex`)
+/// and the copies written, which point their own includes the same way.
+fn stage_parts(
+    state: &AppState,
+    p: &Project,
+    folder: &str,
+    lang: Lang,
+    toward: Direction,
+) -> (Vec<(String, String)>, Vec<PartCopy>) {
+    let open = canonical(&p.path);
+    let root = canonical(&p.root);
+    let in_lang = |text: &str| crate::pairing::is_chinese(text) == (lang == Lang::Zh);
+    let stem = |f: &Path| relative(f, &p.dir).map(|r| r.trim_end_matches(".tex").to_owned());
+    let mut redirects = Vec::new();
+    // Each copy to write, with its text.
+    let mut copies: Vec<(PartCopy, String)> = Vec::new();
+    for file in latex::tex_files(&p.dir) {
+        let file = canonical(&file);
+        if file == open || file == root {
+            continue;
+        }
+        let Some(from) = stem(&file) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        // Already in that language (a part both roots share), or a main file.
+        if in_lang(&text) || latex::is_main(&text) {
+            continue;
+        }
+        // Its own file in that language.
+        let paired = crate::pairing::mirror_path(state, &file)
+            .filter(|m| std::fs::read_to_string(m).is_ok_and(|t| in_lang(&t)))
+            .and_then(|m| stem(&canonical(&m)));
+        if let Some(to) = paired {
+            redirects.push((from, to));
+            continue;
+        }
+        let mirror = state.engine.compose_cached(&text, Mode::Latex, toward);
+        if mirror.pairs.len() <= mirror.untranslated {
+            continue;
+        }
+        let to = format!("{folder}/{from}");
+        let copy = PartCopy {
+            copy: p.dir.join(format!("{to}.tex")),
+            file,
+            lines: part_lines(&text, &mirror),
+        };
+        redirects.push((from, to));
+        copies.push((copy, mirror.text));
+    }
+    let mut parts = Vec::new();
+    for (mut part, text) in copies {
+        // Its own includes too (sections of a chapter).
+        if write_file(&part.copy, &redirect_all(&text, &redirects)).is_ok() {
+            part.copy = canonical(&part.copy);
+            parts.push(part);
+        }
+    }
+    (redirects, parts)
+}
+
+/// Most bytes of the files put into [`whole_paper`].
+const WHOLE_PAPER_BYTES: usize = 4 << 20;
+
+/// The whole paper the open document belongs to, for the writing
+/// assistant: its root with each file it includes (`\input`, `\include`,
+/// `\subfile`) put in its place, the open document as the editor has it
+/// (`text`), each file between comments naming it. While the other language
+/// is edited without a pair, the other files are as the cache has them in
+/// that language. Also where byte `target` of `text` is in it. `None`
+/// outside a LaTeX project of several files, or when the root does not
+/// include the document where it can be found.
+pub(crate) fn whole_paper(state: &AppState, text: &str, target: usize) -> Option<(String, usize)> {
+    let toward = (!state.editing_own_language()).then(|| state.file().home);
+    let (paper, at) = put_together(state, text, target, toward, true)?;
+    Some((paper, at?))
+}
+
+/// The whole paper as one `.tex` file: its root with each file it includes
+/// in its place (`\include`d ones between `\clearpage`s, as TeX sets
+/// them, and no `\includeonly`), the open document as `text`. With
+/// `toward`, the other files are in that direction's target language:
+/// their own file in it (a pair), else the translations the cache has.
+/// `None` outside a LaTeX project of several files.
+pub(crate) fn flat_paper(
+    state: &AppState,
+    text: &str,
+    toward: Option<Direction>,
+) -> Option<String> {
+    put_together(state, text, 0, toward, false).map(|(paper, _)| paper)
+}
+
+/// The paper of the open document's project put together (see
+/// [`whole_paper`] for `marked`, [`flat_paper`] otherwise), and where byte
+/// `target` of `text` is in it.
+fn put_together(
+    state: &AppState,
+    text: &str,
+    target: usize,
+    toward: Option<Direction>,
+    marked: bool,
+) -> Option<(String, Option<usize>)> {
+    if state.engine.mode() != Mode::Latex {
+        return None;
+    }
+    let p = project(state).ok()?;
+    let mut paper = Paper {
+        state,
+        dir: canonical(&p.dir),
+        open: canonical(&p.path),
+        editor: text,
+        target,
+        toward,
+        marked,
+        at: None,
+        budget: WHOLE_PAPER_BYTES,
+        seen: std::collections::HashSet::new(),
+        parts: 0,
+    };
+    let root = canonical(&p.root);
+    let root_text = paper.text_of(&root, &p.root_text);
+    let mut out = String::with_capacity(root_text.len() * 4);
+    paper.seen.insert(root.clone());
+    paper.put(&mut out, &root, &root_text, 4);
+    (paper.parts > 0).then_some((out, paper.at))
+}
+
+/// The state of [`whole_paper`] as it puts files in.
+struct Paper<'a> {
+    state: &'a AppState,
+    dir: PathBuf,
+    open: PathBuf,
+    editor: &'a str,
+    target: usize,
+    toward: Option<Direction>,
+    /// Each file between comments naming it (for the assistant), else as
+    /// TeX sets it (for a file of its own).
+    marked: bool,
+    /// Where the target is in the paper, once put in.
+    at: Option<usize>,
+    budget: usize,
+    seen: std::collections::HashSet<PathBuf>,
+    /// Files put in.
+    parts: usize,
+}
+
+impl Paper<'_> {
+    /// The text of `file` (as saved: `saved`) for the paper.
+    fn text_of(&self, file: &Path, saved: &str) -> String {
+        if *file == self.open {
+            return self.editor.to_owned();
+        }
+        let Some(toward) = self.toward else {
+            return saved.to_owned();
+        };
+        // Its own file in that language, else the translations the cache has.
+        let zh = toward == Direction::EnZh;
+        crate::pairing::mirror_path(self.state, file)
+            .and_then(|m| std::fs::read(m).ok())
+            .and_then(|b| biwrite_core::TextFile::decode(b).ok())
+            .map(|f| f.text().to_owned())
+            .filter(|t| crate::pairing::is_chinese(t) == zh)
+            .unwrap_or_else(|| {
+                self.state
+                    .engine
+                    .compose_cached(saved, Mode::Latex, toward)
+                    .text
+            })
+    }
+
+    /// `slice` (bytes `from`.. of `file`'s text) onto `out`, noting where
+    /// the target is when it is in it.
+    fn copy(&mut self, out: &mut String, file: &Path, slice: &str, from: usize) {
+        if *file == self.open
+            && self.at.is_none()
+            && (from..=from + slice.len()).contains(&self.target)
+        {
+            self.at = Some(out.len() + self.target - from);
+        }
+        out.push_str(slice);
+    }
+
+    /// `text` of `file` onto `out` with the files it includes in their
+    /// place, to `depth` levels.
+    fn put(&mut self, out: &mut String, file: &Path, text: &str, depth: usize) {
+        const COMMANDS: [&str; 3] = ["\\input{", "\\include{", "\\subfile{"];
+        let mut start = 0;
+        for line in text.split_inclusive('\n') {
+            let end = latex::project::uncommented(line).len().min(line.len());
+            // A file of its own holds every part.
+            if !self.marked && line[..end].contains("\\includeonly{") {
+                out.push_str("% ");
+            }
+            let mut at = 0;
+            while let Some((i, len)) = COMMANDS
+                .iter()
+                .filter_map(|c| line[at..end].find(c).map(|i| (at + i, c.len())))
+                .min_by_key(|(i, _)| *i)
+            {
+                let Some(close) = line[i + len..end].find('}') else {
+                    break;
+                };
+                let name = line[i + len..i + len + close].trim();
+                let after = i + len + close + 1;
+                let Some((sub, saved)) = (depth > 0).then(|| self.read(name)).flatten() else {
+                    self.copy(out, file, &line[at..after], start + at);
+                    at = after;
+                    continue;
+                };
+                self.copy(out, file, &line[at..i], start + at);
+                let rel = relative(&sub, &self.dir).unwrap_or_else(|| name.to_owned());
+                let here = if sub == self.open {
+                    " (the file open in the editor)"
+                } else {
+                    ""
+                };
+                // `\include` starts and ends a page.
+                let page = line[i..].starts_with("\\include{");
+                if self.marked {
+                    out.push_str(&format!("\n%% ===== {rel}{here} =====\n"));
+                } else if page {
+                    out.push_str("\\clearpage\n");
+                }
+                let sub_text = self.text_of(&sub, &saved);
+                self.parts += 1;
+                self.put(out, &sub, &sub_text, depth - 1);
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                if self.marked {
+                    out.push_str(&format!("%% ===== end of {rel} =====\n"));
+                } else if page {
+                    out.push_str("\\clearpage\n");
+                }
+                at = after;
+            }
+            self.copy(out, file, &line[at..], start + at);
+            start += line.len();
+        }
+    }
+
+    /// The project file `name` names (as TeX reads it from the root's
+    /// folder), with its saved text, once.
+    fn read(&mut self, name: &str) -> Option<(PathBuf, String)> {
+        if name.is_empty() || name.contains('\\') || name.contains('#') {
+            return None;
+        }
+        let plain = self.dir.join(name);
+        let path = if plain.extension().is_some() && plain.is_file() {
+            plain
+        } else {
+            self.dir.join(format!("{name}.tex"))
+        };
+        let path = canonical(&path);
+        if !path.starts_with(&self.dir) || !path.is_file() || !self.seen.insert(path.clone()) {
+            return None;
+        }
+        let saved = if path == self.open {
+            String::new()
+        } else {
+            let bytes = std::fs::read(&path).ok()?;
+            biwrite_core::TextFile::decode(bytes)
+                .ok()?
+                .text()
+                .to_owned()
+        };
+        let size = if path == self.open {
+            self.editor.len()
+        } else {
+            saved.len()
+        };
+        self.budget = self.budget.checked_sub(size)?;
+        Some((path, saved))
     }
 }
 
@@ -1027,7 +1567,7 @@ fn build_is_current(state: &AppState, lang: Lang) -> bool {
     // The document built, another file of its project, or either file of a
     // pair (a pair's swap keeps both PDFs).
     let of_build = |path: &Path| {
-        *path == build.doc_path
+        (!build.doc_path.as_os_str().is_empty() && *path == build.doc_path)
             || (!build.dir.as_os_str().is_empty() && path.starts_with(&build.dir))
     };
     let same_project = of_build(&here) || pair.as_deref().is_some_and(of_build);
@@ -1230,13 +1770,15 @@ pub async fn latex_export_tex(
     text: String,
     document: u64,
 ) -> CommandResult<Option<String>> {
-    let (name, body) = translation_tex(&state, text, document)?;
-    let dir = state
-        .file()
-        .path
-        .as_deref()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf);
+    let (name, body, root_dir) = translation_tex(&state, text, document)?;
+    let dir = root_dir.or_else(|| {
+        state
+            .file()
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+    });
     let Some(dest) =
         files::pick_save_kind(&app, &window, "LaTeX", &["tex"], dir.as_deref(), &name).await
     else {
@@ -1246,12 +1788,63 @@ pub async fn latex_export_tex(
     Ok(Some(dest.display().to_string()))
 }
 
+/// Save the whole paper of a project of several files as one `.tex` file
+/// (see [`flat_paper`]), in the language of its files, the open document
+/// as edited. The project's files stay as they are, and the document stays
+/// open.
+#[tauri::command]
+pub async fn latex_save_flat(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    text: String,
+    document: u64,
+) -> CommandResult<Option<String>> {
+    state.sync_text(document, &text)?;
+    let own = crate::commands::home_text(&state, text)?;
+    let paper = flat_paper(&state, &own, None)
+        .ok_or_else(|| fail("The document is not part of a project of several files."))?;
+    let p = project(&state)?;
+    let stem = p
+        .root
+        .file_stem()
+        .map_or_else(|| "paper".into(), |s| s.to_string_lossy().into_owned());
+    let Some(dest) = files::pick_save_kind(
+        &app,
+        &window,
+        "LaTeX",
+        &["tex"],
+        Some(&p.dir),
+        &format!("{stem}-merged.tex"),
+    )
+    .await
+    else {
+        return Ok(None);
+    };
+    // Never over a file of the paper.
+    if latex::tex_files(&p.dir)
+        .iter()
+        .any(|f| crate::pairing::same_file(f, &dest))
+    {
+        return Err(fail(format!(
+            "{} is a file of the paper: choose a new name.",
+            crate::state::display_name(Some(&dest))
+        )));
+    }
+    files::write_file_atomic(dest.clone(), paper.into_bytes()).await?;
+    log::info!("saved the paper as one file, {}", dest.display());
+    Ok(Some(dest.display().to_string()))
+}
+
 /// The file name and text of the translation [`latex_export_tex`] writes.
+/// In a project of several files it is the whole paper in one file (see
+/// [`flat_paper`]), named after the root and meant for the root's folder,
+/// which comes third.
 pub(crate) fn translation_tex(
     state: &AppState,
     text: String,
     document: u64,
-) -> CommandResult<(String, String)> {
+) -> CommandResult<(String, String, Option<PathBuf>)> {
     if let Some(pair) = state.file().pair.as_ref() {
         return Err(fail(format!(
             "The translation is the paired file {}.",
@@ -1269,23 +1862,39 @@ pub(crate) fn translation_tex(
         state.engine.translate_held();
         state.engine.compose_mirror().text
     };
-    let stem = state
-        .file()
-        .path
-        .as_deref()
-        .and_then(Path::file_stem)
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "paper".into());
+    let toward = state.file().home;
+    let whole = flat_paper(state, &translated, Some(toward))
+        .and_then(|paper| project(state).ok().map(|p| (paper, p.root)));
+    let stem_of = |path: &Path| {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "paper".into())
+    };
+    let (translated, stem, root_dir) = match whole {
+        Some((paper, root)) => (paper, stem_of(&root), root.parent().map(Path::to_path_buf)),
+        None => (
+            translated,
+            state
+                .file()
+                .path
+                .as_deref()
+                .map_or_else(|| "paper".into(), stem_of),
+            None,
+        ),
+    };
     let body = if target == Lang::Zh && latex::is_main(&translated) {
         latex::with_chinese(&translated)
     } else {
         translated
     };
+    // The whole paper is no version of the root (which `main_zh.tex` would
+    // be), but of `main-merged.tex`, what Save as one .tex writes.
+    let merged = if root_dir.is_some() { "-merged" } else { "" };
     let name = match target {
-        Lang::Zh => format!("{stem}_zh.tex"),
-        Lang::En => format!("{}_en.tex", without_chinese_tag(&stem)),
+        Lang::Zh => format!("{stem}{merged}_zh.tex"),
+        Lang::En => format!("{}{merged}_en.tex", without_chinese_tag(&stem)),
     };
-    Ok((name, body))
+    Ok((name, body, root_dir))
 }
 
 // ── SyncTeX ──────────────────────────────────────────────────────────
@@ -1381,6 +1990,41 @@ pub async fn latex_inverse(
     let Some(build) = builds.get(&lang) else {
         return Ok(None);
     };
+    // A part built from a copy of its translations: the part opens where
+    // the clicked paragraph is.
+    if let Some(part) = build.parts.iter().find(|c| c.copy == file) {
+        let rel = relative(&part.file, &build.dir).unwrap_or_default();
+        // Open now (the click opened it): its paragraph.
+        if current.as_ref() == Some(&part.file) && state.editing_own_language() {
+            let saved = state.file().file.text().to_owned();
+            let l = map_line(&saved, &text, part.line(line));
+            let ranges: Vec<_> = units(&text, Mode::Latex)
+                .iter()
+                .map(|u| u.range.clone())
+                .collect();
+            let at = line_start(&text, l.saturating_sub(1));
+            if let Some(r) =
+                crate::latex_sync::index_at_line(&ranges, &text, at).map(|j| &ranges[j])
+            {
+                return Ok(Some(SyncHit {
+                    file: rel,
+                    line: l as u32,
+                    here: true,
+                    range: Some(range16(&text, r.start, r.end)),
+                    paragraph: true,
+                    open: None,
+                }));
+            }
+        }
+        return Ok(Some(SyncHit {
+            file: rel.clone(),
+            line: part.line(line) as u32,
+            here: false,
+            range: None,
+            paragraph: false,
+            open: Some(rel).filter(|r| r.ends_with(".tex")),
+        }));
+    }
     let rel = relative(&file, &build.dir)
         .map(|r| original(&r))
         .unwrap_or_else(|| file.display().to_string());
@@ -1476,9 +2120,16 @@ fn checked_point(
     {
         return point;
     }
-    let others = latex::tex_files(&build.dir)
-        .into_iter()
-        .map(|f| canonical(&f))
+    // The copies of other parts too, which the project's files leave out.
+    let others = build
+        .parts
+        .iter()
+        .map(|part| part.copy.clone())
+        .chain(
+            latex::tex_files(&build.dir)
+                .into_iter()
+                .map(|f| canonical(&f)),
+        )
         .filter(|f| *f != build.doc_file);
     for file in std::iter::once(build.doc_file.clone())
         .chain(others)
@@ -1511,7 +2162,7 @@ fn file_to_open(state: &AppState, file: &Path) -> Option<String> {
     let editing_zh = state.engine.direction() == Direction::ZhEn;
     let text = std::fs::read_to_string(file).unwrap_or_default();
     let target = if crate::pairing::is_chinese(&text) != editing_zh {
-        crate::pairing::counterpart(file).map(|c| canonical(&c))?
+        crate::pairing::mirror_path(state, file).map(|c| canonical(&c))?
     } else {
         file.to_path_buf()
     };
@@ -1555,6 +2206,17 @@ pub async fn latex_forward(
                 return Ok(Vec::new());
             };
             (pdf, build.doc_file.clone(), line)
+        } else if let Some(part) = build
+            .parts
+            .iter()
+            .find(|c| current.as_ref() == Some(&c.file))
+            .filter(|_| state.editing_own_language())
+        {
+            // A part built from a copy of its translations: its paragraph
+            // there.
+            let saved = state.file().file.text().to_owned();
+            let line = map_line(&text, &saved, line_of(&text, at) + 1);
+            (pdf, part.copy.clone(), part.copy_line(line))
         } else if let Some(path) = current.filter(|_| state.editing_own_language()) {
             // Another file of the project: as saved.
             let saved = state.file().file.text().to_owned();
@@ -1737,7 +2399,7 @@ mod tests {
             pdf: None,
             dir: PathBuf::new(),
             doc_file: PathBuf::new(),
-            doc_path: PathBuf::new(),
+            doc_path: PathBuf::from("/papers/x/paper.tex"),
             basis: Basis {
                 compiled: String::new(),
                 editor: String::new(),
@@ -1747,6 +2409,7 @@ mod tests {
             source,
             direction,
             mirror: None,
+            parts: Vec::new(),
         }
     }
 
@@ -1769,6 +2432,7 @@ mod tests {
                 .load_known("x".to_owned(), Mode::Latex, direction, Vec::new());
         };
         let current = |lang| build_is_current(&state, lang);
+        state.file().path = Some(PathBuf::from("/papers/x/paper.tex"));
 
         // An English file: its PDF from the file, the Chinese one from
         // the translation.
@@ -1904,10 +2568,10 @@ mod tests {
                 message: "Citation undefined".into(),
             },
         ];
-        let views = issue_views(issues.clone(), "main.tex", true);
+        let views = issue_views(issues.clone(), "main.tex", true, Path::new(""), &[]);
         assert!(views.iter().all(|v| v.here));
         assert_eq!(views[0].file.as_deref(), Some("main.tex"));
-        let views = issue_views(issues, "sections/a.tex", false);
+        let views = issue_views(issues, "sections/a.tex", false, Path::new(""), &[]);
         assert!(views.iter().all(|v| !v.here));
     }
 

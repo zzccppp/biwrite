@@ -82,7 +82,7 @@ pub struct SqueezeBoard {
     /// so an ordinary pool takes turns as without a board.
     crowding: AtomicBool,
     /// The relay turned keys away as often as [`Self::crowded`] asks, at
-    /// some time since crowding applies.
+    /// some time since crowding applies, or the author started a squeeze.
     crowded_seen: AtomicBool,
     /// When a request of the author's last went out with one of the keys
     /// (a translation, the writing assistant, a key test) or a squeeze was
@@ -201,10 +201,19 @@ impl SqueezeBoard {
         }
     }
 
+    /// The author started a squeeze: crowding applies, and the keys that get
+    /// through are worth keeping alive, however the relay turned them away
+    /// (a squeeze's own tries do not count as turned away).
+    pub fn note_squeezed(&self) {
+        self.allow_crowding();
+        self.crowded_seen.store(true, Ordering::Release);
+    }
+
     /// The relay turned keys away as often as [`Self::crowded`] asks at some
     /// time since crowding applies (a crowded relay, or a pool a squeeze was
-    /// started for): its keys that got through are worth keeping alive. An
-    /// ordinary pool's server errors never count.
+    /// started for), or the author started a squeeze: its keys that got
+    /// through are worth keeping alive. An ordinary pool's server errors
+    /// never count.
     pub fn was_crowded(&self) -> bool {
         self.crowded_seen.load(Ordering::Acquire)
     }

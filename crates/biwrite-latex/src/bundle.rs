@@ -54,6 +54,13 @@ pub fn bundle(roots: &[&Path]) -> Result<Bundle, TemplateError> {
         let text = fs::read_to_string(&root).unwrap_or_default();
         let mut named = recorded(&dir, &stem);
         named.extend(referenced(&text));
+        // What the parts name too (a figure of a section kept elsewhere).
+        for part in crate::project::tex_files(&dir)
+            .iter()
+            .filter(|f| **f != root)
+        {
+            named.extend(referenced(&fs::read_to_string(part).unwrap_or_default()));
+        }
         for name in named {
             let Some(path) = candidates(&dir, &name).into_iter().find(|p| p.is_file()) else {
                 continue;
@@ -66,6 +73,16 @@ pub fn bundle(roots: &[&Path]) -> Result<Bundle, TemplateError> {
             } else {
                 left_out.insert(path);
             }
+        }
+        // A paper whose bibliography comes only as its `.bbl` (as arXiv
+        // sources ship it) needs that file.
+        let bbl = dir.join(format!("{stem}.bbl"));
+        if bbl.is_file()
+            && !wanted
+                .iter()
+                .any(|p| p.extension().is_some_and(|e| e == "bib"))
+        {
+            wanted.insert(bbl);
         }
         folders.push(dir);
     }

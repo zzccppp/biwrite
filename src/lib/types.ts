@@ -108,6 +108,8 @@ export interface SavedView {
   mirror: MirrorSaved | null;
   /** Paragraphs written in the other language as they are, their translations not there yet. */
   otherLanguage: number;
+  /** A part saved under a new name: the main file that still includes the old one. */
+  notInRoot?: string;
 }
 
 /** A paper saved, or its translation exported, into a new folder with its files. */
@@ -227,6 +229,8 @@ export interface SettingsView {
   keepAlive: boolean;
   /** Kept alive however long the author is away (else 30 minutes). */
   keepAliveForever: boolean;
+  /** API keys in a local file only this account reads (no keychain prompt), else in the keychain. */
+  keysInFile: boolean;
   /** Accept and Revert go through the model and a build (LaTeX). */
   assistedApply: boolean;
   /** This build's version. */
@@ -523,6 +527,8 @@ export interface TexError {
   /** 1-based line in the checked text, when the error is in it. */
   line: number | null;
   file: string | null;
+  /** Its line in `file`, when that is another file of the project. */
+  fileLine?: number | null;
   message: string;
   context: string;
 }
@@ -532,6 +538,8 @@ export interface FixReport {
   before: number;
   /** Errors left after it. */
   errors: TexError[];
+  /** Errors in other files of the project, which their own fix mends. */
+  elsewhere?: TexError[];
   rounds: number;
   /** Changes whose lines were not found. */
   missed: number;
@@ -575,6 +583,8 @@ export interface CheckRequest {
   /** Where lines go before \begin{document}, when the preamble is in the open file. */
   preambleAt: number | null;
   preamble: string;
+  /** A part's answer: the lines the main file's preamble needs, put in the check's copy of it. */
+  rootLines?: string;
   /** The model fits the answer to the document before the first build. */
   fit: boolean;
 }

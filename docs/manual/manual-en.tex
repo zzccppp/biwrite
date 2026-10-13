@@ -201,6 +201,8 @@ In a mixed document the judgment can be wrong, and you can set it right. When th
 \subsection{Save and Save As}
 \ui{Save} (\fig{w-save} \n{1}, \cmdkey S) overwrites the file. \ui{Save As} \n{2} (\cmdkey\shiftkey S) saves under a new name and suggests one not taken yet, for example \texttt{paper-2.tex}. The original stays as it was.
 
+In a project of several files, the \ui{Save As} menu also has \ui{Save as one .tex (sections merged)…}. It puts the main file and every section it includes into one file, in order, a page break kept around each \texttt{\textbackslash include}d one, with the open file as edited, and the project stays as it is. When a section is saved under a new name that the main file does not include, BiWrite says that the main file's PDF leaves the new file out. To save the whole paper elsewhere, use \ui{Save with the template into a new folder…}, which keeps the main file and the sections in their folders, and the sections paired with \ui{Pair} stay paired in the new folder.
+
 When another program changes the open file or its paired file on disk (another editor, git, a sync service), BiWrite notices when its window gains focus and asks whether to load the latest version. \ui{Load} puts it in. With unsaved changes the button reads \ui{Load (discard unsaved changes)}. A paired file is paired again, and the document keeps your edits. \ui{Ignore} changes nothing, and that version is not asked about again. Saving never overwrites a change made elsewhere without asking: it offers \ui{Overwrite}, \ui{Save As…} and \ui{Cancel}. A paired file changed elsewhere is not written until you choose \ui{Overwrite}. Each of these notices has \ui{Show the changes} (\fig{w-elsewhere} \n{1}), which shows line by line how the file on disk differs from the version read when you began editing (\fig{w-diff}). It is there to look at and leaves the choice to you. After Save As, when the original file was changed elsewhere while you edited, a notice says so and the original stays as it is.
 
 \shot{w-save}{(1) Save, (2) Save As}
@@ -216,7 +218,7 @@ When another program changes the open file or its paired file on disk (another e
 \label{sec:latex}
 
 \subsection{Open a project}
-Open a \texttt{.tex} file with \ui{Open}, or click \ui{New} (\fig{l-files} \n{1}) and choose \ui{Open LaTeX folder…} to open a project by its main file. A project of several files lists them in the title bar \n{2}, with the main file marked. The right pane of a LaTeX document has two tabs, \ui{Translation} and \ui{PDF} \n{3}.
+Open a \texttt{.tex} file with \ui{Open}, or click \ui{New} (\fig{l-files} \n{1}) and choose \ui{Open LaTeX folder…} to open a project by its main file. A project of several files lists them in the title bar \n{2}, with the main file marked. The right pane of a LaTeX document has two tabs, \ui{Translation} and \ui{PDF} \n{3}. A project file that \texttt{\textbackslash input} or \texttt{\textbackslash include} reads has an arrow after its name in the editor. A click on it, or a \cmdkey-click on the name, opens that file. With a section open, \ui{Main file} in the title bar goes back to the main file.
 
 BiWrite finds the main file from a \texttt{\% !TEX root = …} comment, else from the \texttt{\textbackslash input} and \texttt{\textbackslash include} chains that reach the open file, however deeply nested. The engine comes from a \texttt{\% !TEX program} comment, else the project's \texttt{latexmkrc} (\texttt{\$pdf\_mode}), else the packages of the preamble.
 
@@ -228,7 +230,7 @@ BiWrite finds the main file from a \texttt{\% !TEX root = …} comment, else fro
 \item Click \ui{Compile} \n{2} or press \cmdkey B (Ctrl+B on Windows). It compiles what the editor shows, with no need to save first (see the next section).
 \item The PDF appears. \n{3} shows the time taken and the numbers of errors and warnings, and the problem list \n{4} links each one to its line.
 \end{enumerate}
-\ui{Compile after saving a .tex file} is on by default, so every save compiles again. A document with errors still gets its PDF, with the errors listed.
+\ui{Compile after saving a .tex file} is on by default, so every save compiles again. A document with errors still gets its PDF, with the errors listed. \ui{Fold} at the top right of the list folds it away, and a click on the build result \n{3} shows it again. \ui{Copy log} copies every problem and the build output.
 
 \shot{l-compile}{(1) The PDF tab, (2) Compile, (3) the result, (4) the problem list}
 
@@ -260,13 +262,15 @@ The Chinese PDF is the translation set as a document, compiled with XeLaTeX with
 \end{enumerate}
 The Chinese PDF and its build files are kept in the hidden folder \texttt{.biwrite/zh/} of the paper's folder. None of your files are touched.
 
+In a project of several files, the Chinese PDF is the whole paper whichever file is open. A Chinese main file of the project's own (\texttt{main\_zh.tex}, or one paired with the main file by \ui{Pair}) that includes the open section, or its Chinese file, is built as it is. Otherwise the main file's title and abstract and each other section come from their paired Chinese files, else from the translations in the cache, and no translation is requested for them. A click in the Chinese PDF opens the English section at that paragraph.
+
 \shot{l-zh}{(1) Show the Chinese PDF, (2) Compile, (3) paragraphs not translated yet}
 
 \subsection{Export the Chinese PDF and .tex}
 On the Chinese PDF (\fig{l-export}):
 \begin{itemize}
 \item \n{1} \ui{Save PDF as…} saves a copy of the Chinese PDF, named \texttt{paper.zh.pdf} by default. The same button saves the English PDF.
-\item \n{2} \ui{Export Chinese .tex…} saves a LaTeX file that compiles on its own with XeLaTeX, named \texttt{paper\_zh.tex} by default. A Chinese paper exports its English version here instead, with \ui{Export English .tex…} on the English PDF.
+\item \n{2} \ui{Export Chinese .tex…} saves a LaTeX file that compiles on its own with XeLaTeX, named \texttt{paper\_zh.tex} by default. A Chinese paper exports its English version here instead, with \ui{Export English .tex…} on the English PDF. In a project of several files the export is the whole paper with the translations of every section, named after the main file, to compile beside it.
 \item \n{3} \ui{Show in folder} shows the PDF in Finder or Explorer.
 \end{itemize}
 
@@ -340,7 +344,7 @@ With a pair, \ui{Chinese} in the PDF tab compiles your own Chinese main file (\t
 \item[Fix] Compiles the whole document, gives TeX's errors to the model and offers the changes that make it compile (Section~\ref{sec:fix}). It appears in LaTeX documents only.
 \end{description}
 \item Write the instruction or question at \n{3} (polishing needs none).
-\item \n{4} \ui{Context} sends the text alone, with its neighbouring paragraphs, or with the whole paper.
+\item \n{4} \ui{Context} sends the text alone, with its neighbouring paragraphs, or with the whole paper. In a project of several files the whole paper is put together from the main file, with the open file as edited.
 \item \n{5} \ui{References} takes passages whose style to follow (\ui{+ Text}), whole papers as \texttt{.tex}, \texttt{.md} or \texttt{.txt} files (\ui{+ File}), images (\ui{+ Image}), or papers and figures of the materials folder (\ui{+ Materials}, Section~\ref{sec:materials}).
 \item Click \ui{Run} \n{6}. The job runs in the background while you keep writing.
 \end{enumerate}
@@ -355,12 +359,14 @@ The finished card (\fig{a-result}) shows the changes as a diff \n{1} (deleted wo
 \subsection{Accepting with the model's fit and a build}
 In a LaTeX paper saved as a \texttt{.tex} file, \ui{Accept} (\fig{a-smart} \n{1}) does not apply the result at once. Its code may use a package, a TikZ library or a colour the document lacks, and the document would then fail to compile. BiWrite first gives the result and the document to the model to fit it to the document, using the packages and colours the document has and adding the lines it needs before \texttt{\textbackslash begin\{document\}}, and the card shows \ui{Fitting it to the document}. The document is then compiled with the result, which is applied when that brings no new error. When it brings new errors, the model repairs them, in at most three rounds, and the result is applied once it compiles. Errors the document had before do not count. The applied card says the model fitted it or repaired it to compile (\fig{a-smart-done} \n{1}), and shown again it lists the changes made to compile \n{2} and the lines added to the preamble \n{3}. When errors are left after three rounds, or neither the model nor a build can be used, the model is left out and the result is applied as it is, the card says why, and \ui{Fix} can follow. \ui{Stop} on the card cancels the check, and nothing is applied. While one card is accepted or reverted, \ui{Accept} and \ui{Revert} of the others wait for it, and the editor takes no typing until it is done. In a new document not saved yet, in Markdown and in plain text, \ui{Accept} applies the result at once. \ui{Accept and Revert with the model's help}, in the \ui{Writing assistant} section of Settings (\fig{c-assistant} \n{2}), is ticked by default. Unticked, Accept applies the result at once and Revert takes out only the text. All of this changes only what the editor shows, builds are made in the cache folder \texttt{.biwrite/}, and only \ui{Save} or \ui{Save As} writes your files.
 
+In a project of several files, each card belongs to the file and the language it was made in. With another file open, or the other language, the card names its file, and \ui{Switch there} goes back to accept it. A card whose text changed meanwhile so that its place is gone says so and cannot be accepted. While a card is accepted or reverted, opening another file or swapping languages waits for it. When a figure inserted in a section needs packages the main file's preamble lacks, the check adds them to its copy of the main file, and the card names the lines to add there.
+
 \shot{a-smart}{(1) Accept}
 \shot{a-smart-done}{(1) Repaired to compile, (2) the changes made to compile, (3) the lines added to the preamble}
 
 \subsection{Fix}
 \label{sec:fix}
-When the document does not compile, choose \ui{Fix} (\fig{a-fix} \n{1}) and click \ui{Run}. The box can stay empty or name the problem to fix. BiWrite compiles the whole document and gives TeX's errors with their lines to the model, the model proposes changes, and BiWrite compiles the changed text again, for at most three rounds. The card says how many errors there were and whether the changes make the document compile \n{2}, and lists each change by its line \n{3}. \ui{Accept} \n{4} applies them, and \ui{Revert} takes them back. The changes go into the editor only, and no file is saved.
+When the document does not compile, choose \ui{Fix} (\fig{a-fix} \n{1}) and click \ui{Run}. The box can stay empty or name the problem to fix. BiWrite compiles the whole document and gives TeX's errors with their lines to the model, the model proposes changes, and BiWrite compiles the changed text again, for at most three rounds. The card says how many errors there were and whether the changes make the document compile \n{2}, and lists each change by its line \n{3}. \ui{Accept} \n{4} applies them, and \ui{Revert} takes them back. The changes go into the editor only, and no file is saved. With a section open, only that file's errors go to the model. The errors of the project's other files are listed apart on the card. A click on a file opens it at the error, and \ui{Fix} can then run there.
 
 \shot{a-fix}{(1) Fix, (2) the summary, (3) the changes by line, (4) Accept}
 
@@ -450,7 +456,7 @@ The built-in \ui{Mock} provider works offline and returns each paragraph reverse
 \item Open \ui{Settings} (\cmdkey ,). \n{1} lists the providers, and the radio button selects the one that translates (\fig{c-add}).
 \item Choose \ui{+ Add provider…} at \n{2} and pick a preset.
 \item In the provider's form (\fig{c-form}), check the base URL, the model and the API type \n{1}, and choose the reasoning effort and service tier \n{2} where the API takes them.
-\item Paste the key and click \ui{Add provider}. Keys are kept in the system keychain (the Credential Manager on Windows) and are never shown again. \ui{Manage keys…} \n{3} manages them later.
+\item Paste the key and click \ui{Add provider}. Keys are kept in a file of BiWrite's settings folder that only your account can read, are never uploaded, and are never shown again. Starting or updating BiWrite asks for no keychain password. Unticking \ui{Keep API keys on this computer, without the keychain} in Settings moves them to the system keychain (the Credential Manager on Windows). \ui{Manage keys…} \n{3} manages them later.
 \item \ui{Test} \n{4} translates one sentence.
 \end{enumerate}
 
@@ -466,7 +472,7 @@ A provider can hold several keys, a pool. \ui{Manage keys…} in the provider's 
 \item \n{1} lists the keys. Give each a name. The table shows only the last characters of a key, its state and its requests in flight. Each request goes to the least busy ready key. A key hitting a rate limit cools down and the request moves to another key, and a rejected key is set aside.
 \item \n{2} sets the requests per key, as many as the provider allows, and the retries.
 \item \n{3} takes new keys: one per line, or a name on one line and its key on the next, or \ui{name: key}. \ui{Add keys} adds them to the pool.
-\item \n{4} \ui{Import from file…} and \ui{Export to file…}: the export saves the names and keys to a text file to move them to another computer or share them with a colleague, and the import adds the keys of such a file. The keys go from the keychain to the file without passing through the window. The file holds the keys in plain text, so share it only with people you trust.
+\item \n{4} \ui{Import from file…} and \ui{Export to file…}: the export saves the names and keys to a text file to move them to another computer or share them with a colleague, and the import adds the keys of such a file. The keys go to the file without passing through the window. The file holds the keys in plain text, so share it only with people you trust.
 \end{itemize}
 
 \shot[0.8]{c-keys}{The key pool: (1) the keys, (2) requests per key and retries, (3) new keys, (4) import from and export to a file}
@@ -550,6 +556,6 @@ macOS (Ctrl for \cmdkey and Alt for \optkey on Windows) & Action \\
 
 \paragraph{The Chinese file does not pair.} Files pair only when at least half of their paragraphs match. Check that the two files are the same document in two languages.
 
-\paragraph{Where is the data kept?} Translations are cached in \texttt{cache.sqlite3} in the app data folder. The \ui{Translation cache} section of Settings shows its size and clears it. Keys are kept only in the system keychain.
+\paragraph{Where is the data kept?} Translations are cached in \texttt{cache.sqlite3} in the app data folder. The \ui{Translation cache} section of Settings shows its size and clears it. Keys are kept in \texttt{keys.json} in the settings folder, readable only by your account, or in the system keychain when the setting is unticked.
 
 \end{document}

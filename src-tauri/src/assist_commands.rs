@@ -288,13 +288,14 @@ fn resolve(text: &str, mode: Mode, action: Action, a: usize, b: usize) -> Result
 }
 
 /// The document for the "whole document" scope, cut to a window of
-/// `MAX_DOCUMENT_CHARS` characters around the target when it is longer.
-fn document_window(text: &str, range: &Range<usize>) -> String {
+/// `MAX_DOCUMENT_CHARS` characters around byte `at` (where the target
+/// starts) when it is longer.
+fn document_window(text: &str, at: usize) -> String {
     let total = text.chars().count();
     if total <= MAX_DOCUMENT_CHARS {
         return text.to_owned();
     }
-    let at = text[..range.start.min(text.len())].chars().count();
+    let at = text[..at.min(text.len())].chars().count();
     let last = (at.saturating_sub(MAX_DOCUMENT_CHARS / 2) + MAX_DOCUMENT_CHARS).min(total);
     let first = last - MAX_DOCUMENT_CHARS;
     let byte = |c: usize| text.char_indices().nth(c).map_or(text.len(), |(b, _)| b);
@@ -332,7 +333,13 @@ pub async fn assist_start(
         Scope::Neighbors => assist::neighbors(text, mode, &target.range, 2),
         _ => (None, None),
     };
-    let document = (request.scope == Scope::Document).then(|| document_window(text, &target.range));
+    // The whole paper of a project of several files, else the open file.
+    let document = (request.scope == Scope::Document).then(|| {
+        match crate::latex_commands::whole_paper(&state, text, target.range.start) {
+            Some((paper, at)) => document_window(&paper, at),
+            None => document_window(text, target.range.start),
+        }
+    });
     let settings = state.settings().clone();
     let masked = Protector::new(mode).mask(&target.text);
     let terms = glossary::relevant(&masked, direction, &settings.glossary);
@@ -1358,13 +1365,13 @@ mod tests {
     fn long_documents_are_cut_around_the_target() {
         let long = "word ".repeat(MAX_DOCUMENT_CHARS / 4);
         let mid = long.len() / 2;
-        let window = document_window(&long, &(mid..mid + 4));
+        let window = document_window(&long, mid);
         assert!(window.starts_with("[…]") && window.len() < long.len());
         assert_eq!(
             window.chars().count(),
             MAX_DOCUMENT_CHARS + "[…]\n\n[…]".chars().count()
         );
-        assert_eq!(document_window(DOC, &(0..5)), DOC);
+        assert_eq!(document_window(DOC, 0), DOC);
     }
 
     #[test]

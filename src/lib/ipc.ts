@@ -158,6 +158,7 @@ export const settingsIpc = {
   setMatchPool: (on: boolean) => invoke<SettingsView>("set_match_pool", { on }),
   setCheckUpdates: (on: boolean) => invoke<SettingsView>("set_check_updates", { on }),
   setCloseToTray: (on: boolean) => invoke<SettingsView>("set_close_to_tray", { on }),
+  setKeysInFile: (on: boolean) => invoke<SettingsView>("set_keys_in_file", { on }),
   /** Save the pool (names and keys) to a file picked in Rust. */
   exportKeys: (id: string) => invoke<string | null>("export_api_keys", { id }),
   importKeys: (id: string) => invoke<SettingsView | null>("import_api_keys", { id }),
@@ -236,6 +237,8 @@ export const latexIpc = {
   savePdf: (lang: PdfLang) => invoke<string | null>("latex_save_pdf", { lang }),
   /** Save the Chinese version as a .tex that compiles on its own. */
   exportTex: (text: string, document: number) => invoke<string | null>("latex_export_tex", { text, document }),
+  /** The whole paper of a project of several files saved as one .tex file. */
+  saveFlat: (text: string, document: number) => invoke<string | null>("latex_save_flat", { text, document }),
   /** The same, into a new folder with the files the paper builds with. */
   exportProject: (text: string, document: number, title: string) =>
     invoke<ProjectCopy | null>("latex_export_project", { text, document, title }),

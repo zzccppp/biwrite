@@ -23,6 +23,8 @@
     onsaveas: () => void;
     /** Save As into a new folder with the files the paper builds with. */
     onsaveproject: () => void;
+    /** Save the whole paper of a project of several files as one .tex. */
+    onsaveflat: () => void;
     /** Save As offers both (a saved .tex file). */
     saveAsChoice: boolean;
     onexport: () => void;
@@ -62,6 +64,7 @@
     onsave,
     onsaveas,
     onsaveproject,
+    onsaveflat,
     saveAsChoice,
     onexport,
     onmode,
@@ -185,6 +188,12 @@
               <span class="item">{t("toolbar.saveAsProject")}</span>
               <span class="hint">{t("toolbar.saveAsProjectHint")}</span>
             </button>
+            {#if project && project.files.length > 1}
+              <button role="menuitem" class="saveflat" onclick={() => chooseSave(onsaveflat)}>
+                <span class="item">{t("toolbar.saveAsFlat")}</span>
+                <span class="hint">{t("toolbar.saveAsFlatHint")}</span>
+              </button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -252,6 +261,12 @@
           {#each project.files as f (f)}<option value={f}>{f === project.root ? t("toolbar.main", { file: f }) : f}</option>{/each}
         </select>
       </label>
+      {#if project.current !== project.root && project.files.includes(project.root)}
+        <button class="tool secondary tomain" onclick={() => onfile(project.root)} title={t("toolbar.toMainTitle", { file: project.root })}>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3.5M4 7.5l4-4 4 4" /></svg>
+          <span class="smallcaps">{t("toolbar.toMain")}</span>
+        </button>
+      {/if}
     {:else}
       <span class="name" class:dirty={session.dirty}>{session.path ? session.name : t("doc.untitled")}</span>
     {/if}

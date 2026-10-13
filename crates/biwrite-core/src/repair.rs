@@ -20,6 +20,10 @@ pub struct TexError {
     pub line: Option<usize>,
     /// The file it was found in, as the log names it.
     pub file: Option<String>,
+    /// 1-based line of that file, for an error in another file of the
+    /// project than the one repaired.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_line: Option<usize>,
     pub message: String,
     /// What TeX printed after the message, up to the line it stopped at.
     pub context: String,

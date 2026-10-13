@@ -107,8 +107,26 @@
   /** "fit" follows the pane's width. */
   let zoomMode = $state<"fit" | number>(loadZoom());
   let paneWidth = $state(0);
-  let showProblems = $state(false);
+  /** The author opened (true) or folded (false) the problems; unset, they
+   * show when the build did not succeed. */
+  let showProblems = $state<boolean | null>(null);
   let showOutput = $state(false);
+  let copiedLog = $state(false);
+
+  /** The build's problems and its log, as one text to paste elsewhere. */
+  async function copyLog(): Promise<void> {
+    if (!build) return;
+    const head = [build.root, build.tool, build.outcome].filter(Boolean).join(" · ");
+    const issues = build.issues.map((i) => `[${i.severity}] ${issueLabel(i)}`);
+    const text = [head, ...issues, build.output ? `\n${build.output}` : ""].filter(Boolean).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      copiedLog = true;
+      setTimeout(() => (copiedLog = false), 1500);
+    } catch {
+      // Clipboard not available; nothing to do.
+    }
+  }
   /** Build id of the document on show, per language. */
   let shownBuild = 0;
   let shownLang: PdfLang | null = null;
@@ -124,6 +142,7 @@
 
   const lang = $derived(store.lang);
   const build = $derived(store.builds[lang]);
+  const problemsOpen = $derived(showProblems ?? build?.outcome !== "ok");
   const building = $derived(store.building[lang]);
   const failure = $derived(store.failure[lang]);
   const maxWidth = $derived(sizes.reduce((m, s) => Math.max(m, s.width), 0) || 612);
@@ -438,7 +457,7 @@
         title={t("pdf.compileTitle", { key: `${mod}B` })}>{t("pdf.compile")}</button
       >
       {#if build}
-        <button class="state" class:bad={build.outcome !== "ok"} onclick={() => (showProblems = !showProblems)}>
+        <button class="state" class:bad={build.outcome !== "ok"} onclick={() => (showProblems = !problemsOpen)}>
           {#if build.outcome === "ok"}
             {t("pdf.ok", { time: formatDuration(build.durationMs) })}
           {:else if build.outcome === "timed_out"}
@@ -503,8 +522,12 @@
   {#if build && store.stale[lang]}
     <div class="problems"><p class="note">{t("pdf.staleNote")}</p></div>
   {/if}
-  {#if build && (showProblems || build.outcome !== "ok") && (build.issues.length || build.outcome !== "ok")}
+  {#if build && problemsOpen && (build.issues.length || build.outcome !== "ok")}
     <div class="problems">
+      <div class="problems-bar">
+        <button class="link" onclick={() => void copyLog()}>{copiedLog ? t("pdf.logCopied") : t("pdf.copyLog")}</button>
+        <button class="link" onclick={() => (showProblems = false)}>{t("pdf.fold")}</button>
+      </div>
       {#if build.stale && build.outcome !== "ok" && build.hasPdf}<p class="note">{t("pdf.stale")}</p>{/if}
       {#if lang !== fileLang && build.untranslated > 0}<p class="note">{t("pdf.untranslated", { n: build.untranslated })}</p>{/if}
       <ul>
@@ -731,6 +754,16 @@
     border-bottom: 1px solid var(--rule);
     background: var(--paper);
     font-size: 12.5px;
+  }
+  .problems-bar {
+    position: sticky;
+    top: -6px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 14px;
+    margin: -6px -12px 2px;
+    padding: 4px 12px;
+    background: var(--paper);
   }
   .problems ul {
     list-style: none;

@@ -187,12 +187,12 @@ async fn the_translation_is_exported_with_the_files() {
     open(&state, &dir.join("en/paper.tex"), None);
     settle(&state).await;
     let document = state.engine.document();
-    let (name, body) =
+    let (name, body, _) =
         crate::latex_commands::translation_tex(&state, EN.to_owned(), document).unwrap();
     assert_eq!(name, "paper_zh.tex");
     let bundle = paper_bundle(&state).await.unwrap();
     let dest = root.join("export");
-    let copy = export_into(&state, &name, body.clone(), &bundle, dest.clone())
+    let copy = export_into(&state, &name, body.clone(), false, &bundle, dest.clone())
         .await
         .unwrap();
     let after = snapshot(&dest);

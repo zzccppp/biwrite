@@ -72,6 +72,11 @@ export const messages = {
     en: "BiWrite keeps running with the document open. Its icon in the menu bar (macOS) or the notification area (Windows) shows the window again or quits. Turned off, closing the window quits.",
     zh: "BiWrite 带着打开的文档继续运行。菜单栏（macOS）或任务栏通知区域（Windows）里的图标可以重新显示窗口或退出。关闭此项后，关闭窗口即退出。",
   },
+  "settings.keysInFile": { en: "Keep API keys on this computer, without the keychain", zh: "密钥存本机文件，不用钥匙串" },
+  "settings.keysInFileHint": {
+    en: "The keys stay in BiWrite's settings folder, in a file only your account can read, and are never uploaded. Starting or updating BiWrite then asks for no keychain password. Turned on or off, the keys move once, and the keychain may ask for its password that time.",
+    zh: "密钥保存在 BiWrite 的设置文件夹里，只有你的账户能读，不会上传。这样启动或更新时不再询问钥匙串密码。勾选或取消时密钥搬一次，这一次钥匙串可能要你输入密码。",
+  },
   "lang.english": { en: "English", zh: "英文" },
   "lang.chinese": { en: "Chinese", zh: "中文" },
   "settings.languageHint": {
@@ -247,6 +252,15 @@ export const messages = {
     zh: "原有 {n} 个错误，按下面修改后还剩 {left} 个。",
   },
   "assist.fix.errors": { en: "Errors left", zh: "剩下的错误" },
+  "assist.fix.cleanHere": {
+    en: "This file has no errors. Other files of the project have {n}, listed below.",
+    zh: "这个文件没有错误。项目的其他文件中有 {n} 个错误，见下方。",
+  },
+  "assist.fix.elsewhere": { en: "Errors in other files", zh: "其他文件中的错误" },
+  "assist.fix.elsewhereHint": {
+    en: "Click a file to open it at the error, then run the fix there.",
+    zh: "点文件名打开它并跳到出错的行，再在那里运行语法修复。",
+  },
   "assist.fix.moved": {
     en: "The document changed, and some changes no longer find their place. Run the fix again.",
     zh: "文档改过，有的修改找不到原处，请重新修复。",
@@ -363,6 +377,16 @@ export const messages = {
   "assist.stale": {
     en: "Belongs to a document that is no longer open.",
     zh: "属于已关闭的文档，无法应用。",
+  },
+  "assist.elsewhere": {
+    en: "Belongs to {doc}. Switch there to go on with it.",
+    zh: "属于 {doc}，切换过去即可继续。",
+  },
+  "assist.switchTo": { en: "Switch there", zh: "切换过去" },
+  "assist.openFirst": { en: "Open {doc} to go on with this card.", zh: "打开 {doc} 后即可继续这张卡片。" },
+  "assist.lost": {
+    en: "Its text was changed while another document was open, so its place cannot be found.",
+    zh: "离开期间这段文字被改动过，找不到原来的位置，无法应用。",
   },
   "assist.clear": { en: "Clear finished", zh: "清除已结束的" },
   "assist.usage": { en: "{in} in · {out} out · {time}", zh: "输入 {in} · 输出 {out} · {time}" },
@@ -568,6 +592,10 @@ export const messages = {
     en: "Saving; try again in a moment.",
     zh: "正在保存，请稍后再试。",
   },
+  "doc.busyAdopting": {
+    en: "A card is being accepted or reverted. Switch once it is done.",
+    zh: "有卡片正在采纳或还原，完成后再切换。",
+  },
   "doc.savedBoth": { en: "Saved {name} and {mirror} ({n} paragraphs changed).", zh: "已保存 {name} 和 {mirror}（改动 {n} 段）。" },
   "doc.savedMirrorWaiting": {
     en: "Saved {name}. {mirror} is written when {n} more paragraphs are translated.",
@@ -661,6 +689,9 @@ export const messages = {
     zh: "以下文件在论文文件夹上方超过三层，没有复制：{files}",
   },
   "pdf.texExported": { en: "Saved {path}.", zh: "已导出 {path}。" },
+  "pdf.copyLog": { en: "Copy log", zh: "复制日志" },
+  "pdf.logCopied": { en: "Copied", zh: "已复制" },
+  "pdf.fold": { en: "Fold", zh: "收起" },
   "keys.export": { en: "Export to file…", zh: "导出到文件…" },
   "squeeze.start": { en: "Squeeze in", zh: "挤一挤" },
   "squeeze.stop": { en: "Stop squeezing", zh: "停止挤" },
@@ -688,8 +719,8 @@ export const messages = {
   "squeeze.keeping": { en: "Keeping {through}/{total} alive", zh: "保活 {through}/{total}" },
   "squeeze.keepAlive": { en: "Keep alive", zh: "持续保活" },
   "squeeze.keepAliveHint": {
-    en: "While the relay turns keys away, each key that got through is sent a short translation after 3 idle minutes, so it keeps its place. These requests are listed under Requests.",
-    zh: "中转拥挤时，已挤进的密钥空闲 3 分钟后会收到一条很短的翻译以保住位置。这些请求列在请求记录里。",
+    en: "While the relay turns keys away, or once you squeezed in, each key that got through is sent a short translation after 3 idle minutes, so it keeps its place. These requests are listed under Requests.",
+    zh: "中转拥挤时，或点过挤一挤之后，已挤进的密钥空闲 3 分钟后会收到一条很短的翻译以保住位置。这些请求列在请求记录里。",
   },
   "squeeze.forever": { en: "Always", zh: "永久保活" },
   "squeeze.foreverHint": {
@@ -719,6 +750,16 @@ export const messages = {
     en: "Copies the class, styles, figures and bibliography the paper builds with, so it builds in the new folder.",
     zh: "复制论文用到的模板、样式、图片和参考文献，新文件夹里可以直接编译。",
   },
+  "toolbar.saveAsFlat": { en: "Save as one .tex (sections merged)…", zh: "另存为单个 .tex（合并各节）…" },
+  "toolbar.saveAsFlatHint": {
+    en: "The main file with every section it includes put in place, this file as edited. The project stays as it is.",
+    zh: "把主文件和它引入的各节合并成一个文件，当前文件用编辑器里的内容。原项目不变。",
+  },
+  "doc.flatSaved": { en: "Saved the whole paper as {path}.", zh: "已把整篇论文合并保存为 {path}。" },
+  "doc.notInRoot": {
+    en: "{root} still includes the file under its old name, so its PDF leaves {name} out. To save the whole paper elsewhere, use Save As, Save with the template into a new folder.",
+    zh: "{root} 仍引入原来的文件名，它的 PDF 不包含 {name}。要把整篇论文换个位置保存，请用「另存为」里的「连同模板文件另存到新文件夹」。",
+  },
   "toolbar.help": { en: "Guide", zh: "说明书" },
   "toolbar.helpTitle": {
     en: "The user guide (PDF), in the interface language",
@@ -734,6 +775,9 @@ export const messages = {
   },
   "toolbar.files": { en: "Files of this LaTeX project", zh: "本 LaTeX 项目的文件" },
   "toolbar.main": { en: "{file}  (main)", zh: "{file}（主文件）" },
+  "toolbar.toMain": { en: "Main file", zh: "主文件" },
+  "toolbar.toMainTitle": { en: "Back to the main file, {file}", zh: "回到主文件 {file}" },
+  "editor.openInclude": { en: "Open {file}. ⌘-click the name opens it too.", zh: "打开 {file}。按住 ⌘ 点文件名也能打开。" },
   "toolbar.open": { en: "Open", zh: "打开" },
   "toolbar.openTitle": { en: "Open… ({key})", zh: "打开…（{key}）" },
   "toolbar.saveTitle": { en: "Save ({save}) · Save As ({saveAs})", zh: "保存（{save}）· 另存为（{saveAs}）" },

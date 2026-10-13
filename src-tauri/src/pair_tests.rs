@@ -231,7 +231,7 @@ async fn the_translated_tex_sends_what_waits() {
     let document = state.engine.document();
     crate::latex_commands::translation_tex(&state, edited.clone(), document).unwrap();
     settle(&state).await;
-    let (_, body) = crate::latex_commands::translation_tex(&state, edited, document).unwrap();
+    let (_, body, _) = crate::latex_commands::translation_tex(&state, edited, document).unwrap();
     // The mock translation reverses the text.
     assert!(body.contains(".spets trohs eerht"), "{body}");
     std::fs::remove_dir_all(&dir).unwrap();

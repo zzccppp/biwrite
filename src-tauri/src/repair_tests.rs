@@ -236,6 +236,7 @@ fn insertion(id: u64, text: &str, revision: &str, preamble: &str) -> CheckStart 
         revision: revision.into(),
         preamble_at: Some(begin),
         preamble: preamble.into(),
+        root_lines: String::new(),
         fit: false,
     }
 }
@@ -446,6 +447,7 @@ async fn a_real_paper_builds_unsaved_and_repairs_a_figure() {
         revision: figure.into(),
         preamble_at: Some(saved[..begin].encode_utf16().count()),
         preamble: String::new(),
+        root_lines: String::new(),
         fit: false,
     };
     let model = Scripted::new(&[
@@ -574,5 +576,122 @@ async fn accepting_fits_the_answer_with_the_model_and_then_builds_it() {
     assert!(result.revision.contains("fill=figB"));
     assert!(model.prompts()[1].contains("<errors>"));
     assert_eq!(project_files(&dir), before, "the project is as it was");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A project of a main file and two sections, each with an error.
+fn sectioned_with_errors(name: &str) -> PathBuf {
+    let dir = temp(name);
+    std::fs::create_dir_all(dir.join("sections")).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\n\\input{sections/intro}\n\\include{sections/method}\n\\end{document}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("sections/intro.tex"),
+        "\\section{Introduction}\n\\nosuchmacro We clean tables.\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("sections/method.tex"), METHOD_WITH_ERROR).unwrap();
+    dir
+}
+
+const METHOD_WITH_ERROR: &str =
+    "\\section{Method}\n\\alsonosuchmacro Our method assigns one action to each row.\n";
+
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_fix_of_a_section_mends_its_own_errors_and_names_the_others() {
+    let dir = sectioned_with_errors("sections");
+    let path = dir.join("sections/method.tex");
+    let app = tauri::test::mock_app();
+    app.manage(app_state(&dir));
+    let state = app.state::<AppState>();
+    open(&state, &path);
+    settle(&state).await;
+    let model = Scripted::new(&[
+        "<edit>\n<find>\n2| \\alsonosuchmacro Our method assigns one action to each row.\n</find>\n<replace>\nOur method assigns one action to each row.\n</replace>\n</edit>\n<changes_zh>\n删去未定义的命令。\n</changes_zh>\n<changes_en>\nThe undefined command goes.\n</changes_en>",
+    ]);
+    let fixed = fix_loop(&state, &model, METHOD_WITH_ERROR, "", None, &quiet())
+        .await
+        .unwrap();
+    let prompts = model.prompts();
+    assert_eq!(prompts.len(), 1, "one round: the section's error is mended");
+    assert!(prompts[0].contains("alsonosuchmacro"), "{}", prompts[0]);
+    assert!(
+        !prompts[0].contains("nosuchmacro We clean"),
+        "{}",
+        prompts[0]
+    );
+    assert_eq!(fixed.report.before, 1, "{:?}", fixed.report);
+    assert!(fixed.report.errors.is_empty(), "{:?}", fixed.report.errors);
+    assert_eq!(
+        fixed.report.elsewhere.len(),
+        1,
+        "{:?}",
+        fixed.report.elsewhere
+    );
+    let other = &fixed.report.elsewhere[0];
+    assert_eq!(other.file.as_deref(), Some("sections/intro.tex"));
+    assert_eq!(other.file_line, Some(2));
+    assert_eq!(other.line, None);
+
+    // A section without errors of its own asks no model, and says where
+    // the others are.
+    let model = Scripted::new(&[]);
+    let clean = METHOD_WITH_ERROR.replace("\\alsonosuchmacro ", "");
+    let fixed = fix_loop(&state, &model, &clean, "", None, &quiet())
+        .await
+        .unwrap();
+    assert!(model.prompts().is_empty());
+    assert_eq!(fixed.report.before, 0);
+    assert_eq!(fixed.report.elsewhere.len(), 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs a TeX distribution"]
+async fn a_figure_of_a_section_is_checked_with_the_lines_the_main_file_needs() {
+    let dir = temp("section-figure");
+    std::fs::create_dir_all(dir.join("sections")).unwrap();
+    std::fs::write(
+        dir.join("main.tex"),
+        "\\documentclass{article}\n\\begin{document}\n\\input{sections/method}\n\\end{document}\n",
+    )
+    .unwrap();
+    let method = "\\section{Method}\nOur method assigns one action to each row.\n";
+    let path = dir.join("sections/method.tex");
+    std::fs::write(&path, method).unwrap();
+    let app = tauri::test::mock_app();
+    app.manage(app_state(&dir));
+    let state = app.state::<AppState>();
+    open(&state, &path);
+    settle(&state).await;
+    let at = method.encode_utf16().count();
+    let start = CheckStart {
+        id: 1,
+        text: method.to_owned(),
+        from: at,
+        to: at,
+        lead: "\n".into(),
+        trail: String::new(),
+        revision: "\\begin{tikzpicture}\n\\node[draw] {A};\n\\end{tikzpicture}\n".into(),
+        preamble_at: None,
+        preamble: String::new(),
+        root_lines: "\\usepackage{tikz}\n".into(),
+        fit: false,
+    };
+    // No model: the copy of the main file loads TikZ, so it compiles.
+    let model = Scripted::new(&[]);
+    let result = check_loop(&state, &model, &start, &quiet()).await.unwrap();
+    assert!(result.passed, "{:?}", result.errors);
+    assert_eq!(result.rounds, 0);
+    assert!(model.prompts().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("main.tex")).unwrap(),
+        "\\documentclass{article}\n\\begin{document}\n\\input{sections/method}\n\\end{document}\n",
+        "the main file is as it was"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }

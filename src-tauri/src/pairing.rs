@@ -174,6 +174,80 @@ pub fn counterpart(path: &Path) -> Option<PathBuf> {
         .find(|p| p != path && p.is_file() && !same_file(p, path))
 }
 
+/// The file paired with `path`: the one the author paired it with (while
+/// it is there), else its counterpart by name ([`counterpart`]).
+pub fn mirror_path(state: &AppState, path: &Path) -> Option<PathBuf> {
+    let key = pair_key(path);
+    let remembered = {
+        let s = state.settings();
+        // Either way round: the other-language file opened pairs too.
+        s.pairs.get(&key).cloned().or_else(|| {
+            s.pairs
+                .iter()
+                .find(|(_, m)| **m == key)
+                .map(|(d, _)| d.clone())
+        })
+    }
+    .map(PathBuf::from);
+    remembered
+        .filter(|m| m.is_file() && !same_file(m, path))
+        .or_else(|| counterpart(path))
+}
+
+/// Remember (or, with `None`, forget) the file the author paired `path`
+/// with. A failed write leaves the pair for this session only.
+fn remember_pair(state: &AppState, path: &Path, mirror: Option<&Path>) {
+    let key = pair_key(path);
+    let mut s = state.settings();
+    let changed = match mirror {
+        Some(m) => {
+            let m = pair_key(m);
+            s.pairs.insert(key, m.clone()).as_deref() != Some(&*m)
+        }
+        None => s.pairs.remove(&key).is_some(),
+    };
+    if changed
+        && !s.keep_file
+        && let Err(e) = state.persist(&s)
+    {
+        log::warn!("could not note the pair: {e}");
+    }
+}
+
+/// The pairs the author made among files under `from`, made again for
+/// their copies under `to` (a paper saved into a new folder).
+pub(crate) fn remember_copies(state: &AppState, from: &Path, to: &Path) {
+    let from = std::fs::canonicalize(from).unwrap_or_else(|_| from.to_owned());
+    let mut s = state.settings();
+    let copies: Vec<(String, String)> = s
+        .pairs
+        .iter()
+        .filter_map(|(a, b)| {
+            let a = Path::new(a).strip_prefix(&from).ok()?;
+            let b = Path::new(b).strip_prefix(&from).ok()?;
+            let (a, b) = (to.join(a), to.join(b));
+            (a.is_file() && b.is_file()).then(|| (pair_key(&a), pair_key(&b)))
+        })
+        .collect();
+    if copies.is_empty() {
+        return;
+    }
+    s.pairs.extend(copies);
+    if !s.keep_file
+        && let Err(e) = state.persist(&s)
+    {
+        log::warn!("could not note the pairs of the copy: {e}");
+    }
+}
+
+/// How a remembered pair names `path`: the same for every spelling of it.
+fn pair_key(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_owned())
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// `a` and `b` are the same file (through a link, or spelled differently).
 pub fn same_file(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
@@ -935,7 +1009,11 @@ pub(crate) async fn pair_with(
     // The file's own text: the editor's, or composed from the translations
     // while the other language is edited.
     let text = home_text(state, text)?;
-    let (snapshot, pair) = load_paired(state, &path, &text, mode, mirror_path, mirror)?;
+    let (snapshot, pair) = load_paired(state, &path, &text, mode, mirror_path.clone(), mirror)?;
+    // Opened again later, or built as a part of the project, it pairs again.
+    if counterpart(&path).is_none_or(|c| !same_file(&c, &mirror_path)) {
+        remember_pair(state, &path, Some(&mirror_path));
+    }
     let dirty = {
         let mut fs = state.file();
         fs.pair = Some(pair);
@@ -961,8 +1039,14 @@ pub async fn close_mirror(state: tauri::State<'_, AppState>) -> CommandResult<()
             display_name(Some(&pair.path))
         )));
     }
-    if let Some(pair) = fs.pair.take() {
+    let unpaired = fs.pair.take();
+    let path = fs.path.clone();
+    drop(fs);
+    if let Some(pair) = unpaired {
         log::info!("unpaired {}", display_name(Some(&pair.path)));
+    }
+    if let Some(path) = path {
+        remember_pair(&state, &path, None);
     }
     Ok(())
 }

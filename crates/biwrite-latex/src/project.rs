@@ -85,7 +85,7 @@ pub fn magic(text: &str) -> Magic {
 }
 
 /// `text` without `%` comments (escaped `\%` kept), for scanning commands.
-pub(crate) fn uncommented(text: &str) -> String {
+pub fn uncommented(text: &str) -> String {
     text.lines()
         .map(|line| {
             let bytes = line.as_bytes();
@@ -365,7 +365,7 @@ pub fn root_for(file: &Path, text: &str) -> Result<PathBuf, ProjectError> {
 /// The main file at `main` (text `text`) inputs `file`, directly or
 /// through the files it inputs. Paths in every included file are relative
 /// to the main file's folder, as TeX reads them.
-fn reaches(main: &Path, text: &str, file: &Path) -> bool {
+pub fn reaches(main: &Path, text: &str, file: &Path) -> bool {
     let dir = main.parent().unwrap_or(Path::new("."));
     let target = clean(file);
     let mut seen: Vec<PathBuf> = vec![clean(main)];

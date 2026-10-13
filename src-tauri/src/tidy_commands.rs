@@ -147,7 +147,10 @@ pub(crate) async fn tidy(
     if asked.is_empty() {
         return Ok(result);
     }
-    let (system, user) = prompt(text, &asked);
+    // The whole paper of a project of several files: its sections may use
+    // what the root's preamble loads.
+    let paper = crate::latex_commands::whole_paper(state, text, 0).map(|(paper, _)| paper);
+    let (system, user) = prompt(paper.as_deref().unwrap_or(text), &asked);
     let chat = ChatRequest {
         purpose: "revert".to_owned(),
         system,
@@ -174,6 +177,11 @@ pub(crate) async fn tidy(
                     false
                 }
             },
+            // Sections the model may have judged wrongly: every line stays.
+            Err(e) if paper.is_some() => {
+                log::info!("smart revert: no build of the paper, every line stays ({e})");
+                true
+            }
             Err(e) => {
                 log::info!("smart revert: no build, the model decides ({e})");
                 false

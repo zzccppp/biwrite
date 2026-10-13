@@ -63,8 +63,9 @@ pub(crate) async fn load(
 /// [`load`] without the window title.
 pub(crate) async fn open_path(state: &AppState, path: PathBuf) -> CommandResult<SessionView> {
     let file = files::read_text_file(path.clone()).await?;
-    // A file in the other language by the same name is its mirror.
-    let mirror = match pairing::counterpart(&path) {
+    // The file the author paired it with, or one in the other language by
+    // the same name, is its mirror.
+    let mirror = match pairing::mirror_path(state, &path) {
         Some(m) => files::read_text_file(m.clone()).await.ok().map(|f| (m, f)),
         None => None,
     };
@@ -122,6 +123,11 @@ pub async fn save_file_as(
     let own = home_text(&state, text)?;
     let other_language = state.left_in_other_language();
     let current = state.file().path.clone();
+    // A part's root, which reads the part under its old name.
+    let root = crate::latex_commands::project(&state)
+        .ok()
+        .filter(|p| p.root != p.path)
+        .map(|p| (p.root, p.root_text));
     let Some(path) = files::pick_save(&app, &window, current.as_deref()).await else {
         return Ok(None);
     };
@@ -140,9 +146,24 @@ pub async fn save_file_as(
         document: true,
         mirror: false,
     };
-    save_to(&window, &state, path, own, mirror_to, other_language, over)
-        .await
-        .map(Some)
+    let saved = save_to(
+        &window,
+        &state,
+        path.clone(),
+        own,
+        mirror_to,
+        other_language,
+        over,
+    )
+    .await?;
+    let written = std::fs::canonicalize(&path).unwrap_or(path);
+    let not_in_root = root
+        .filter(|(root, text)| !biwrite_latex::project::reaches(root, text, &written))
+        .map(|(root, _)| display_name(Some(&root)));
+    Ok(Some(SavedView {
+        not_in_root,
+        ..saved
+    }))
 }
 
 /// What a save may write over though it changed on disk elsewhere (the
@@ -271,6 +292,7 @@ pub(crate) async fn write_document_with(
         other_language,
         figures,
         figures_kept,
+        not_in_root: None,
     })
 }
 
