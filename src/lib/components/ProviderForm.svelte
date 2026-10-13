@@ -299,7 +299,16 @@
 {#if managing}
   <KeyManager
     {provider}
-    onchange={(view) => onsaved(view, provider.id)}
+    onchange={(view) => {
+      // The limits set there are saved: Save here keeps them, and the
+      // form's other edits stay as typed.
+      const saved = view.providers.find((p) => p.id === provider.id);
+      if (saved) {
+        draft.keyConcurrency = saved.keyConcurrency ?? null;
+        draft.maxRetries = saved.maxRetries ?? null;
+      }
+      onsaved(view, provider.id);
+    }}
     onclose={() => (managing = false)}
   />
 {/if}
