@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  TestAnswer,
   PaperView,
   MissingImage,
   DownloadedImage,
@@ -148,7 +149,7 @@ export const settingsIpc = {
   /** A new key in place of key `number` (its tail checked), keeping its name. */
   replaceKey: (id: string, number: number, tail: string, key: string) =>
     invoke<SettingsView>("replace_api_key", { id, number, tail, key }),
-  testKey: (id: string, fingerprint: string) => invoke<string>("test_api_key", { id, fingerprint }),
+  testKey: (id: string, fingerprint: string) => invoke<TestAnswer>("test_api_key", { id, fingerprint }),
   squeezeStatus: (id: string) => invoke<SqueezeView>("squeeze_status", { id }),
   squeezeStart: (id: string) => invoke<SqueezeView>("squeeze_start", { id }),
   squeezeStop: (id: string) => invoke<SqueezeView>("squeeze_stop", { id }),
@@ -171,7 +172,7 @@ export const settingsIpc = {
   importKeys: (id: string) => invoke<SettingsView | null>("import_api_keys", { id }),
   setAssistantProvider: (id: string) => invoke<SettingsView>("set_assistant_provider", { id }),
   setActive: (id: string) => invoke<SettingsView>("set_active_provider", { id }),
-  test: (id: string) => invoke<string>("test_provider", { id }),
+  test: (id: string) => invoke<TestAnswer>("test_provider", { id }),
   listModels: (id: string) => invoke<string[]>("list_provider_models", { id }),
   setConcurrency: (concurrency: number) => invoke<SettingsView>("set_concurrency", { concurrency }),
   setDocNote: (note: string) => invoke<void>("set_doc_note", { note }),

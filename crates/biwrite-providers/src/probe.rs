@@ -499,7 +499,7 @@ fn title(words: &[&str]) -> String {
 
 /// `config` for short translations: little reasoning, so a few words cost
 /// a few tokens (a provider that sends no effort still sends none).
-pub(crate) fn config(config: &ProviderConfig) -> ProviderConfig {
+pub fn config(config: &ProviderConfig) -> ProviderConfig {
     let mut config = config.clone();
     if config.effort != Effort::Default {
         config.effort = Effort::Low;
@@ -515,6 +515,12 @@ pub(crate) fn prompt() -> (String, String) {
         return task(&mut d);
     }
     translation(&mut d)
+}
+
+/// The system prompt and question of a test of a provider or a key: one
+/// of the small tasks, drawn as for a keep-alive.
+pub fn test_question() -> (String, String) {
+    task(&mut Dice::new())
 }
 
 /// A small task with a short answer, in Chinese or English.

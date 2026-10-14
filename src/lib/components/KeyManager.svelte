@@ -207,7 +207,8 @@
 
   async function test(k: KeyEntry): Promise<void> {
     const out = await act(`test-${k.fingerprint}`, () => settingsIpc.testKey(provider.id, k.fingerprint));
-    if (out !== undefined) message = { ok: true, text: t("keys.testOk", { n: k.number, text: out }) };
+    if (out !== undefined)
+      message = { ok: true, text: `${t("keys.testOk", { n: k.number })}\n${t("test.qa", { q: out.question, a: out.answer })}` };
     void refreshState();
   }
 
@@ -500,7 +501,7 @@
         <button class="btn danger" onclick={removeAll} disabled={!!busy}>{t("keys.removeAll")}</button>
       {/if}
     </div>
-    <p class="hint" class:error={message && !message.ok}>
+    <p class="hint" class:error={message && !message.ok} class:qa={message?.ok && message.text.includes("\n")}>
       {message ? message.text : t("keys.hint")}
     </p>
   </footer>
@@ -696,6 +697,14 @@
   }
   .spacer {
     flex: 1;
+  }
+  .hint.qa {
+    white-space: pre-line;
+    font-style: normal;
+    color: var(--ink-2);
+    padding: 6px 10px;
+    border-left: 2px solid var(--accent);
+    background: var(--accent-wash);
   }
   .hint {
     margin: 0;

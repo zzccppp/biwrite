@@ -887,3 +887,9 @@ export interface DownloadedImage {
   file: string;
   error: string | null;
 }
+
+/** A test of a provider or a key: a small question and the model's answer. */
+export interface TestAnswer {
+  question: string;
+  answer: string;
+}

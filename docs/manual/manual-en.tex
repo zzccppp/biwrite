@@ -403,7 +403,7 @@ Folder & What goes there & How BiWrite uses it \\
 
 \section{Request log}
 \label{sec:log}
-The log button at the right of the toolbar (\cmdkey\shiftkey L) opens the request log (\fig{g-log}). \n{1} filters the records, pauses recording, clears the log and opens the log file. Each row of the table \n{2} is one request, with the model, reasoning effort and service tier that were sent and the ones the server declared, marked where they differ. A click on a row shows its details (\fig{g-details} \n{1}): the HTTP status, time to the first token, duration, input and output tokens (cached and reasoning tokens included), the key used (its name and last characters), and notes on retries and failover, followed by the system prompt, the message sent and the reply, each kept up to 20,000 characters. The log stays on this computer and never holds keys.
+The log button at the right of the toolbar (\cmdkey\shiftkey L) opens the request log (\fig{g-log}). \n{1} filters the records, pauses recording, clears the log and opens the log file. Above the table, each purpose shows its count, and a click shows only its requests (another click shows them all). Each row of the table \n{2} is one request, with the model, reasoning effort and service tier that were sent and the ones the server declared, marked where they differ. A click on a row shows its details (\fig{g-details} \n{1}): the HTTP status, time to the first token, duration, input and output tokens (cached and reasoning tokens included), the key used (its name and last characters), and notes on retries and failover, followed by the system prompt, the message sent and the reply, each kept up to 20,000 characters. The log stays on this computer and never holds keys.
 
 \shot[0.8]{g-log}{(1) Filters and actions, (2) the requests}
 \shot[0.95]{g-details}{(1) The details of one request}
@@ -457,7 +457,7 @@ The built-in \ui{Mock} provider works offline and returns each paragraph reverse
 \item Choose \ui{+ Add provider…} at \n{2} and pick a preset.
 \item In the provider's form (\fig{c-form}), check the base URL, the model and the API type \n{1}, and choose the reasoning effort and service tier \n{2} where the API takes them.
 \item Paste the key and click \ui{Add provider}. Keys are kept in a file of BiWrite's settings folder that only your account can read, are never uploaded, and are never shown again. Starting or updating BiWrite asks for no keychain password. Unticking \ui{Keep API keys on this computer, without the keychain} in Settings moves them to the system keychain (the Credential Manager on Windows). \ui{Manage keys…} \n{3} manages them later.
-\item \ui{Test} \n{4} translates one sentence.
+\item \ui{Test} \n{4} asks the model a small question drawn at random and shows the question with its answer. \ui{Test} on a key of the pool does the same.
 \end{enumerate}
 
 \shot{c-add}{(1) The providers, (2) add a provider}

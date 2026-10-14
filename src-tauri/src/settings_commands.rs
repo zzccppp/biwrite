@@ -9,7 +9,8 @@ use biwrite_core::Direction;
 use biwrite_engine::TranslationRequest;
 use biwrite_providers::prompt::{default_prompt, prompt_file_name};
 use biwrite_providers::{
-    KeyStatus, ProviderConfig, ProviderKind, key_fingerprint, key_tail, list_models,
+    ChatModel, ChatRequest, KeyStatus, ProviderConfig, ProviderKind, key_fingerprint, key_tail,
+    list_models,
 };
 use serde::Serialize;
 use tauri::State;
@@ -20,8 +21,34 @@ use crate::secrets::{self, MAX_KEYS, NamedKey, Vouched};
 use crate::settings::{MOCK_ID, ProviderEntry, SettingsView, same_destination};
 use crate::state::AppState;
 
-const TEST_SENTENCE: &str =
-    "Graph neural networks can learn new tasks from a few examples in context.";
+/// A test's question and the model's answer, shown as they are.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestAnswer {
+    pub question: String,
+    pub answer: String,
+}
+
+/// Longest answer a test shows, in characters.
+const TEST_ANSWER_CHARS: usize = 400;
+
+/// Ask `model` one of the small tasks of a keep-alive (a different one each
+/// time) and give the question with its answer.
+async fn ask_test(model: &dyn ChatModel, wait: Duration) -> CommandResult<TestAnswer> {
+    let (system, question) = biwrite_providers::test_question();
+    let request = ChatRequest {
+        purpose: "test".to_owned(),
+        system,
+        user: question.clone(),
+        images: Vec::new(),
+    };
+    let run = model.complete(&request, &|_| {});
+    let out = tokio::time::timeout(wait, run).await.map_err(|_| {
+        CommandError::Settings(format!("no answer within {} seconds", wait.as_secs()))
+    })??;
+    let answer: String = out.text.trim().chars().take(TEST_ANSWER_CHARS).collect();
+    Ok(TestAnswer { question, answer })
+}
 
 pub(crate) fn not_found(id: &str) -> CommandError {
     CommandError::Settings(format!("unknown provider {id}"))
@@ -493,7 +520,7 @@ pub async fn test_api_key(
     state: State<'_, AppState>,
     id: String,
     fingerprint: String,
-) -> CommandResult<String> {
+) -> CommandResult<TestAnswer> {
     let entry = state
         .settings()
         .provider(&id)
@@ -507,25 +534,16 @@ pub async fn test_api_key(
         .into_iter()
         .find(|k| key_fingerprint(k) == fingerprint)
         .ok_or_else(|| CommandError::Settings("that key is no longer in the pool".into()))?;
+    // Little reasoning: a short question costs a few tokens.
     let provider = biwrite_providers::build_http(
-        &entry.config,
+        &biwrite_providers::light_config(&entry.config),
         std::sync::Arc::new(move || Ok(vec![key.clone()])),
         state.prompts(),
         state.request_log.clone(),
     )?;
     // A key that answers got through.
     state.squeeze.join(&entry, &provider);
-    let request = TranslationRequest {
-        source: TEST_SENTENCE.to_owned(),
-        ..Default::default()
-    };
-    let run = biwrite_engine::Translator::translate(provider.as_ref(), &request, &|_| {});
-    match tokio::time::timeout(Duration::from_secs(120), run).await {
-        Ok(result) => Ok(result?.text),
-        Err(_) => Err(CommandError::Settings(
-            "no answer within 120 seconds".into(),
-        )),
-    }
+    ask_test(provider.as_ref(), Duration::from_secs(120)).await
 }
 
 /// Paragraphs per translation request (1: one per request).
@@ -861,30 +879,37 @@ pub async fn set_active_provider(
 
 /// Translate one sentence with provider `id` (not necessarily active).
 #[tauri::command]
-pub async fn test_provider(state: State<'_, AppState>, id: String) -> CommandResult<String> {
+pub async fn test_provider(state: State<'_, AppState>, id: String) -> CommandResult<TestAnswer> {
     let entry = state
         .settings()
         .provider(&id)
         .cloned()
         .ok_or_else(|| not_found(&id))?;
-    let built = translator_for(
-        &entry,
-        &state.secrets,
+    if entry.config.kind == ProviderKind::Mock {
+        // The offline mock answers by reversing the question.
+        let built = translator_for(
+            &entry,
+            &state.secrets,
+            state.prompts(),
+            state.request_log.clone(),
+        )?;
+        let (_, question) = biwrite_providers::test_question();
+        let request = TranslationRequest {
+            source: question.clone(),
+            ..Default::default()
+        };
+        let answer = built.translator.translate(&request, &|_| {}).await?.text;
+        return Ok(TestAnswer { question, answer });
+    }
+    // Little reasoning: a short question costs a few tokens.
+    let provider = biwrite_providers::build_http(
+        &biwrite_providers::light_config(&entry.config),
+        crate::provider_state::key_fn(&state.secrets, &entry),
         state.prompts(),
         state.request_log.clone(),
     )?;
-    if let Some(http) = &built.http {
-        state.squeeze.join(&entry, http);
-    }
-    let request = TranslationRequest {
-        source: TEST_SENTENCE.to_owned(),
-        ..Default::default()
-    };
-    let run = built.translator.translate(&request, &|_| {});
-    match tokio::time::timeout(Duration::from_secs(90), run).await {
-        Ok(result) => Ok(result?.text),
-        Err(_) => Err(CommandError::Settings("no answer within 90 seconds".into())),
-    }
+    state.squeeze.join(&entry, &provider);
+    ask_test(provider.as_ref(), Duration::from_secs(90)).await
 }
 
 #[tauri::command]
@@ -989,6 +1014,45 @@ mod tests {
     use biwrite_providers::Effort;
 
     use super::*;
+
+    /// Answers every request with its own question, said twice and padded.
+    struct Echo;
+
+    impl ChatModel for Echo {
+        fn label(&self) -> String {
+            "echo".into()
+        }
+
+        fn complete<'a>(
+            &'a self,
+            request: &'a ChatRequest,
+            _on_partial: biwrite_engine::PartialFn<'a>,
+        ) -> biwrite_engine::BoxFuture<
+            'a,
+            Result<biwrite_providers::ChatOutput, biwrite_engine::TranslateError>,
+        > {
+            Box::pin(async move {
+                assert_eq!(request.purpose, "test");
+                Ok(biwrite_providers::ChatOutput {
+                    text: format!("  {}{}  ", request.user, "!".repeat(600)),
+                    usage: Default::default(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_test_asks_a_small_question_and_gives_the_answer() {
+        let a = ask_test(&Echo, Duration::from_secs(5)).await.unwrap();
+        let b = ask_test(&Echo, Duration::from_secs(5)).await.unwrap();
+        assert!(!a.question.is_empty());
+        assert!(a.answer.starts_with(&a.question), "trimmed: {}", a.answer);
+        assert_eq!(a.answer.chars().count(), TEST_ANSWER_CHARS, "cut short");
+        assert_ne!(
+            (a.question.clone(), b.question.clone()),
+            (String::new(), String::new())
+        );
+    }
 
     fn cfg(kind: ProviderKind, base_url: &str) -> ProviderConfig {
         ProviderConfig {

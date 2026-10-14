@@ -77,7 +77,7 @@ LaTeX 功能需要 TeX 发行版：macOS 用 MacTeX，Windows 和 Linux 用 TeX 
 1. 打开**设置**（`⌘,`），选择「+ 添加接口…」，再选一个预设。
 2. 核对 Base URL 和模型。保存密钥后，「列出模型」可以获取可用模型。
 3. 粘贴一个或多个密钥（每行一个，或者一行名称、下一行密钥），点「添加接口」。密钥保存在系统钥匙串中，之后不再显示。
-4. 「测试」翻译一句话。单选按钮选中的接口负责翻译。「写作助手」一节选择润色和提问所用的接口，可以让快速模型负责翻译，更强的模型负责写作。
+4. 「测试」向模型问一个随机的小问题，显示问题和回答，例如「用一句话形容熊猫」。号池里每个密钥的「测试」也是这样。单选按钮选中的接口负责翻译。「写作助手」一节选择润色和提问所用的接口，可以让快速模型负责翻译，更强的模型负责写作。
 5. 「请求节奏」中，「每次请求的段落数」（1 到 8）把多个新段落合并成一次请求，「并行请求数」可以跟随号池（密钥数 × 每个密钥的并发）或手动设置。
 6. 「界面语言」在英文和中文之间切换界面。
 
@@ -175,7 +175,7 @@ BiWrite 支持 OpenAI 兼容的 Chat Completions 接口、OpenAI Responses 接�
 
 ## 请求日志
 
-**日志**（`⌘⇧L`）列出每次请求发出的模型、推理强度和服务等级，以及服务端声明的实际值（不一致时标出），还有 HTTP 状态、首字延迟、总耗时、token（含缓存和推理 token）、所用密钥（只显示名称和末尾几位）以及重试和换号的说明，还有发给接口的系统提示、发送内容和收到的回复。日志可以暂停、清空和保存到文件，只存在本机，不记录密钥。
+**日志**（`⌘⇧L`）列出每次请求发出的模型、推理强度和服务等级，以及服务端声明的实际值（不一致时标出），还有 HTTP 状态、首字延迟、总耗时、token（含缓存和推理 token）、所用密钥（只显示名称和末尾几位）以及重试和换号的说明，还有发给接口的系统提示、发送内容和收到的回复。表格上方按用途列出各类请求的条数，点一类只看这一类，再点一次恢复全部。日志可以暂停、清空和保存到文件，只存在本机，不记录密钥。
 
 ## 版本更新
 
@@ -315,8 +315,9 @@ it the PowerPoint file alone is made.
 3. Paste one key, or several (one per line, or a name on one line and its key
    on the next), and click *Add provider*. Keys go into the system keychain
    and are never shown again.
-4. *Test* translates one sentence. The radio button makes the provider the
-   one that translates. *Writing assistant* chooses the provider for
+4. *Test* asks the model a small question drawn at random and shows the
+   question with its answer, as *Test* on a key of the pool does. The radio
+   button makes the provider the one that translates. *Writing assistant* chooses the provider for
    polishing and questions, so a fast model can translate while a stronger
    one writes.
 5. Under *Requests*, *Paragraphs per request* (1 to 8) puts several new
@@ -580,8 +581,10 @@ service tier that were sent and the ones the server declared (differences
 are marked), the HTTP status, time to first token, duration, tokens with
 cached and reasoning tokens, the key used (by name and the last characters
 only), notes on retries and failover, and the system prompt, the message
-sent and the reply. The log can be paused, cleared and kept on disk, stays
-on this computer and never holds keys.
+sent and the reply. Above the table, each purpose shows its count, and a
+click shows only its requests (another click shows them all). The log can
+be paused, cleared and kept on disk, stays on this computer and never holds
+keys.
 
 ## Updates
 

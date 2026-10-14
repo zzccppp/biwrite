@@ -135,7 +135,8 @@
 
   async function test(): Promise<void> {
     const out = await act("test", () => settingsIpc.test(provider.id));
-    if (out !== undefined) message = { ok: true, text: out };
+    if (out !== undefined)
+      message = { ok: true, text: `${t("provider.testOk")}\n${t("test.qa", { q: out.question, a: out.answer })}` };
   }
 
   async function fetchModels(): Promise<void> {
@@ -346,6 +347,7 @@
     flex: 1;
   }
   .message {
+    white-space: pre-line;
     margin: 0 0 10px;
     padding: 6px 9px;
     border-left: 2px solid var(--accent);

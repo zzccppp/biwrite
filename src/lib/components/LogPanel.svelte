@@ -15,6 +15,8 @@
   type Filter = "all" | "translate" | "assistant" | "errors" | "differs";
 
   let filter = $state<Filter>("all");
+  /** One purpose only (null: every purpose). */
+  let purpose = $state<string | null>(null);
   let query = $state("");
   let open = $state<number | null>(null);
   let error = $state<string | null>(null);
@@ -24,6 +26,7 @@
   const shown = $derived.by(() => {
     const q = query.trim().toLowerCase();
     return log.list.filter((r) => {
+      if (purpose !== null && r.purpose !== purpose) return false;
       if (filter === "translate" && r.purpose !== "translate") return false;
       if (filter === "assistant" && !ASSISTANT.has(r.purpose)) return false;
       if (filter === "errors" && r.state !== "error") return false;
@@ -35,6 +38,12 @@
     });
   });
   const stats = $derived(summarize(log.list));
+  /** The purposes in the log, the most frequent first, with their counts. */
+  const purposes = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const r of log.list) counts.set(r.purpose, (counts.get(r.purpose) ?? 0) + 1);
+    return [...counts].sort((a, b) => b[1] - a[1]);
+  });
 
   async function run(f: () => Promise<void>): Promise<void> {
     error = null;
@@ -81,6 +90,12 @@
     ask: "log.purpose.ask",
     figure: "log.purpose.figure",
     "keep-alive": "log.purpose.keepAlive",
+    mirror: "log.purpose.mirror",
+    write: "log.purpose.write",
+    fix: "log.purpose.fix",
+    check: "log.purpose.check",
+    revert: "log.purpose.revert",
+    test: "log.purpose.test",
   };
 
   /** A known purpose in the interface language, any other as recorded. */
@@ -234,6 +249,25 @@
     <button class="btn" onclick={clear} disabled={log.list.length === 0}>{t("log.clear")}</button>
     <button class="btn" onclick={reveal} disabled={!log.file}>{t("log.reveal")}</button>
   </div>
+
+  {#if purposes.length > 1}
+    <div class="purposes row" role="radiogroup" aria-label={t("log.byPurpose")}>
+      <span class="label smallcaps">{t("log.byPurpose")}</span>
+      <button class="chip" class:on={purpose === null} role="radio" aria-checked={purpose === null} onclick={() => (purpose = null)}
+        >{t("log.filter.all")} <span class="n">{log.list.length}</span></button
+      >
+      {#each purposes as [p, n] (p)}
+        <button
+          class="chip"
+          class:on={purpose === p}
+          role="radio"
+          aria-checked={purpose === p}
+          data-purpose={p}
+          onclick={() => (purpose = purpose === p ? null : p)}>{purposeLabel(p)} <span class="n">{n}</span></button
+        >
+      {/each}
+    </div>
+  {/if}
 
   <div class="table">
     <div class="head smallcaps" aria-hidden="true">
@@ -432,6 +466,36 @@
   }
   .search {
     width: 170px;
+  }
+  .purposes {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 0 16px 8px;
+    align-items: center;
+  }
+  .purposes .label {
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-right: 2px;
+  }
+  .chip {
+    border: 1px solid var(--rule);
+    border-radius: 11px;
+    background: var(--paper);
+    padding: 1px 10px 2px;
+    font-size: 12.5px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .chip.on {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--paper);
+  }
+  .chip .n {
+    margin-left: 3px;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.7;
   }
   .spacer {
     flex: 1;

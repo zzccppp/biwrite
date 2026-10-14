@@ -646,6 +646,10 @@ function seedRecords(): void {
     }),
     fakeRecord({ state: "in_flight", durationMs: null, firstTokenMs: null, httpStatus: null, response: { model: null, effort: null, serviceTier: null }, usage: { inputTokens: null, cachedTokens: null, outputTokens: null, reasoningTokens: null } }),
   ];
+  // `logpurposes`: keep-alives and a test too.
+  if (PARAMS.has("logpurposes")) {
+    state.records.push(fakeRecord({ purpose: "keep-alive" }), fakeRecord({ purpose: "keep-alive" }), fakeRecord({ purpose: "keep-alive" }), fakeRecord({ purpose: "test" }));
+  }
 }
 
 let nextJob = 1;
@@ -1493,7 +1497,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.swapped.push(Number(a.number));
     return clone(state.settings);
   },
-  test_api_key: () => "图神经网络可以从上下文中的少量示例学习新任务。",
+  test_api_key: () => ({ question: "考考你：用一句话形容熊猫。像天气预报员一样说。", answer: "今日熊猫指数满格，黑白配色稳定，局部地区有竹子降落。" }),
+  test_provider: () => ({ question: "Name a city that starts with K. Answer like a pirate.", answer: "Arr, Kyoto it be, matey!" }),
   set_active_provider: (a) => {
     const p = state.settings.providers.find((x) => x.id === String(a.id));
     if (!p) throw new Error(`unknown provider ${String(a.id)}`);
