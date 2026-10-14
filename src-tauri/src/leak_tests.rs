@@ -42,6 +42,7 @@ async fn key_never_appears_in_views_or_settings_file() {
         key_names: Default::default(),
         key_through: Default::default(),
         key_parts: 0,
+        key_ignored: Default::default(),
     });
     settings.active_provider = "p-1".into();
 

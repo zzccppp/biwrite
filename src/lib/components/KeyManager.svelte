@@ -26,6 +26,29 @@
   let keepAlive = $state<boolean | null>(null);
   /** However long the author is away, or half an hour after the last use. */
   let forever = $state(true);
+  /** Mean minutes between keep-alives, and seconds between tries. */
+  let keepMinutes = $state(4);
+  let trySeconds = $state(3);
+
+  async function setPacing(minutes: number, seconds: number): Promise<void> {
+    if (!(minutes > 0) || !(seconds > 0)) return;
+    const view = await act("pace", () => settingsIpc.setPacing(minutes, seconds));
+    if (view) {
+      keepMinutes = view.keepAliveMinutes;
+      trySeconds = view.squeezeSeconds;
+      onchange(view);
+    }
+  }
+
+  /** Set key `k` aside, or use it again. */
+  async function setIgnored(k: KeyEntry, ignored: boolean): Promise<void> {
+    const view = await act(`ignore-${k.fingerprint}`, () => settingsIpc.setKeyIgnored(provider.id, k.fingerprint, ignored));
+    if (view) {
+      keys = keys.map((x) => (x.fingerprint === k.fingerprint ? { ...x, ignored } : x));
+      onchange(view);
+    }
+  }
+  const round = (n: number) => Math.round(n * 10) / 10;
 
   async function setKeepAlive(on: boolean): Promise<void> {
     const view = await act("keep", () => settingsIpc.setKeepAlive(on));
@@ -46,7 +69,9 @@
   let now = $state(Date.now());
 
   const perKey = $derived(provider.keyConcurrency ?? null);
-  const parallel = $derived(perKey ? keys.length * perKey : null);
+  /** Keys requests go to: those not set aside. */
+  const usable = $derived(keys.filter((k) => !k.ignored).length);
+  const parallel = $derived(perKey ? usable * perKey : null);
 
   async function act<T>(what: string, f: () => Promise<T>): Promise<T | undefined> {
     busy = what;
@@ -225,6 +250,8 @@
       .then((view) => {
         keepAlive = view.keepAlive;
         forever = view.keepAliveForever;
+        keepMinutes = view.keepAliveMinutes ?? 4;
+        trySeconds = view.squeezeSeconds ?? 3;
       })
       .catch(() => {});
     const timer = setInterval(() => {
@@ -250,7 +277,7 @@
     <h2 id="keys-title" class="smallcaps">{t("keys.title")}</h2>
     <span class="count">
       {provider.name} · {count(keys.length, "keys.count.one", "keys.count.many")}
-      {#if parallel}· {t("keys.parallelNote", { n: parallel, keys: keys.length, per: perKey ?? 1 })}{/if}
+      {#if parallel}· {t("keys.parallelNote", { n: parallel, keys: usable, per: perKey ?? 1 })}{/if}
     </span>
     <button class="close" onclick={onclose} aria-label={t("common.close")}>✕</button>
   </header>
@@ -305,6 +332,34 @@
         />
         <span class="label smallcaps">{t("squeeze.forever")}</span>
       </label>
+      <label class="inline pace" title={t("squeeze.keepEveryHint", { low: round(keepMinutes * 0.75), high: round(keepMinutes * 1.25) })}>
+        <span class="label smallcaps">{t("squeeze.keepEvery")}</span>
+        <input
+          class="input"
+          type="number"
+          min="1"
+          max="30"
+          step="0.5"
+          value={keepMinutes}
+          disabled={!!busy}
+          onchange={(e) => void setPacing(Number(e.currentTarget.value), trySeconds)}
+        />
+        <span class="label">{t("squeeze.minutes")}</span>
+      </label>
+      <label class="inline pace" title={t("squeeze.tryEveryHint", { low: round(trySeconds * 0.5), high: round(trySeconds * 1.5) })}>
+        <span class="label smallcaps">{t("squeeze.tryEvery")}</span>
+        <input
+          class="input"
+          type="number"
+          min="1"
+          max="120"
+          step="1"
+          value={trySeconds}
+          disabled={!!busy}
+          onchange={(e) => void setPacing(keepMinutes, Number(e.currentTarget.value))}
+        />
+        <span class="label">{t("squeeze.seconds")}</span>
+      </label>
     {/if}
     {#if squeeze?.running || (provider.squeezable && keys.length > 0)}
       <span class="spacer"></span>
@@ -328,6 +383,7 @@
       {@const through = showThrough && !!sq?.throughSince && k.state !== "cooling" && k.state !== "rejected"}
       <div
         class="entry"
+        class:ignored={k.ignored}
         data-state={k.state}
         data-squeeze={through
           ? "through"
@@ -348,7 +404,9 @@
           spellcheck="false"
         />
         <span class="mono">…{k.tail}</span>
-        {#if through && sq?.throughSince}
+        {#if k.ignored}
+          <span class="state" title={t("keys.ignoreHint")}>{t("keys.ignored")}</span>
+        {:else if through && sq?.throughSince}
           <!-- Got through, then kept alive (since the latest keep-alive), or
                its keep-alive being tried again. -->
           <span
@@ -388,6 +446,9 @@
           </button>
           <button class="btn" onclick={() => test(k)} disabled={!!busy}>
             {busy === `test-${k.fingerprint}` ? t("common.testing") : t("common.test")}
+          </button>
+          <button class="btn ignore" onclick={() => void setIgnored(k, !k.ignored)} disabled={!!busy} title={t("keys.ignoreHint")}>
+            {k.ignored ? t("keys.unignore") : t("keys.ignore")}
           </button>
           <button class="remove" onclick={() => remove(k)} disabled={!!busy} aria-label={t("common.remove")}>✕</button>
         </span>
@@ -523,7 +584,7 @@
   .head,
   .entry {
     display: grid;
-    grid-template-columns: 28px minmax(110px, 1fr) 90px minmax(110px, 0.8fr) 60px 160px;
+    grid-template-columns: 28px minmax(110px, 1fr) 90px minmax(110px, 0.8fr) 60px 236px;
     gap: 10px;
     align-items: center;
   }
@@ -568,6 +629,13 @@
     color: var(--accent);
   }
   .entry[data-state="rejected"] .state,
+  .entry.ignored > :not(.actions) {
+    opacity: 0.5;
+  }
+  .pace .input {
+    width: 58px;
+    padding: 2px 6px;
+  }
   .entry[data-squeeze="refused"] .state {
     color: var(--error);
   }

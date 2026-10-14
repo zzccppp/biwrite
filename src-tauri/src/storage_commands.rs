@@ -155,6 +155,7 @@ mod tests {
             key_names: Default::default(),
             key_through: Default::default(),
             key_parts: 0,
+            key_ignored: Default::default(),
         });
         assert_eq!(provider_label(&identity, &settings), "DeepSeek");
         assert_eq!(provider_label("mock", &settings), "Mock");

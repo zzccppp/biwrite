@@ -73,6 +73,7 @@ async fn added_keys_leave_requests_in_flight_alone() {
             key_names: Default::default(),
             key_through: Default::default(),
             key_parts: 0,
+            key_ignored: Default::default(),
         });
         s.active_provider = "p-1".into();
         s.match_pool = true;
@@ -152,6 +153,7 @@ async fn a_provider_built_for_another_host_is_not_reused() {
             key_names: Default::default(),
             key_through: Default::default(),
             key_parts: 0,
+            key_ignored: Default::default(),
         });
         s.assistant_provider = "p-1".into();
     }
@@ -212,6 +214,7 @@ async fn an_assistant_provider_built_across_a_key_change_is_not_kept() {
             key_names: Default::default(),
             key_through: Default::default(),
             key_parts: 0,
+            key_ignored: Default::default(),
         });
         s.assistant_provider = "p-1".into();
     }
@@ -274,6 +277,7 @@ fn pool_state(dir: &std::path::Path, keys: &[&str]) -> tauri::App<tauri::test::M
         key_names: Default::default(),
         key_through: Default::default(),
         key_parts: parts,
+        key_ignored: Default::default(),
     });
     drop(s);
     app

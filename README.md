@@ -170,7 +170,8 @@ BiWrite 支持 OpenAI 兼容的 Chat Completions 接口、OpenAI Responses 接�
 * 被限流的密钥进入冷却，请求转到其他密钥。被拒绝的密钥暂停使用。
 * 「每个密钥的并发」限制单个密钥的并发数，「并行请求数」可以跟随号池。
 * 「换 key」把某个密钥原位换成你粘贴的新密钥，名称和位置不变，例如替换一直没有得到应答的密钥。
-* 「导出到文件…」把名称和密钥保存为文本文件，便于迁移或分享，「从文件导入…」读回这种文件。密钥从钥匙串直接写入文件，不经过界面。文件中是明文密钥，只分享给你信任的人。
+* 「忽略」让某个密钥暂时不参与任何请求，「取消忽略」后恢复使用，并行请求数按其余密钥计算。
+* 「导出到文件…」把名称和密钥保存为文本文件，便于迁移或分享，「从文件导入…」读回这种文件。密钥直接写入文件，不经过界面。文件中是明文密钥，只分享给你信任的人。
 
 ## 请求日志
 
@@ -563,12 +564,14 @@ retries.
   rather than going to a key that is cooling down or rejected.
 * *New key* replaces a key with one you paste, under the same name and in
   the same place, for example a key that has never been answered.
+* *Ignore* sets a key aside so it takes no request, and *Use again* takes it
+  back. The parallel requests count the other keys only.
 * Keys added or imported while paragraphs are being translated are used
   from the next request on, and requests already under way go on.
 * *Export to file…* saves the names and keys to a text file to move them or
-  share them, and *Import from file…* reads one back. The keys go from the
-  keychain to the file without passing through the window. The file holds
-  secret keys, so share it only with people you trust.
+  share them, and *Import from file…* reads one back. The keys go to the file
+  without passing through the window. The file holds secret keys, so share
+  it only with people you trust.
 
 ## Request log
 

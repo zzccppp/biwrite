@@ -53,7 +53,7 @@ pub const KEEP_ALIVE_FOR: Duration = Duration::from_secs(30 * 60);
 /// Pause between two tries of one key.
 const PROBE_GAP: Duration = Duration::from_secs(3);
 /// Longest pause between two tries of a squeeze nobody watches, which
-/// doubles [`PROBE_GAP`] after every try turned away.
+/// doubles the pause after every try turned away.
 const UNATTENDED_GAP_MAX: Duration = Duration::from_secs(60);
 /// The author used the keys this lately: a squeeze nobody started tries as
 /// often as one they started, since they are waiting for it.
@@ -91,6 +91,31 @@ pub struct SqueezeBoard {
     /// Keys a squeeze gave up on (refused, or a request that cannot
     /// succeed), until answered: not squeezed back in by themselves.
     given_up: Mutex<HashSet<String>>,
+    /// The mean pause between two tries of one key the author chose; the
+    /// pause is drawn around it each time (see [`jitter`]). Unset, it is
+    /// [`PROBE_GAP`].
+    pace: Mutex<Option<Duration>>,
+}
+
+/// A pause drawn around `mean`: a normal distribution with that mean, kept
+/// within `spread` of it either way (`0.5` for half), its standard
+/// deviation a quarter of that width, so most pauses fall near the mean
+/// and none outside the bounds.
+pub fn jitter(mean: Duration, spread: f64) -> Duration {
+    let unit = || (crate::keys::random_u64() >> 11) as f64 / (1u64 << 53) as f64;
+    let m = mean.as_secs_f64();
+    let half = m * spread.clamp(0.0, 1.0);
+    let sigma = half / 2.0;
+    for _ in 0..32 {
+        // Box-Muller: a standard normal from two uniform draws.
+        let (u, v) = (unit().max(f64::MIN_POSITIVE), unit());
+        let z = (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos();
+        let x = m + z * sigma;
+        if (m - half..=m + half).contains(&x) {
+            return Duration::from_secs_f64(x.max(0.0));
+        }
+    }
+    mean
 }
 
 /// A key that got through, for the settings view.
@@ -150,6 +175,18 @@ impl SqueezeBoard {
 
     fn given_up(&self) -> MutexGuard<'_, HashSet<String>> {
         self.given_up.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The mean pause between two tries of one key (`None`: the default).
+    pub fn set_pace(&self, mean: Option<Duration>) {
+        *self.pace.lock().unwrap_or_else(PoisonError::into_inner) = mean;
+    }
+
+    /// The pause before the next try of a key: drawn within half the mean
+    /// either way, or [`PROBE_GAP`].
+    fn next_gap(&self) -> Duration {
+        let mean = *self.pace.lock().unwrap_or_else(PoisonError::into_inner);
+        mean.map_or(PROBE_GAP, |m| jitter(m, 0.5))
     }
 
     /// The author sent a request with one of the keys, or started a squeeze.
@@ -474,6 +511,17 @@ impl Squeeze {
         unix_ms(self.started)
     }
 
+    /// The author set key `fingerprint` aside: it is tried no more.
+    pub fn set_aside(&self, fingerprint: &str) {
+        for p in self
+            .lock()
+            .iter_mut()
+            .filter(|p| p.fingerprint == fingerprint)
+        {
+            p.refused = true;
+        }
+    }
+
     pub fn progress(&self) -> Vec<KeyProgress> {
         self.lock().clone()
     }
@@ -555,12 +603,13 @@ impl Squeeze {
             // An answer counts even when it held no translation.
             let through = board.is_fresh(&fingerprint);
             misses = if through { 0 } else { misses.saturating_add(1) };
+            let base = board.next_gap();
             let gap_max = if self.unattended && !board.used_within(ATTENDED_WITHIN) {
-                UNATTENDED_GAP_MAX
+                UNATTENDED_GAP_MAX.max(base)
             } else {
-                PROBE_GAP
+                base
             };
-            let gap = PROBE_GAP
+            let gap = base
                 .saturating_mul(1 << misses.saturating_sub(1).min(5))
                 .min(gap_max);
             let wait = {
@@ -616,6 +665,38 @@ impl Squeeze {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pauses_spread_around_their_mean_within_the_bounds() {
+        let mean = Duration::from_secs(240);
+        let draws: Vec<f64> = (0..4000)
+            .map(|_| jitter(mean, 0.25).as_secs_f64())
+            .collect();
+        assert!(
+            draws.iter().all(|d| (180.0..=300.0).contains(d)),
+            "within three to five minutes"
+        );
+        let avg = draws.iter().sum::<f64>() / draws.len() as f64;
+        assert!(
+            (avg - 240.0).abs() < 3.0,
+            "about four minutes on average: {avg}"
+        );
+        assert!(
+            draws.iter().any(|d| *d < 200.0) && draws.iter().any(|d| *d > 280.0),
+            "spread out"
+        );
+        let near = draws.iter().filter(|d| (**d - 240.0).abs() < 30.0).count();
+        assert!(near * 2 > draws.len(), "most near the mean: {near}");
+        let tries: Vec<f64> = (0..2000)
+            .map(|_| jitter(Duration::from_secs(3), 0.5).as_secs_f64())
+            .collect();
+        assert!(tries.iter().all(|d| (1.5..=4.5).contains(d)));
+        let board = SqueezeBoard::default();
+        assert_eq!(board.next_gap(), PROBE_GAP, "unset: the fixed pause");
+        board.set_pace(Some(Duration::from_secs(20)));
+        let gap = board.next_gap().as_secs_f64();
+        assert!((10.0..=30.0).contains(&gap), "{gap}");
+    }
 
     fn server() -> TranslateError {
         TranslateError::Server {

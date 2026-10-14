@@ -48,7 +48,7 @@ pub use prompt::{DefaultPrompts, PromptFiles, PromptSource};
 pub use provider::{HttpProvider, KEEP_ALIVE, TRANSLATE};
 pub use squeeze::{
     CROWDED_AFTER, ChangeFn, DROP_AFTER, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress,
-    STALE_AFTER, Squeeze, SqueezeBoard, SqueezeChange, ThroughView, ping,
+    STALE_AFTER, Squeeze, SqueezeBoard, SqueezeChange, ThroughView, jitter, ping,
 };
 
 /// Build the translator for a (validated) provider configuration, without a

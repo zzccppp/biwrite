@@ -20,13 +20,13 @@
 //! every few minutes), and the end of each squeeze.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use biwrite_providers::{
     CROWDED_AFTER, ChangeFn, HttpProvider, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress, Squeeze,
-    SqueezeBoard, SqueezeChange, key_fingerprint, ping,
+    SqueezeBoard, SqueezeChange, jitter, key_fingerprint, ping,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, UserAttentionType};
@@ -40,7 +40,7 @@ use crate::state::AppState;
 pub const EVENT_SQUEEZE: &str = "squeeze";
 
 /// How often the keeper looks for keys to keep alive.
-const KEEP_ALIVE_TICK: Duration = Duration::from_secs(30);
+const KEEP_ALIVE_TICK: Duration = Duration::from_secs(10);
 /// A key whose ping failed is pinged again after this long, or after as
 /// long as the server asks, up to [`PING_WAIT_MAX`]. A key that got through
 /// fails now and then, and a retry soon keeps it before it counts as stale.
@@ -80,9 +80,86 @@ pub struct SqueezeState {
     /// Keys are kept alive however long the author is away (the setting
     /// `keep_alive_forever`), not only within [`KEEP_ALIVE_FOR`].
     forever: AtomicBool,
+    /// Mean milliseconds between two keep-alives of a key, and between two
+    /// tries of a key in a squeeze (the settings); zero before they are set.
+    keep_mean_ms: AtomicU64,
+    pace_ms: AtomicU64,
+    /// How long each key waits idle before its next keep-alive, drawn
+    /// around the mean once per keep-alive, by provider id and fingerprint.
+    ping_every: Mutex<HashMap<(String, String), Duration>>,
 }
 
 impl SqueezeState {
+    /// The mean wait between two keep-alives of a key (minutes) and between
+    /// two tries of a key in a squeeze (seconds), as the settings say.
+    pub fn set_means(&self, keep_alive_minutes: f64, squeeze_seconds: f64) {
+        let keep = (keep_alive_minutes.clamp(1.0, 30.0) * 60_000.0) as u64;
+        if self.keep_mean_ms.swap(keep, Ordering::Relaxed) != keep {
+            // Drawn again around the new mean.
+            self.ping_every
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+        }
+        let pace = (squeeze_seconds.clamp(1.0, 120.0) * 1000.0) as u64;
+        if self.pace_ms.swap(pace, Ordering::Relaxed) != pace {
+            for (_, board) in self.boards().values() {
+                board.set_pace(Some(Duration::from_millis(pace)));
+            }
+        }
+    }
+
+    /// The mean pause between two tries of a key in a squeeze.
+    fn pace(&self) -> Option<Duration> {
+        match self.pace_ms.load(Ordering::Relaxed) {
+            0 => None,
+            ms => Some(Duration::from_millis(ms)),
+        }
+    }
+
+    /// How long key `fingerprint` of provider `id` waits idle before its
+    /// next keep-alive: drawn within a quarter of the mean either way, the
+    /// same until it is answered.
+    fn keep_alive_after(&self, id: &str, fingerprint: &str) -> Duration {
+        let mean = match self.keep_mean_ms.load(Ordering::Relaxed) {
+            0 => KEEP_ALIVE_AFTER,
+            ms => Duration::from_millis(ms),
+        };
+        *self
+            .ping_every
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry((id.to_owned(), fingerprint.to_owned()))
+            .or_insert_with(|| jitter(mean, 0.25))
+    }
+
+    /// The author set key `fingerprint` of provider `id` aside: it is
+    /// through no more, not kept alive, and a squeeze running tries it no
+    /// more. The other keys keep their places.
+    pub fn set_aside(&self, id: &str, fingerprint: &str) {
+        if let Some((_, board)) = self.boards().get(id) {
+            board.forget(fingerprint);
+        }
+        if let Some(kept) = self.kept().get_mut(id) {
+            kept.remove(fingerprint);
+        }
+        if let Some(run) = self.runs().get(id) {
+            run.set_aside(fingerprint);
+        }
+        self.keys().remove(id);
+        let key = (id.to_owned(), fingerprint.to_owned());
+        self.ping_after().remove(&key);
+        self.ping_every
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+    }
+
+    /// The author took key `fingerprint` back: read with the others again.
+    pub fn take_back(&self, id: &str) {
+        self.keys().remove(id);
+    }
+
     /// Keep keys alive however long the author is away, or not.
     pub fn set_forever(&self, on: bool) {
         self.forever.store(on, Ordering::Relaxed);
@@ -286,6 +363,11 @@ impl SqueezeState {
         match wait {
             None => {
                 self.ping_after().remove(&key);
+                // The next wait is drawn anew.
+                self.ping_every
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&key);
                 self.kept_at
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -305,12 +387,12 @@ impl SqueezeState {
 
     /// The providers among `entries` with keys to keep alive: a relay that
     /// turned keys away and that the author used within [`KEEP_ALIVE_FOR`],
-    /// and keys of it that got through and were not answered for `after`
-    /// (their fingerprints).
+    /// and keys of it that got through and were not answered for `after`,
+    /// or else for the wait drawn for each (their fingerprints).
     pub fn due_for_keep_alive(
         &self,
         entries: &[ProviderEntry],
-        after: Duration,
+        after: Option<Duration>,
     ) -> Vec<(ProviderEntry, Arc<SqueezeBoard>, Vec<String>)> {
         entries
             .iter()
@@ -328,7 +410,10 @@ impl SqueezeState {
                     .through()
                     .into_iter()
                     .map(|t| t.fingerprint)
-                    .filter(|f| board.idle(f).is_some_and(|idle| idle >= after))
+                    .filter(|f| {
+                        let after = after.unwrap_or_else(|| self.keep_alive_after(&e.config.id, f));
+                        board.idle(f).is_some_and(|idle| idle >= after)
+                    })
                     .filter(|f| self.may_ping(&e.config.id, f))
                     .collect();
                 (!due.is_empty()).then(|| (e.clone(), board, due))
@@ -540,6 +625,8 @@ pub async fn squeeze_start(
     let account = id.clone();
     let vouched = entry.vouched();
     let keys = blocking(move || secrets::get_keys(store.as_ref(), &account, vouched)).await?;
+    // Keys set aside are not squeezed.
+    let keys = entry.usable(keys);
     state.squeeze.cache_keys(&id, Some(keys.clone()));
     if keys.is_empty() {
         return Err(CommandError::Settings(format!(
@@ -569,6 +656,14 @@ fn start_run(
     let state = app.state::<AppState>();
     let id = entry.config.id.clone();
     let total = keys.len();
+    // Tries paced around the mean the author chose.
+    {
+        let s = state.settings();
+        state
+            .squeeze
+            .set_means(s.keep_alive_minutes, s.squeeze_seconds);
+    }
+    board.set_pace(state.squeeze.pace());
     let fingerprints: Vec<String> = keys.iter().map(|k| key_fingerprint(k)).collect();
     // The keys tried, with their numbers in the pool.
     let (numbers, tried): (Vec<usize>, Vec<String>) = keys
@@ -908,6 +1003,8 @@ async fn keys_of(state: &AppState, entry: &ProviderEntry) -> Option<Vec<String>>
             let vouched = entry.vouched();
             match blocking(move || secrets::get_keys(store.as_ref(), &account, vouched)).await {
                 Ok(keys) => {
+                    // Keys set aside are not kept alive.
+                    let keys = entry.usable(keys);
                     state.squeeze.cache_keys(id, Some(keys.clone()));
                     Some(keys)
                 }
@@ -935,6 +1032,9 @@ async fn keep_alive(app: &AppHandle) {
             return;
         }
         state.squeeze.set_forever(s.keep_alive_forever);
+        state
+            .squeeze
+            .set_means(s.keep_alive_minutes, s.squeeze_seconds);
         s.providers.clone()
     };
     state.squeeze.stop_unused_runs(&entries);
@@ -956,7 +1056,7 @@ async fn keep_alive(app: &AppHandle) {
         }
     }
     let mut pings = tokio::task::JoinSet::new();
-    for (entry, board, due) in state.squeeze.due_for_keep_alive(&entries, KEEP_ALIVE_AFTER) {
+    for (entry, board, due) in state.squeeze.due_for_keep_alive(&entries, None) {
         let Some(keys) = keys_of(&state, &entry).await else {
             continue;
         };
@@ -1095,6 +1195,7 @@ mod tests {
             key_names: BTreeMap::new(),
             key_through: Default::default(),
             key_parts: 0,
+            key_ignored: Default::default(),
         }
     }
 
@@ -1114,6 +1215,49 @@ mod tests {
     }
 
     #[test]
+    fn a_key_set_aside_is_through_no_more_and_the_others_keep_their_places() {
+        let state = SqueezeState::default();
+        state.set_forever(true);
+        let pool = entry("https://api.example.com/v1", 6);
+        let board = state.board_for(&pool).unwrap();
+        board.answered("fp-a");
+        board.answered("fp-b");
+        board.note_squeezed();
+        state.set_aside("p-relay", "fp-a");
+        assert!(!board.is_through("fp-a"));
+        assert!(board.is_through("fp-b"), "the other key stays through");
+        let due = state.due_for_keep_alive(std::slice::from_ref(&pool), Some(Duration::ZERO));
+        assert_eq!(due[0].2, ["fp-b".to_owned()]);
+    }
+
+    #[test]
+    fn keep_alives_wait_a_time_drawn_around_the_mean() {
+        let state = SqueezeState::default();
+        state.set_means(4.0, 3.0);
+        let waits: Vec<Duration> = (0..300)
+            .map(|i| state.keep_alive_after("p", &format!("fp-{i}")))
+            .collect();
+        assert!(
+            waits
+                .iter()
+                .all(|w| (180.0..=300.0).contains(&w.as_secs_f64())),
+            "three to five minutes"
+        );
+        assert!(waits.iter().any(|w| *w != waits[0]), "drawn, not fixed");
+        assert_eq!(
+            state.keep_alive_after("p", "fp-7"),
+            waits[7],
+            "the same until its keep-alive is answered"
+        );
+        assert_eq!(state.pace(), Some(Duration::from_secs(3)));
+        state.set_means(2.0, 20.0);
+        assert!(
+            (90.0..=150.0).contains(&state.keep_alive_after("p", "fp-7").as_secs_f64()),
+            "drawn again around a new mean"
+        );
+    }
+
+    #[test]
     fn keys_a_squeeze_of_the_authors_got_through_are_kept_alive() {
         let state = SqueezeState::default();
         state.set_forever(true);
@@ -1123,14 +1267,14 @@ mod tests {
         let zero = Duration::ZERO;
         assert!(
             state
-                .due_for_keep_alive(std::slice::from_ref(&relay), zero)
+                .due_for_keep_alive(std::slice::from_ref(&relay), Some(zero))
                 .is_empty(),
             "no key was turned away"
         );
         // Its tries failed to connect: no request was turned away, yet the
         // keys that got through are kept alive.
         board.note_squeezed();
-        let due = state.due_for_keep_alive(std::slice::from_ref(&relay), zero);
+        let due = state.due_for_keep_alive(std::slice::from_ref(&relay), Some(zero));
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].2, ["fp-a".to_owned()]);
     }
@@ -1145,19 +1289,19 @@ mod tests {
         let zero = Duration::ZERO;
         assert!(
             state
-                .due_for_keep_alive(std::slice::from_ref(&relay), zero)
+                .due_for_keep_alive(std::slice::from_ref(&relay), Some(zero))
                 .is_empty(),
             "no key was turned away"
         );
         board.note_turned_away();
         board.note_turned_away();
-        let due = state.due_for_keep_alive(std::slice::from_ref(&relay), zero);
+        let due = state.due_for_keep_alive(std::slice::from_ref(&relay), Some(zero));
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].2, ["fp-a".to_owned()]);
         let hour = Duration::from_secs(3600);
         assert!(
             state
-                .due_for_keep_alive(std::slice::from_ref(&relay), hour)
+                .due_for_keep_alive(std::slice::from_ref(&relay), Some(hour))
                 .is_empty(),
             "answered lately"
         );
@@ -1177,26 +1321,29 @@ mod tests {
         other.allow_crowding();
         other.note_turned_away();
         other.note_turned_away();
-        let both = state.due_for_keep_alive(&[relay.clone(), pool.clone()], zero);
+        let both = state.due_for_keep_alive(&[relay.clone(), pool.clone()], Some(zero));
         assert_eq!(both.len(), 2);
         // A key whose ping failed waits, an answered one does not.
         state.pinged("p-relay", "fp-a", Some(Duration::from_secs(60)));
         assert_eq!(
             state
-                .due_for_keep_alive(&[relay.clone(), pool.clone()], zero)
+                .due_for_keep_alive(&[relay.clone(), pool.clone()], Some(zero))
                 .len(),
             1
         );
         state.pinged("p-relay", "fp-a", None);
         assert_eq!(
             state
-                .due_for_keep_alive(&[relay.clone(), pool.clone()], zero)
+                .due_for_keep_alive(&[relay.clone(), pool.clone()], Some(zero))
                 .len(),
             2
         );
         // Keys changed: nothing through until answered again.
         state.keys_changed("p-pool");
-        assert_eq!(state.due_for_keep_alive(&[relay, pool], zero).len(), 1);
+        assert_eq!(
+            state.due_for_keep_alive(&[relay, pool], Some(zero)).len(),
+            1
+        );
     }
 
     /// The frontend reads `kind` and camel-case fields next to the totals.
@@ -1404,12 +1551,12 @@ mod tests {
         assert!(state.dropped_keys(entries).is_empty());
         board.forget("fp-b");
         assert!(
-            state.due_for_keep_alive(entries, zero).is_empty(),
+            state.due_for_keep_alive(entries, Some(zero)).is_empty(),
             "not used"
         );
         assert!(state.dropped_keys(entries).is_empty(), "not used");
         board.note_use();
-        assert_eq!(state.due_for_keep_alive(entries, zero).len(), 1);
+        assert_eq!(state.due_for_keep_alive(entries, Some(zero)).len(), 1);
         assert_eq!(state.dropped_keys(entries)[0].2, ["fp-b".to_owned()]);
 
         // Two keys at an official API, during an outage.
@@ -1428,7 +1575,7 @@ mod tests {
         other.note_turned_away();
         other.answered("fp-c");
         let pools = std::slice::from_ref(&pool);
-        assert!(state.due_for_keep_alive(pools, zero).is_empty());
+        assert!(state.due_for_keep_alive(pools, Some(zero)).is_empty());
         assert!(state.dropped_keys(pools).is_empty());
     }
 
@@ -1451,7 +1598,7 @@ mod tests {
         assert!(state.dropped_keys(entries).is_empty());
         board.forget("fp-b");
         assert!(!board.used_within(KEEP_ALIVE_FOR), "never used");
-        assert_eq!(state.due_for_keep_alive(entries, zero).len(), 1);
+        assert_eq!(state.due_for_keep_alive(entries, Some(zero)).len(), 1);
         assert_eq!(state.dropped_keys(entries)[0].2, ["fp-b".to_owned()]);
         assert!(keeps(&state, &board));
         let run = run_for(&state, &relay);
@@ -1460,7 +1607,7 @@ mod tests {
         assert!(run.running(), "the keeper's squeeze goes on");
         // Unticked: half an hour after the last use, as before.
         state.set_forever(false);
-        assert!(state.due_for_keep_alive(entries, zero).is_empty());
+        assert!(state.due_for_keep_alive(entries, Some(zero)).is_empty());
         assert!(!keeps(&state, &board));
         state.stop_unused_runs(entries);
         assert!(!run.running());
@@ -1481,7 +1628,7 @@ mod tests {
         other.note_turned_away();
         other.answered("fp-c");
         let pools = std::slice::from_ref(&pool);
-        assert!(state.due_for_keep_alive(pools, zero).is_empty());
+        assert!(state.due_for_keep_alive(pools, Some(zero)).is_empty());
         assert!(state.dropped_keys(pools).is_empty());
     }
 

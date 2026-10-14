@@ -162,6 +162,10 @@ export const settingsIpc = {
   setCheckUpdates: (on: boolean) => invoke<SettingsView>("set_check_updates", { on }),
   setCloseToTray: (on: boolean) => invoke<SettingsView>("set_close_to_tray", { on }),
   setKeysInFile: (on: boolean) => invoke<SettingsView>("set_keys_in_file", { on }),
+  setKeyIgnored: (id: string, fingerprint: string, ignored: boolean) =>
+    invoke<SettingsView>("set_key_ignored", { id, fingerprint, ignored }),
+  setPacing: (keepAliveMinutes: number, squeezeSeconds: number) =>
+    invoke<SettingsView>("set_pacing", { keepAliveMinutes, squeezeSeconds }),
   /** Save the pool (names and keys) to a file picked in Rust. */
   exportKeys: (id: string) => invoke<string | null>("export_api_keys", { id }),
   importKeys: (id: string) => invoke<SettingsView | null>("import_api_keys", { id }),

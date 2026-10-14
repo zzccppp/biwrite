@@ -1,7 +1,7 @@
 //! Persistent app settings (`<config dir>/settings.json`) and the view sent
 //! to the settings UI. Never contains API keys: only whether one is stored.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use biwrite_core::{Direction, GlossaryEntry};
@@ -45,6 +45,26 @@ pub struct ProviderEntry {
     /// Versions that store them in one item drop it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub key_parts: usize,
+    /// Keys of the pool the author set aside, by fingerprint: no request,
+    /// squeeze or keep-alive uses them until the author takes them back.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub key_ignored: BTreeSet<String>,
+}
+
+impl ProviderEntry {
+    /// `keys` without those the author set aside.
+    pub fn usable(&self, keys: Vec<String>) -> Vec<String> {
+        if self.key_ignored.is_empty() {
+            return keys;
+        }
+        keys.into_iter()
+            .filter(|k| {
+                !self
+                    .key_ignored
+                    .contains(&biwrite_providers::key_fingerprint(k))
+            })
+            .collect()
+    }
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -148,6 +168,12 @@ pub struct AppSettings {
     /// They are kept alive however long the author is away; off, only
     /// within half an hour of the author's last use.
     pub keep_alive_forever: bool,
+    /// Mean minutes between two keep-alives of a key; each wait is drawn
+    /// within a quarter of it either way.
+    pub keep_alive_minutes: f64,
+    /// Mean seconds between two tries of a key in a squeeze; each pause is
+    /// drawn within half of it either way.
+    pub squeeze_seconds: f64,
     /// API keys live in a file of the config folder only the user reads
     /// (no keychain prompt at start or after an update), else in the
     /// keychain.
@@ -207,6 +233,8 @@ impl Default for AppSettings {
             keep_alive: true,
             keep_alive_forever: true,
             keys_in_file: true,
+            keep_alive_minutes: 4.0,
+            squeeze_seconds: 3.0,
             kept_keys: None,
             pairs: BTreeMap::new(),
             assisted_apply: true,
@@ -235,6 +263,7 @@ fn mock_entry() -> ProviderEntry {
         key_names: BTreeMap::new(),
         key_through: Default::default(),
         key_parts: 0,
+        key_ignored: Default::default(),
     }
 }
 
@@ -282,9 +311,10 @@ impl AppSettings {
     /// else the `concurrency` setting.
     pub fn effective_concurrency(&self) -> usize {
         let active = self.active();
+        let usable = active.key_count.saturating_sub(active.key_ignored.len());
         match (self.match_pool, active.config.key_concurrency) {
-            (true, Some(per_key)) if active.key_count > 0 => {
-                (active.key_count * per_key as usize).clamp(1, MAX_CONCURRENCY)
+            (true, Some(per_key)) if usable > 0 => {
+                (usable * per_key as usize).clamp(1, MAX_CONCURRENCY)
             }
             _ => self.concurrency,
         }
@@ -487,6 +517,8 @@ pub struct SettingsView {
     pub keep_alive: bool,
     pub keep_alive_forever: bool,
     pub keys_in_file: bool,
+    pub keep_alive_minutes: f64,
+    pub squeeze_seconds: f64,
     pub assisted_apply: bool,
     /// This build's version.
     pub version: String,
@@ -529,6 +561,8 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         keep_alive: settings.keep_alive,
         keep_alive_forever: settings.keep_alive_forever,
         keys_in_file: settings.keys_in_file,
+        keep_alive_minutes: settings.keep_alive_minutes,
+        squeeze_seconds: settings.squeeze_seconds,
         assisted_apply: settings.assisted_apply,
         version: env!("CARGO_PKG_VERSION").to_owned(),
     }
@@ -567,6 +601,27 @@ impl Paths {
 mod tests {
     use super::*;
 
+    #[test]
+    fn keys_set_aside_take_no_requests_and_no_share_of_the_pool() {
+        let mut s = AppSettings::default();
+        let mut entry = s.active().clone();
+        entry.config.id = "p-pool".into();
+        entry.config.kind = biwrite_providers::ProviderKind::OpenaiCompatible;
+        entry.config.key_concurrency = Some(2);
+        entry.key_count = 6;
+        entry
+            .key_ignored
+            .insert(biwrite_providers::key_fingerprint("sk-b"));
+        assert_eq!(
+            entry.usable(vec!["sk-a".into(), "sk-b".into(), "sk-c".into()]),
+            ["sk-a", "sk-c"]
+        );
+        s.providers.push(entry);
+        s.active_provider = "p-pool".into();
+        s.match_pool = true;
+        assert_eq!(s.effective_concurrency(), 10, "five keys of two each");
+    }
+
     /// Settings written before these options read as on.
     #[test]
     fn keeping_alive_always_and_assisted_apply_are_on_unless_turned_off() {
@@ -601,6 +656,7 @@ mod tests {
             key_names: BTreeMap::new(),
             key_through: Default::default(),
             key_parts: 0,
+            key_ignored: Default::default(),
         }
     }
 

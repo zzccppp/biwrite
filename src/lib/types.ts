@@ -231,6 +231,10 @@ export interface SettingsView {
   keepAliveForever: boolean;
   /** API keys in a local file only this account reads (no keychain prompt), else in the keychain. */
   keysInFile: boolean;
+  /** Mean minutes between two keep-alives of a key. */
+  keepAliveMinutes: number;
+  /** Mean seconds between two tries of a key in a squeeze. */
+  squeezeSeconds: number;
   /** Accept and Revert go through the model and a build (LaTeX). */
   assistedApply: boolean;
   /** This build's version. */
@@ -289,6 +293,8 @@ export interface KeyEntry {
   detail: string | null;
   /** When a relay that turns keys away last answered it (Unix ms); null: never. */
   lastThrough: number | null;
+  /** Set aside by the author: no request uses it. */
+  ignored?: boolean;
 }
 
 /** One key of a provider getting through to a crowded relay. */

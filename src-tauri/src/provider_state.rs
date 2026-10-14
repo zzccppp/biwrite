@@ -24,7 +24,9 @@ pub fn key_fn(store: &Arc<dyn SecretStore>, entry: &ProviderEntry) -> KeyFn {
     let store = Arc::clone(store);
     let id = entry.config.id.clone();
     let vouched = entry.vouched();
-    Arc::new(move || secrets::get_keys(store.as_ref(), &id, vouched))
+    // Keys set aside take no requests.
+    let entry = entry.clone();
+    Arc::new(move || secrets::get_keys(store.as_ref(), &id, vouched).map(|k| entry.usable(k)))
 }
 
 /// A translator and, unless it is the mock, the HTTP provider behind it.

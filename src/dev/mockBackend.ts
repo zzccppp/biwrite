@@ -155,6 +155,8 @@ We also report the running time of every method on each dataset, measured on one
 `;
 
 const state = {
+  /** Keys of the pool the author set aside, by fingerprint. */
+  ignoredKeys: new Set<string>(),
   /** The pictures of `missingimages` were downloaded. */
   imagesDownloaded: false,
   /** The project file open (relative), and the text each other one had. */
@@ -289,6 +291,8 @@ const state = {
     keepAlive: true,
     keepAliveForever: true,
     keysInFile: true,
+    keepAliveMinutes: 4,
+    squeezeSeconds: 3,
     assistedApply: true,
     version: "0.1.1",
   } as SettingsView,
@@ -1456,7 +1460,22 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return state.settings;
   },
   key_status: () => POOL.map((k) => ({ ...k, detail: k.detail })),
-  list_api_keys: () => POOL.map((k) => ({ ...k, name: state.settings.providers[1].keyNames[k.fingerprint] ?? "" })),
+  list_api_keys: () =>
+    POOL.map((k) => ({
+      ...k,
+      name: state.settings.providers[1].keyNames[k.fingerprint] ?? "",
+      ignored: state.ignoredKeys.has(k.fingerprint),
+    })),
+  set_key_ignored: (a) => {
+    if (a.ignored) state.ignoredKeys.add(String(a.fingerprint));
+    else state.ignoredKeys.delete(String(a.fingerprint));
+    return clone(state.settings);
+  },
+  set_pacing: (a) => {
+    state.settings.keepAliveMinutes = Math.min(30, Math.max(1, Number(a.keepAliveMinutes)));
+    state.settings.squeezeSeconds = Math.min(120, Math.max(1, Number(a.squeezeSeconds)));
+    return clone(state.settings);
+  },
   rename_api_key: (a) => {
     state.settings.providers[1].keyNames[String(a.fingerprint)] = String(a.name);
     return state.settings;

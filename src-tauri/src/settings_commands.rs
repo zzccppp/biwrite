@@ -101,6 +101,7 @@ pub async fn save_provider(
                 key_names: Default::default(),
                 key_through: Default::default(),
                 key_parts: 0,
+                key_ignored: Default::default(),
             }),
             None => return Err(not_found(&id)),
         }
@@ -356,6 +357,8 @@ pub struct KeyEntryView {
     /// When a relay that turns keys away last answered it (Unix
     /// milliseconds); none when it never got through.
     pub last_through: Option<u64>,
+    /// Set aside by the author: no request uses it.
+    pub ignored: bool,
 }
 
 /// The keys of provider `id` with their names and live state. Reads the
@@ -365,13 +368,14 @@ pub async fn list_api_keys(
     state: State<'_, AppState>,
     id: String,
 ) -> CommandResult<Vec<KeyEntryView>> {
-    let (names, through, pool) = {
+    let (names, through, pool, ignored) = {
         let s = state.settings();
         let entry = s.provider(&id).ok_or_else(|| not_found(&id))?;
         (
             entry.key_names.clone(),
             entry.key_through.clone(),
             entry.vouched(),
+            entry.key_ignored.clone(),
         )
     };
     let store = state.secrets.clone();
@@ -392,6 +396,7 @@ pub async fn list_api_keys(
                 in_flight: status.map_or(0, |s| s.in_flight),
                 detail: status.and_then(|s| s.detail.clone()),
                 last_through: through.get(&fingerprint).copied(),
+                ignored: ignored.contains(&fingerprint),
                 fingerprint,
             }
         })
@@ -580,6 +585,65 @@ pub async fn set_check_updates(
         s.check_updates = on;
         state.persist(&s)?;
     }
+    Ok(state.settings_view())
+}
+
+/// Set key `fingerprint` of provider `id` aside (`ignored`), or take it
+/// back: a key set aside takes no request, squeeze or keep-alive.
+#[tauri::command]
+pub async fn set_key_ignored(
+    state: State<'_, AppState>,
+    id: String,
+    fingerprint: String,
+    ignored: bool,
+) -> CommandResult<SettingsView> {
+    let _keys = state.keys_lock.lock().await;
+    let is_active = {
+        let mut s = state.settings();
+        let entry = s.provider_mut(&id).ok_or_else(|| not_found(&id))?;
+        let changed = if ignored {
+            entry.key_ignored.insert(fingerprint.clone())
+        } else {
+            entry.key_ignored.remove(&fingerprint)
+        };
+        if !changed {
+            return Ok(state.settings_view());
+        }
+        state.persist(&s)?;
+        s.active_provider == id
+    };
+    if ignored {
+        state.squeeze.set_aside(&id, &fingerprint);
+    } else {
+        state.squeeze.take_back(&id);
+    }
+    // Providers read their keys again, without the ones set aside.
+    state.invalidate_assistant();
+    if is_active {
+        state.apply_active_provider()?;
+    }
+    Ok(state.settings_view())
+}
+
+/// The mean minutes between two keep-alives of a key, and seconds between
+/// two tries of a key in a squeeze.
+#[tauri::command]
+pub async fn set_pacing(
+    state: State<'_, AppState>,
+    keep_alive_minutes: f64,
+    squeeze_seconds: f64,
+) -> CommandResult<SettingsView> {
+    let (keep, pace) = (
+        keep_alive_minutes.clamp(1.0, 30.0),
+        squeeze_seconds.clamp(1.0, 120.0),
+    );
+    {
+        let mut s = state.settings();
+        s.keep_alive_minutes = keep;
+        s.squeeze_seconds = pace;
+        state.persist(&s)?;
+    }
+    state.squeeze.set_means(keep, pace);
     Ok(state.settings_view())
 }
 
