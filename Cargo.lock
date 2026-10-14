@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "base64 0.23.1",
  "biwrite-core",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite-core"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "blake3",
  "serde",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite-engine"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "biwrite-core",
  "rusqlite",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite-latex"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "biwrite-providers"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "biwrite-core",
  "biwrite-engine",
