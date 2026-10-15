@@ -14,7 +14,7 @@
 //! A key that got through loses its place when left idle for some minutes:
 //! [`ping`] sends it a short translation, which keeps its place.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -89,8 +89,9 @@ pub struct SqueezeBoard {
     /// started; pings and the tries of a squeeze do not count.
     used: Mutex<Option<Instant>>,
     /// Keys a squeeze gave up on (refused, or a request that cannot
-    /// succeed), until answered: not squeezed back in by themselves.
-    given_up: Mutex<HashSet<String>>,
+    /// succeed), until answered: not squeezed back in by themselves. With
+    /// what the server said to the try given up on.
+    given_up: Mutex<HashMap<String, String>>,
     /// The mean pause between two tries of one key the author chose; the
     /// pause is drawn around it each time (see [`jitter`]). Unset, it is
     /// [`PROBE_GAP`].
@@ -173,7 +174,7 @@ impl SqueezeBoard {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn given_up(&self) -> MutexGuard<'_, HashSet<String>> {
+    fn given_up(&self) -> MutexGuard<'_, HashMap<String, String>> {
         self.given_up.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -202,14 +203,24 @@ impl SqueezeBoard {
             .is_some_and(|t| t.elapsed() < d)
     }
 
-    /// A squeeze gave up on this key.
-    pub fn give_up(&self, fingerprint: &str) {
-        self.given_up().insert(fingerprint.to_owned());
+    /// A squeeze gave up on this key, after the server said `why`.
+    pub fn give_up(&self, fingerprint: &str, why: &str) {
+        self.given_up()
+            .insert(fingerprint.to_owned(), why.to_owned());
     }
 
     /// A squeeze gave up on this key, and it was not answered since.
     pub fn gave_up(&self, fingerprint: &str) -> bool {
-        self.given_up().contains(fingerprint)
+        self.given_up().contains_key(fingerprint)
+    }
+
+    /// The keys a squeeze gave up on and not answered since, with what the
+    /// server said.
+    pub fn given_up_on(&self) -> Vec<(String, String)> {
+        self.given_up()
+            .iter()
+            .map(|(f, why)| (f.clone(), why.clone()))
+            .collect()
     }
 
     pub fn is_through(&self, fingerprint: &str) -> bool {
@@ -623,11 +634,12 @@ impl Squeeze {
                         gap
                     }
                     Ok(Err(err)) => {
-                        p.last_error = Some(err.to_string());
+                        let why = err.to_string();
                         p.refused = !through && !worth_another_try(err);
                         if p.refused {
-                            board.give_up(&fingerprint);
+                            board.give_up(&fingerprint, &why);
                         }
+                        p.last_error = Some(why);
                         err.retry_after()
                             .map_or(gap, |d| d.clamp(gap, PROBE_TIMEOUT))
                     }
@@ -849,9 +861,10 @@ mod tests {
     #[test]
     fn a_key_given_up_on_is_so_until_answered_or_the_keys_change() {
         let board = SqueezeBoard::new();
-        board.give_up("a");
-        board.give_up("b");
+        board.give_up("a", "HTTP 403");
+        board.give_up("b", "HTTP 401");
         assert!(board.gave_up("a") && board.gave_up("b"));
+        assert_eq!(board.given_up_on().len(), 2);
         board.answered("a");
         assert!(!board.gave_up("a"));
         board.clear();

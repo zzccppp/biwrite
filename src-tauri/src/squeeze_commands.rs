@@ -582,6 +582,24 @@ fn view(state: &SqueezeState, id: &str) -> SqueezeView {
             key.keep_retrying = state.ping_after().contains_key(&at);
         }
     }
+    // A key given up on stays so, with what the server said, until it is
+    // answered, unless the latest squeeze tried it again.
+    for (fingerprint, why) in board.as_ref().map(|b| b.given_up_on()).unwrap_or_default() {
+        let tried = |k: &SqueezeKeyView| k.tries > 0 || k.trying;
+        match keys.iter_mut().find(|k| k.fingerprint == fingerprint) {
+            Some(key) if tried(key) || key.through_since.is_some() => {}
+            Some(key) => {
+                key.refused = true;
+                key.last_error = Some(why);
+            }
+            None => keys.push(SqueezeKeyView {
+                fingerprint,
+                refused: true,
+                last_error: Some(why),
+                ..SqueezeKeyView::default()
+            }),
+        }
+    }
     SqueezeView {
         crowded: board.as_ref().is_some_and(|b| b.crowded()),
         running: run.as_ref().is_some_and(|r| r.running()),
@@ -1682,13 +1700,30 @@ mod tests {
         assert!(state.dropped_keys(entries).is_empty());
         board.forget("fp-b");
         assert_eq!(state.dropped_keys(entries)[0].2, ["fp-b".to_owned()]);
-        board.give_up("fp-b");
+        board.give_up("fp-b", "HTTP 403");
         assert!(state.dropped_keys(entries).is_empty());
         // Once it got through again, it is kept again.
         board.answered("fp-b");
         assert!(state.dropped_keys(entries).is_empty());
         board.forget("fp-b");
         assert_eq!(state.dropped_keys(entries)[0].2, ["fp-b".to_owned()]);
+    }
+
+    /// A key a squeeze gave up on shows as refused, with what the server
+    /// said, after that squeeze is gone and until the key is answered.
+    #[test]
+    fn the_pool_shows_a_key_given_up_on_until_it_is_answered() {
+        let state = SqueezeState::default();
+        let relay = entry("https://anyrouter.top/v1", 6);
+        let board = state.board_for(&relay).unwrap();
+        let key = |v: SqueezeView| v.keys.into_iter().find(|k| k.fingerprint == "fp-a");
+        board.give_up("fp-a", "request rejected (HTTP 403)");
+        let a = key(view(&state, "p-relay")).unwrap();
+        assert!(a.refused);
+        assert_eq!(a.last_error.as_deref(), Some("request rejected (HTTP 403)"));
+        board.answered("fp-a");
+        let a = key(view(&state, "p-relay")).unwrap();
+        assert!(!a.refused && a.through_since.is_some());
     }
 
     /// A squeeze the keeper started stops once the provider was not used
