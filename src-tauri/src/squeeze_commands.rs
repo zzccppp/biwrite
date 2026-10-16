@@ -40,12 +40,22 @@ use crate::state::AppState;
 pub const EVENT_SQUEEZE: &str = "squeeze";
 
 /// How often the keeper looks for keys to keep alive.
-const KEEP_ALIVE_TICK: Duration = Duration::from_secs(10);
-/// A key whose ping failed is pinged again after this long, or after as
-/// long as the server asks, up to [`PING_WAIT_MAX`]. A key that got through
-/// fails now and then, and a retry soon keeps it before it counts as stale.
-const PING_RETRY: Duration = Duration::from_secs(30);
+const KEEP_ALIVE_TICK: Duration = Duration::from_secs(1);
+/// How often the keeper tells the frontend how many keys it keeps, in
+/// rounds (besides after each ping).
+const ANNOUNCE_EVERY: u32 = 10;
+/// A key whose ping failed is pinged again as soon as a squeeze tries a
+/// key again (a pause drawn around the mean the author chose), or after as
+/// long as the server asks, up to [`PING_WAIT_MAX`], until it is answered.
 const PING_WAIT_MAX: Duration = Duration::from_secs(10 * 60);
+/// The pause between two tries of a key when the author chose none.
+const PING_RETRY_MEAN: Duration = Duration::from_secs(3);
+/// A keep-alive is drawn within this much of the mean either way, or a
+/// quarter of the mean if that is less.
+const KEEP_ALIVE_SPREAD: Duration = Duration::from_secs(60);
+/// A failed ping of a key is logged again after this long, unless the
+/// server says something else.
+const PING_FAIL_LOG_EVERY: Duration = Duration::from_secs(5 * 60);
 /// The keeper's first round after a start, soon: keys kept before a restart
 /// are squeezed back in.
 const FIRST_ROUND_AFTER: Duration = Duration::from_secs(5);
@@ -87,6 +97,11 @@ pub struct SqueezeState {
     /// How long each key waits idle before its next keep-alive, drawn
     /// around the mean once per keep-alive, by provider id and fingerprint.
     ping_every: Mutex<HashMap<(String, String), Duration>>,
+    /// Keys whose ping is on its way, by provider id and fingerprint.
+    pinging: Mutex<HashSet<(String, String)>>,
+    /// The latest failed ping logged of each key: when, and what the server
+    /// said.
+    ping_failed_log: Mutex<HashMap<(String, String), (Instant, String)>>,
 }
 
 impl SqueezeState {
@@ -118,8 +133,9 @@ impl SqueezeState {
     }
 
     /// How long key `fingerprint` of provider `id` waits idle before its
-    /// next keep-alive: drawn within a quarter of the mean either way, the
-    /// same until it is answered.
+    /// next keep-alive: drawn within [`KEEP_ALIVE_SPREAD`] of the mean
+    /// either way (a quarter of a shorter mean), the same until it is
+    /// answered.
     fn keep_alive_after(&self, id: &str, fingerprint: &str) -> Duration {
         let mean = match self.keep_mean_ms.load(Ordering::Relaxed) {
             0 => KEEP_ALIVE_AFTER,
@@ -130,7 +146,37 @@ impl SqueezeState {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .entry((id.to_owned(), fingerprint.to_owned()))
-            .or_insert_with(|| jitter(mean, 0.25))
+            .or_insert_with(|| {
+                let spread = KEEP_ALIVE_SPREAD.as_secs_f64() / mean.as_secs_f64();
+                jitter(mean, spread.min(0.25))
+            })
+    }
+
+    /// The pause before a failed ping is sent again: drawn around the mean
+    /// pause between two tries of a squeeze.
+    fn ping_retry(&self) -> Duration {
+        jitter(self.pace().unwrap_or(PING_RETRY_MEAN), 0.5)
+    }
+
+    fn pinging(&self) -> MutexGuard<'_, HashSet<(String, String)>> {
+        self.pinging.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether a failed ping of key `fingerprint` of provider `id`, the
+    /// server saying `words`, is worth a line in the log.
+    fn log_ping_failure(&self, id: &str, fingerprint: &str, words: &str) -> bool {
+        let mut logged = self
+            .ping_failed_log
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let key = (id.to_owned(), fingerprint.to_owned());
+        let worth = logged
+            .get(&key)
+            .is_none_or(|(at, said)| said != words || at.elapsed() >= PING_FAIL_LOG_EVERY);
+        if worth {
+            logged.insert(key, (Instant::now(), words.to_owned()));
+        }
+        worth
     }
 
     /// The author set key `fingerprint` of provider `id` aside: it is
@@ -329,6 +375,9 @@ impl SqueezeState {
     /// and the keys it kept are forgotten.
     pub fn keep_alive_off(&self) {
         self.kept().clear();
+        for (_, board) in self.boards().values() {
+            board.set_keeping(false);
+        }
         let ids: Vec<String> = self.auto().drain().collect();
         let runs = self.runs();
         for id in ids {
@@ -363,6 +412,10 @@ impl SqueezeState {
         match wait {
             None => {
                 self.ping_after().remove(&key);
+                self.ping_failed_log
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&key);
                 // The next wait is drawn anew.
                 self.ping_every
                     .lock()
@@ -415,6 +468,11 @@ impl SqueezeState {
                         board.idle(f).is_some_and(|idle| idle >= after)
                     })
                     .filter(|f| self.may_ping(&e.config.id, f))
+                    .filter(|f| {
+                        !self
+                            .pinging()
+                            .contains(&(e.config.id.clone(), (*f).clone()))
+                    })
                     .collect();
                 (!due.is_empty()).then(|| (e.clone(), board, due))
             })
@@ -906,11 +964,13 @@ pub fn spawn_keeper(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         restore_kept(&app.state::<AppState>());
         let mut wait = FIRST_ROUND_AFTER;
+        let mut round: u32 = 0;
         loop {
             tokio::time::sleep(wait).await;
             wait = KEEP_ALIVE_TICK;
             record_through(&app.state::<AppState>());
-            keep_alive(&app).await;
+            keep_alive(&app, round % ANNOUNCE_EVERY == 0).await;
+            round = round.wrapping_add(1);
         }
     });
 }
@@ -1041,8 +1101,9 @@ async fn keys_of(state: &AppState, entry: &ProviderEntry) -> Option<Vec<String>>
 
 /// One round of keeping alive: keys that lost their place are squeezed back
 /// in, each key due for it (see `due_for_keep_alive`) is sent a short
-/// translation, all at once, and the frontend hears how many keys are kept.
-async fn keep_alive(app: &AppHandle) {
+/// request of its own, and the frontend hears how many keys are kept (when
+/// `announce`, and after each ping).
+async fn keep_alive(app: &AppHandle, announce: bool) {
     let state = app.state::<AppState>();
     let entries = {
         let s = state.settings();
@@ -1056,6 +1117,12 @@ async fn keep_alive(app: &AppHandle) {
         s.providers.clone()
     };
     state.squeeze.stop_unused_runs(&entries);
+    // A squeeze leaves the keys kept alive to the keeper.
+    for entry in entries.iter().filter(|e| e.squeezable()) {
+        if let Some(board) = state.squeeze.board_of(entry) {
+            board.set_keeping(keeps(&state.squeeze, &board));
+        }
+    }
     for (entry, board, dropped) in state.squeeze.dropped_keys(&entries) {
         // Keys and providers do not change while it starts.
         let _keys = state.keys_lock.lock().await;
@@ -1073,7 +1140,8 @@ async fn keep_alive(app: &AppHandle) {
             );
         }
     }
-    let mut pings = tokio::task::JoinSet::new();
+    // Each ping goes on its own: a slow one holds up no other key, and a
+    // key is not pinged again while its ping is on its way.
     for (entry, board, due) in state.squeeze.due_for_keep_alive(&entries, None) {
         let Some(keys) = keys_of(&state, &entry).await else {
             continue;
@@ -1083,12 +1151,23 @@ async fn keep_alive(app: &AppHandle) {
             if !due.contains(&print) {
                 continue;
             }
+            let at = (entry.config.id.clone(), print.clone());
+            if !state.squeeze.pinging().insert(at.clone()) {
+                continue;
+            }
             let (app, entry, board) = (app.clone(), entry.clone(), Arc::clone(&board));
-            pings.spawn(async move { ping_one(&app, &entry, index, key, &print, board).await });
+            let entries = entries.clone();
+            tauri::async_runtime::spawn(async move {
+                ping_one(&app, &entry, index, key, &print, board).await;
+                let state = app.state::<AppState>();
+                state.squeeze.pinging().remove(&at);
+                announce_kept(&app, &entries, true);
+            });
         }
     }
-    while pings.join_next().await.is_some() {}
-    announce_kept(app, &entries, true);
+    if announce {
+        announce_kept(app, &entries, true);
+    }
 }
 
 /// The keys of `board` that got through are kept alive (while the setting
@@ -1176,11 +1255,16 @@ async fn ping_one(
             log::info!("kept key {} of {name} alive", index + 1);
         }
         Err(e) => {
+            // Sent again soon, until it is answered.
+            let soon = state.squeeze.ping_retry();
             let wait = e
                 .retry_after()
-                .map_or(PING_RETRY, |d| d.clamp(PING_RETRY, PING_WAIT_MAX));
+                .map_or(soon, |d| d.clamp(soon, PING_WAIT_MAX));
             state.squeeze.pinged(id, print, Some(wait));
-            log::info!("keeping key {} of {name} alive failed: {e}", index + 1);
+            let words = without_request_id(&e.to_string());
+            if state.squeeze.log_ping_failure(id, print, &words) {
+                log::info!("keeping key {} of {name} alive failed: {e}", index + 1);
+            }
         }
     }
 }
@@ -1272,6 +1356,27 @@ mod tests {
         assert!(
             (90.0..=150.0).contains(&state.keep_alive_after("p", "fp-7").as_secs_f64()),
             "drawn again around a new mean"
+        );
+        // A longer mean, within a minute of it either way.
+        state.set_means(5.0, 3.0);
+        let waits: Vec<f64> = (0..300)
+            .map(|i| {
+                state
+                    .keep_alive_after("p", &format!("fp-{i}"))
+                    .as_secs_f64()
+            })
+            .collect();
+        assert!(
+            waits.iter().all(|w| (240.0..=360.0).contains(w)),
+            "four to six minutes"
+        );
+        assert!(waits.iter().any(|w| *w < 270.0) && waits.iter().any(|w| *w > 330.0));
+        // A failed ping goes again within a few seconds.
+        let retries: Vec<Duration> = (0..100).map(|_| state.ping_retry()).collect();
+        assert!(
+            retries
+                .iter()
+                .all(|r| (1.5..=4.5).contains(&r.as_secs_f64()))
         );
     }
 

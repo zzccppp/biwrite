@@ -96,6 +96,9 @@ pub struct SqueezeBoard {
     /// pause is drawn around it each time (see [`jitter`]). Unset, it is
     /// [`PROBE_GAP`].
     pace: Mutex<Option<Duration>>,
+    /// The keeper keeps the keys that got through alive: a squeeze leaves
+    /// them to it, however long they were not answered.
+    keeping: AtomicBool,
 }
 
 /// A pause drawn around `mean`: a normal distribution with that mean, kept
@@ -225,6 +228,18 @@ impl SqueezeBoard {
 
     pub fn is_through(&self, fingerprint: &str) -> bool {
         self.lock().contains_key(fingerprint)
+    }
+
+    /// The keeper keeps the keys that got through alive (or no more).
+    pub fn set_keeping(&self, on: bool) {
+        self.keeping.store(on, Ordering::Release);
+    }
+
+    /// A squeeze need not try this key: answered within [`STALE_AFTER`], or
+    /// through and kept alive by the keeper.
+    fn holds(&self, fingerprint: &str) -> bool {
+        self.is_fresh(fingerprint)
+            || (self.keeping.load(Ordering::Acquire) && self.is_through(fingerprint))
     }
 
     /// Through and answered within [`STALE_AFTER`].
@@ -399,20 +414,41 @@ pub async fn ping(
     prompts: Arc<dyn PromptSource>,
     observer: Arc<dyn RequestObserver>,
 ) -> Result<(), TranslateError> {
+    let print = fingerprint(&key);
+    // Not joined to the board: a ping that fails is sent again soon, and
+    // the key keeps its place meanwhile.
     let provider = HttpProvider::new(
         crate::probe::config(config),
         Arc::new(move || Ok(vec![key.clone()])),
         prompts,
         observer,
     )?;
-    provider.join_board_quietly(board);
-    match tokio::time::timeout(PROBE_TIMEOUT, provider.probe(crate::provider::KEEP_ALIVE)).await {
+    let result = match tokio::time::timeout(
+        PROBE_TIMEOUT,
+        provider.probe(crate::provider::KEEP_ALIVE),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => Err(TranslateError::Network(format!(
             "no answer within {} seconds",
             PROBE_TIMEOUT.as_secs()
         ))),
+    };
+    match &result {
+        Ok(()) => board.answered(&print),
+        Err(err) if crate::keys::answered_anyway(err) => board.answered(&print),
+        Err(err) if refuses_key(err) => {
+            // Refused: it loses its place and is not squeezed back in.
+            board.forget(&print);
+            board.give_up(&print, &err.to_string());
+        }
+        Err(TranslateError::Server { .. }) if !board.is_through(&print) => {
+            board.note_turned_away();
+        }
+        Err(_) => {}
     }
+    result
 }
 
 /// The relay turned the try away for now: trying again may get through.
@@ -545,10 +581,10 @@ impl Squeeze {
     /// is not tried again.
     fn all_through(&self, board: &SqueezeBoard) -> bool {
         let progress = self.lock();
-        progress.iter().any(|p| board.is_fresh(&p.fingerprint))
+        progress.iter().any(|p| board.holds(&p.fingerprint))
             && progress
                 .iter()
-                .all(|p| p.refused || board.is_fresh(&p.fingerprint))
+                .all(|p| p.refused || board.holds(&p.fingerprint))
     }
 
     fn stopped(&self) -> bool {
@@ -589,7 +625,7 @@ impl Squeeze {
                 self.done.store(true, Ordering::Release);
                 return;
             }
-            if board.is_fresh(&fingerprint) {
+            if board.holds(&fingerprint) {
                 // Watch it: translations may find it lost its place.
                 if self.pause(Duration::from_secs(1)).await {
                     return;
@@ -856,6 +892,23 @@ mod tests {
         };
         *board.used.lock().unwrap() = Some(long_ago);
         assert!(!board.used_within(KEEP_ALIVE_FOR));
+    }
+
+    #[test]
+    fn a_squeeze_leaves_the_keys_the_keeper_keeps_alive_to_it() {
+        let board = SqueezeBoard::for_relay();
+        board.answered("a");
+        let Some(long_ago) = Instant::now().checked_sub(STALE_AFTER + Duration::from_secs(1))
+        else {
+            return;
+        };
+        board.lock().get_mut("a").unwrap().last_ok = long_ago;
+        assert!(!board.holds("a"), "not answered lately: tried again");
+        board.set_keeping(true);
+        assert!(board.holds("a"), "the keeper pings it");
+        assert!(!board.holds("b"), "a key not through is tried");
+        board.set_keeping(false);
+        assert!(!board.holds("a"));
     }
 
     #[test]

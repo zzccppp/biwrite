@@ -262,6 +262,10 @@
     return () => clearInterval(timer);
   });
 
+  // A keep-alive is drawn within a minute of the mean either way, or a
+  // quarter of a shorter mean (as the keeper draws it).
+  const keepSpread = (minutes: number) => Math.min(1, minutes * 0.25);
+
   const stateLabel = {
     ready: "keys.state.ready",
     idle: "keys.state.idle",
@@ -333,7 +337,7 @@
         />
         <span class="label smallcaps">{t("squeeze.forever")}</span>
       </label>
-      <label class="inline pace" title={t("squeeze.keepEveryHint", { low: round(keepMinutes * 0.75), high: round(keepMinutes * 1.25) })}>
+      <label class="inline pace" title={t("squeeze.keepEveryHint", { low: round(keepMinutes - keepSpread(keepMinutes)), high: round(keepMinutes + keepSpread(keepMinutes)) })}>
         <span class="label smallcaps">{t("squeeze.keepEvery")}</span>
         <input
           class="input"
@@ -416,14 +420,17 @@
             title={[
               t("squeeze.throughSince", { ago: ago(sq.throughSince) }),
               sq.lastOk ? t("squeeze.lastOk", { ago: ago(sq.lastOk) }) : "",
+              sq.keptAt ? t("squeeze.keptAt", { ago: ago(sq.keptAt) }) : "",
             ]
               .filter(Boolean)
               .join(" · ")}
           >
+            <!-- The time since it was last answered, by a keep-alive or any
+                 other request. -->
             {sq.keepRetrying
               ? t("squeeze.keepRetrying", { ago: ago(sq.lastOk ?? sq.throughSince) })
               : sq.keptAt
-                ? t("squeeze.kept", { ago: ago(sq.keptAt) })
+                ? t("squeeze.kept", { ago: ago(Math.max(sq.keptAt, sq.lastOk ?? 0)) })
                 : t("squeeze.through", { ago: ago(sq.throughSince) })}
           </span>
         {:else if squeeze?.running && sq && !sq.refused && !sq.throughSince}

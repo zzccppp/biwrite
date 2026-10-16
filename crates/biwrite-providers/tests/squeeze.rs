@@ -414,6 +414,37 @@ async fn a_ping_keeps_a_key_that_got_through_answered_and_notes_keys_turned_away
     assert!(!ordinary.was_crowded());
 }
 
+/// A key kept alive keeps its place when a ping fails (the keeper sends it
+/// again soon), and loses it for good when the relay refuses the key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_ping_keeps_the_keys_place_unless_the_key_is_refused() {
+    let relay = Relay::start().await;
+    relay.rules.lock().unwrap().through.insert(C.into());
+    let board = SqueezeBoard::for_relay();
+    let config = config(&relay.base);
+    let ping = |key: &str| {
+        biwrite_providers::ping(
+            &config,
+            key.to_owned(),
+            Arc::clone(&board),
+            Arc::new(DefaultPrompts),
+            Arc::new(Purposes::default()),
+        )
+    };
+    let c = key_fingerprint(C);
+    ping(C).await.unwrap();
+    relay.rules.lock().unwrap().through.remove(C);
+    for _ in 0..8 {
+        assert!(ping(C).await.is_err());
+    }
+    assert!(board.is_through(&c), "turned away, it keeps its place");
+    assert!(!board.gave_up(&c));
+    relay.rules.lock().unwrap().refused.insert(C.into());
+    assert!(ping(C).await.is_err());
+    assert!(!board.is_through(&c), "refused, it loses it");
+    assert!(board.gave_up(&c), "and is not squeezed back in");
+}
+
 /// A relay that answers a key, though with an output cut off by its limit
 /// or declined by its content filter, let the key through: the squeeze does
 /// not ask it again every few seconds.

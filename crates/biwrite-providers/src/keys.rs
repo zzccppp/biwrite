@@ -265,7 +265,7 @@ fn fault(err: &TranslateError) -> Fault {
 
 /// An error made of a successful answer: an output cut off or unreadable, or
 /// one the content filter or the model declined.
-fn answered_anyway(err: &TranslateError) -> bool {
+pub(crate) fn answered_anyway(err: &TranslateError) -> bool {
     matches!(
         err,
         TranslateError::InvalidResponse(_)

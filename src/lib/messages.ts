@@ -708,6 +708,7 @@ export const messages = {
   "squeeze.lastOk": { en: "Last answered {ago}", zh: "上次成功 {ago}" },
   "squeeze.throughSince": { en: "Through {ago}", zh: "挤进于 {ago}" },
   "squeeze.kept": { en: "kept alive · {ago}", zh: "保活中 · {ago}" },
+  "squeeze.keptAt": { en: "Last keep-alive {ago}", zh: "上次保活 {ago}" },
   "squeeze.keepRetrying": { en: "keep-alive retrying · {ago}", zh: "保活重试中 · {ago}" },
   "squeeze.trying": { en: "trying · {n}", zh: "挤中 · 第 {n} 次" },
   "squeeze.agoNow": { en: "just now", zh: "刚刚" },
@@ -728,8 +729,8 @@ export const messages = {
   "squeeze.keeping": { en: "Keeping {through}/{total} alive", zh: "保活 {through}/{total}" },
   "squeeze.keepAlive": { en: "Keep alive", zh: "持续保活" },
   "squeeze.keepAliveHint": {
-    en: "While the relay turns keys away, or once you squeezed in, each key that got through is sent a short translation after 3 idle minutes, so it keeps its place. These requests are listed under Requests.",
-    zh: "中转拥挤时，或点过挤一挤之后，已挤进的密钥空闲 3 分钟后会收到一条很短的翻译以保住位置。这些请求列在请求记录里。",
+    en: "While the relay turns keys away, or once you squeezed in, each key that got through is sent a short request after the idle time set here, so it keeps its place. A request that fails is sent again at the pace of a squeeze until it is answered. These requests are listed under Requests.",
+    zh: "中转拥挤时，或点过挤一挤之后，已挤进的密钥空闲到这里设定的时长后会收到一条很短的请求以保住位置。请求失败时按挤一挤的间隔重发，直到成功。这些请求列在请求记录里。",
   },
   "squeeze.forever": { en: "Always", zh: "永久保活" },
   "squeeze.keepEvery": { en: "keep alive about", zh: "保活约每" },
