@@ -126,6 +126,9 @@ impl ProviderEntry {
     }
 }
 
+/// Most keys a squeeze can be asked to get through before it stops.
+pub const MAX_SQUEEZE_ENOUGH: usize = 99;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
@@ -174,6 +177,9 @@ pub struct AppSettings {
     /// Mean seconds between two tries of a key in a squeeze; each pause is
     /// drawn within half of it either way.
     pub squeeze_seconds: f64,
+    /// A squeeze stops once this many keys got through; those are kept
+    /// alive, and one that loses its place is squeezed back in.
+    pub squeeze_enough: usize,
     /// API keys live in a file of the config folder only the user reads
     /// (no keychain prompt at start or after an update), else in the
     /// keychain.
@@ -235,6 +241,7 @@ impl Default for AppSettings {
             keys_in_file: true,
             keep_alive_minutes: 4.0,
             squeeze_seconds: 3.0,
+            squeeze_enough: 2,
             kept_keys: None,
             pairs: BTreeMap::new(),
             assisted_apply: true,
@@ -519,6 +526,7 @@ pub struct SettingsView {
     pub keys_in_file: bool,
     pub keep_alive_minutes: f64,
     pub squeeze_seconds: f64,
+    pub squeeze_enough: usize,
     pub assisted_apply: bool,
     /// This build's version.
     pub version: String,
@@ -563,6 +571,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         keys_in_file: settings.keys_in_file,
         keep_alive_minutes: settings.keep_alive_minutes,
         squeeze_seconds: settings.squeeze_seconds,
+        squeeze_enough: settings.squeeze_enough,
         assisted_apply: settings.assisted_apply,
         version: env!("CARGO_PKG_VERSION").to_owned(),
     }

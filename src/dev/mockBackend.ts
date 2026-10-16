@@ -293,6 +293,7 @@ const state = {
     keysInFile: true,
     keepAliveMinutes: 4,
     squeezeSeconds: 3,
+    squeezeEnough: 2,
     assistedApply: true,
     version: "0.1.1",
   } as SettingsView,
@@ -1478,6 +1479,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   set_pacing: (a) => {
     state.settings.keepAliveMinutes = Math.min(30, Math.max(1, Number(a.keepAliveMinutes)));
     state.settings.squeezeSeconds = Math.min(120, Math.max(1, Number(a.squeezeSeconds)));
+    state.settings.squeezeEnough = Math.min(99, Math.max(1, Math.round(Number(a.squeezeEnough))));
     return clone(state.settings);
   },
   rename_api_key: (a) => {

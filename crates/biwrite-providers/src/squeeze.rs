@@ -15,7 +15,7 @@
 //! [`ping`] sends it a short translation, which keeps its place.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -99,6 +99,9 @@ pub struct SqueezeBoard {
     /// The keeper keeps the keys that got through alive: a squeeze leaves
     /// them to it, however long they were not answered.
     keeping: AtomicBool,
+    /// A squeeze stops once this many keys hold their place (0: once every
+    /// key does).
+    enough: AtomicUsize,
 }
 
 /// A pause drawn around `mean`: a normal distribution with that mean, kept
@@ -233,6 +236,22 @@ impl SqueezeBoard {
     /// The keeper keeps the keys that got through alive (or no more).
     pub fn set_keeping(&self, on: bool) {
         self.keeping.store(on, Ordering::Release);
+    }
+
+    /// A squeeze stops once `n` keys hold their place (0: once every key
+    /// does).
+    pub fn set_enough(&self, n: usize) {
+        self.enough.store(n, Ordering::Release);
+    }
+
+    /// As many keys hold their place as a squeeze is asked to get through.
+    pub fn has_enough(&self) -> bool {
+        let n = self.enough.load(Ordering::Acquire);
+        if n == 0 {
+            return false;
+        }
+        let through: Vec<String> = self.lock().keys().cloned().collect();
+        through.iter().filter(|f| self.holds(f)).count() >= n
     }
 
     /// A squeeze need not try this key: answered within [`STALE_AFTER`], or
@@ -580,6 +599,9 @@ impl Squeeze {
     /// At least one key got through lately, and every other key did too or
     /// is not tried again.
     fn all_through(&self, board: &SqueezeBoard) -> bool {
+        if board.has_enough() {
+            return true;
+        }
         let progress = self.lock();
         progress.iter().any(|p| board.holds(&p.fingerprint))
             && progress
@@ -892,6 +914,21 @@ mod tests {
         };
         *board.used.lock().unwrap() = Some(long_ago);
         assert!(!board.used_within(KEEP_ALIVE_FOR));
+    }
+
+    #[test]
+    fn enough_keys_through_is_as_many_as_asked() {
+        let board = SqueezeBoard::for_relay();
+        board.answered("a");
+        assert!(!board.has_enough(), "unset: every key");
+        board.set_enough(2);
+        assert!(!board.has_enough());
+        board.answered("b");
+        assert!(board.has_enough());
+        board.forget("b");
+        assert!(!board.has_enough(), "one lost its place");
+        board.set_enough(1);
+        assert!(board.has_enough());
     }
 
     #[test]

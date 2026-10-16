@@ -29,13 +29,16 @@
   /** Mean minutes between keep-alives, and seconds between tries. */
   let keepMinutes = $state(4);
   let trySeconds = $state(3);
+  /** A squeeze stops once this many keys got through. */
+  let enough = $state(2);
 
-  async function setPacing(minutes: number, seconds: number): Promise<void> {
-    if (!(minutes > 0) || !(seconds > 0)) return;
-    const view = await act("pace", () => settingsIpc.setPacing(minutes, seconds));
+  async function setPacing(minutes: number, seconds: number, keys = enough): Promise<void> {
+    if (!(minutes > 0) || !(seconds > 0) || !(keys >= 1)) return;
+    const view = await act("pace", () => settingsIpc.setPacing(minutes, seconds, Math.round(keys)));
     if (view) {
       keepMinutes = view.keepAliveMinutes;
       trySeconds = view.squeezeSeconds;
+      enough = view.squeezeEnough;
       onchange(view);
     }
   }
@@ -253,6 +256,7 @@
         forever = view.keepAliveForever;
         keepMinutes = view.keepAliveMinutes ?? 4;
         trySeconds = view.squeezeSeconds ?? 3;
+        enough = view.squeezeEnough ?? 2;
       })
       .catch(() => {});
     const timer = setInterval(() => {
@@ -364,6 +368,20 @@
           onchange={(e) => void setPacing(keepMinutes, Number(e.currentTarget.value))}
         />
         <span class="label">{t("squeeze.seconds")}</span>
+      </label>
+      <label class="inline pace" title={t("squeeze.enoughHint")}>
+        <span class="label smallcaps">{t("squeeze.enough")}</span>
+        <input
+          class="input"
+          type="number"
+          min="1"
+          max="99"
+          step="1"
+          value={enough}
+          disabled={!!busy}
+          onchange={(e) => void setPacing(keepMinutes, trySeconds, Number(e.currentTarget.value))}
+        />
+        <span class="label">{t("squeeze.enoughUnit")}</span>
       </label>
     {/if}
     {#if squeeze?.running || (provider.squeezable && keys.length > 0)}

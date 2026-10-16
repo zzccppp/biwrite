@@ -235,6 +235,8 @@ export interface SettingsView {
   keepAliveMinutes: number;
   /** Mean seconds between two tries of a key in a squeeze. */
   squeezeSeconds: number;
+  /** A squeeze stops once this many keys got through. */
+  squeezeEnough: number;
   /** Accept and Revert go through the model and a build (LaTeX). */
   assistedApply: boolean;
   /** This build's version. */

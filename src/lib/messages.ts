@@ -740,6 +740,12 @@ export const messages = {
     zh: "每个密钥空闲约这么久后保活一次，每次在 {low} 到 {high} 分钟之间随机。",
   },
   "squeeze.tryEvery": { en: "try about every", zh: "挤一挤约每" },
+  "squeeze.enough": { en: "stop at", zh: "挤到" },
+  "squeeze.enoughUnit": { en: "keys", zh: "个就停" },
+  "squeeze.enoughHint": {
+    en: "A squeeze stops once this many keys got through, and only keeps them alive. One that loses its place is squeezed back in.",
+    zh: "挤进这么多个密钥后停止挤一挤，只对它们保活。其中有密钥掉线时会自动再挤一个回来。",
+  },
   "squeeze.seconds": { en: "s", zh: "秒" },
   "squeeze.tryEveryHint": {
     en: "Pause between two tries of one key, each time at random between {low} and {high} seconds.",

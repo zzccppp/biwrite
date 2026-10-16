@@ -99,6 +99,9 @@ pub struct SqueezeState {
     ping_every: Mutex<HashMap<(String, String), Duration>>,
     /// Keys whose ping is on its way, by provider id and fingerprint.
     pinging: Mutex<HashSet<(String, String)>>,
+    /// A squeeze stops once this many keys got through (the setting); zero
+    /// before it is set.
+    enough: std::sync::atomic::AtomicUsize,
     /// The latest failed ping logged of each key: when, and what the server
     /// said.
     ping_failed_log: Mutex<HashMap<(String, String), (Instant, String)>>,
@@ -121,6 +124,14 @@ impl SqueezeState {
             for (_, board) in self.boards().values() {
                 board.set_pace(Some(Duration::from_millis(pace)));
             }
+        }
+    }
+
+    /// A squeeze stops once `n` keys got through, on every board.
+    pub fn set_enough(&self, n: usize) {
+        self.enough.store(n, Ordering::Relaxed);
+        for (_, board) in self.boards().values() {
+            board.set_enough(n);
         }
     }
 
@@ -329,6 +340,7 @@ impl SqueezeState {
                         .collect()
                 };
                 if dropped.is_empty()
+                    || board.has_enough()
                     || !self.in_use(&board)
                     || self.runs().get(&e.config.id).is_some_and(|r| r.running())
                 {
@@ -507,6 +519,7 @@ impl SqueezeState {
         } else {
             SqueezeBoard::new()
         };
+        board.set_enough(self.enough.load(Ordering::Relaxed));
         boards.insert(id.clone(), (target, Arc::clone(&board)));
         Some(board)
     }
@@ -738,6 +751,7 @@ fn start_run(
         state
             .squeeze
             .set_means(s.keep_alive_minutes, s.squeeze_seconds);
+        state.squeeze.set_enough(s.squeeze_enough);
     }
     board.set_pace(state.squeeze.pace());
     let fingerprints: Vec<String> = keys.iter().map(|k| key_fingerprint(k)).collect();
@@ -1114,6 +1128,7 @@ async fn keep_alive(app: &AppHandle, announce: bool) {
         state
             .squeeze
             .set_means(s.keep_alive_minutes, s.squeeze_seconds);
+        state.squeeze.set_enough(s.squeeze_enough);
         s.providers.clone()
     };
     state.squeeze.stop_unused_runs(&entries);

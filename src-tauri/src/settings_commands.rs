@@ -650,18 +650,22 @@ pub async fn set_pacing(
     state: State<'_, AppState>,
     keep_alive_minutes: f64,
     squeeze_seconds: f64,
+    squeeze_enough: usize,
 ) -> CommandResult<SettingsView> {
-    let (keep, pace) = (
+    let (keep, pace, enough) = (
         keep_alive_minutes.clamp(1.0, 30.0),
         squeeze_seconds.clamp(1.0, 120.0),
+        squeeze_enough.clamp(1, crate::settings::MAX_SQUEEZE_ENOUGH),
     );
     {
         let mut s = state.settings();
         s.keep_alive_minutes = keep;
         s.squeeze_seconds = pace;
+        s.squeeze_enough = enough;
         state.persist(&s)?;
     }
     state.squeeze.set_means(keep, pace);
+    state.squeeze.set_enough(enough);
     Ok(state.settings_view())
 }
 
