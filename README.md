@@ -9,7 +9,7 @@
 
 **Friend link · 友情链接** [LINUX DO](https://linux.do/), the community where BiWrite is discussed · BiWrite 交流讨论的社区
 
-[Download · 下载](https://github.com/zzccppp/biwrite/releases) · [User guide (PDF)](docs/manual/BiWrite-Manual-en.pdf) · [使用说明（PDF）](docs/manual/BiWrite-Manual-zh.pdf)
+[Download · 下载](https://github.com/zzccppp/biwrite/releases) · [User guide (PDF)](docs/manual/BiWrite-Manual-en.pdf) · [使用说明（PDF）](docs/manual/BiWrite-Manual-zh.pdf) · [Website · 主页](https://zzccppp.github.io/biwrite/)
 
 </div>
 
