@@ -18,7 +18,7 @@ use tauri::State;
 use crate::error::{CommandError, CommandResult};
 use crate::provider_state::translator_for;
 use crate::secrets::{self, MAX_KEYS, NamedKey, Vouched};
-use crate::settings::{MOCK_ID, ProviderEntry, SettingsView, same_destination};
+use crate::settings::{MOCK_ID, ProviderEntry, SettingsView, keeps_keys};
 use crate::state::AppState;
 
 /// A test's question and the model's answer, shown as they are.
@@ -97,13 +97,14 @@ pub async fn save_provider(
     }
     let id = config.id.clone();
     let _keys = state.keys_lock.lock().await;
-    // A key belongs to one API type and host: never send it elsewhere.
+    // A key belongs to one host: never send it elsewhere. The same host on
+    // another API type (a relay's Claude and GPT models) keeps it.
     // (Even without a key in the settings: a version without key pools may
     // have left some behind.)
     let moved = state
         .settings()
         .provider(&id)
-        .is_some_and(|old| !same_destination(&old.config, &config));
+        .is_some_and(|old| !keeps_keys(&old.config, &config));
     if moved {
         state.settings_writable()?;
         let store = state.secrets.clone();
@@ -669,6 +670,21 @@ pub async fn set_pacing(
     Ok(state.settings_view())
 }
 
+/// The reasoning effort of the tries of a squeeze and of keep-alives.
+#[tauri::command]
+pub async fn set_squeeze_effort(
+    state: State<'_, AppState>,
+    effort: biwrite_providers::Effort,
+) -> CommandResult<SettingsView> {
+    {
+        let mut s = state.settings();
+        s.squeeze_effort = effort;
+        state.persist(&s)?;
+    }
+    state.squeeze.set_effort(effort);
+    Ok(state.settings_view())
+}
+
 /// Keep the keys that got through to a crowded relay alive, or not.
 #[tauri::command]
 pub async fn set_keep_alive(
@@ -1018,6 +1034,7 @@ mod tests {
     use biwrite_providers::Effort;
 
     use super::*;
+    use crate::settings::same_destination;
 
     /// Answers every request with its own question, said twice and padded.
     struct Echo;
@@ -1071,7 +1088,25 @@ mod tests {
             service_tier: None,
             key_concurrency: None,
             max_retries: None,
+            long_context: None,
         }
+    }
+
+    #[test]
+    fn keys_stay_with_the_same_host_on_any_api_type() {
+        let relay = cfg(ProviderKind::OpenaiCompatible, "https://anyrouter.top/v1");
+        assert!(keeps_keys(
+            &relay,
+            &cfg(ProviderKind::Anthropic, "https://anyrouter.top")
+        ));
+        assert!(!keeps_keys(
+            &relay,
+            &cfg(ProviderKind::Anthropic, "https://api.anthropic.com")
+        ));
+        assert!(!keeps_keys(
+            &relay,
+            &cfg(ProviderKind::OpenaiCompatible, "http://anyrouter.top/v1")
+        ));
     }
 
     #[test]

@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  Effort,
   TestAnswer,
   PaperView,
   MissingImage,
@@ -165,6 +166,7 @@ export const settingsIpc = {
   setKeysInFile: (on: boolean) => invoke<SettingsView>("set_keys_in_file", { on }),
   setKeyIgnored: (id: string, fingerprint: string, ignored: boolean) =>
     invoke<SettingsView>("set_key_ignored", { id, fingerprint, ignored }),
+  setSqueezeEffort: (effort: Effort) => invoke<SettingsView>("set_squeeze_effort", { effort }),
   setPacing: (keepAliveMinutes: number, squeezeSeconds: number, squeezeEnough: number) =>
     invoke<SettingsView>("set_pacing", { keepAliveMinutes, squeezeSeconds, squeezeEnough }),
   /** Save the pool (names and keys) to a file picked in Rust. */

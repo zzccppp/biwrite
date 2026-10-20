@@ -23,7 +23,7 @@ use biwrite_engine::TranslateError;
 use serde::Serialize;
 use tokio::sync::watch;
 
-use crate::config::ProviderConfig;
+use crate::config::{Effort, ProviderConfig};
 use crate::keys::fingerprint;
 use crate::observe::{NoObserver, RequestObserver};
 use crate::prompt::PromptSource;
@@ -102,6 +102,9 @@ pub struct SqueezeBoard {
     /// A squeeze stops once this many keys hold their place (0: once every
     /// key does).
     enough: AtomicUsize,
+    /// The reasoning effort of the tries of a squeeze and of the pings the
+    /// author chose (low unless set).
+    effort: Mutex<Effort>,
 }
 
 /// A pause drawn around `mean`: a normal distribution with that mean, kept
@@ -185,6 +188,15 @@ impl SqueezeBoard {
     }
 
     /// The mean pause between two tries of one key (`None`: the default).
+    /// The reasoning effort of the tries of a squeeze and of the pings.
+    pub fn set_effort(&self, effort: Effort) {
+        *self.effort.lock().unwrap_or_else(PoisonError::into_inner) = effort;
+    }
+
+    pub fn effort(&self) -> Effort {
+        *self.effort.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub fn set_pace(&self, mean: Option<Duration>) {
         *self.pace.lock().unwrap_or_else(PoisonError::into_inner) = mean;
     }
@@ -437,7 +449,7 @@ pub async fn ping(
     // Not joined to the board: a ping that fails is sent again soon, and
     // the key keeps its place meanwhile.
     let provider = HttpProvider::new(
-        crate::probe::config(config),
+        crate::probe::config(config, board.effort()),
         Arc::new(move || Ok(vec![key.clone()])),
         prompts,
         observer,
@@ -515,7 +527,7 @@ impl Squeeze {
         for key in &keys {
             let key = key.clone();
             let provider = HttpProvider::new(
-                crate::probe::config(config),
+                crate::probe::config(config, board.effort()),
                 Arc::new(move || Ok(vec![key.clone()])),
                 Arc::clone(&prompts),
                 Arc::new(NoObserver),

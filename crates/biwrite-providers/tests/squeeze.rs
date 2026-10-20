@@ -146,6 +146,7 @@ fn config(base: &str) -> ProviderConfig {
         service_tier: None,
         key_concurrency: None,
         max_retries: None,
+        long_context: None,
     }
     .validated()
     .unwrap()

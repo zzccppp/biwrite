@@ -499,12 +499,17 @@ fn title(words: &[&str]) -> String {
 
 /// `config` for short translations: little reasoning, so a few words cost
 /// a few tokens (a provider that sends no effort still sends none).
-pub fn config(config: &ProviderConfig) -> ProviderConfig {
+pub fn config(config: &ProviderConfig, effort: Effort) -> ProviderConfig {
     let mut config = config.clone();
     if config.effort != Effort::Default {
-        config.effort = Effort::Low;
+        config.effort = effort;
     }
     config
+}
+
+/// [`config`] at low effort, for the test of a provider or a key.
+pub fn light_config(config: &ProviderConfig) -> ProviderConfig {
+    self::config(config, Effort::Low)
 }
 
 /// The system prompt and the user's message of one short request: a
@@ -743,11 +748,22 @@ mod tests {
             service_tier: None,
             key_concurrency: None,
             max_retries: None,
+            long_context: None,
         };
-        assert_eq!(config(&c).effort, Effort::Low);
-        assert_eq!(config(&c).model, "m");
+        assert_eq!(light_config(&c).effort, Effort::Low);
+        assert_eq!(light_config(&c).model, "m", "the provider's own model");
+        assert_eq!(
+            config(&c, Effort::Medium).effort,
+            Effort::Medium,
+            "as the author chose"
+        );
+        assert_eq!(config(&c, Effort::XHigh).model, "m");
         c.effort = Effort::Default;
-        assert_eq!(config(&c).effort, Effort::Default, "none sent stays none");
+        assert_eq!(
+            config(&c, Effort::High).effort,
+            Effort::Default,
+            "none sent stays none"
+        );
     }
 
     #[test]

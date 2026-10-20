@@ -102,6 +102,8 @@ pub struct SqueezeState {
     /// A squeeze stops once this many keys got through (the setting); zero
     /// before it is set.
     enough: std::sync::atomic::AtomicUsize,
+    /// The reasoning effort of the tries and the pings (the setting).
+    effort: Mutex<biwrite_providers::Effort>,
     /// The latest failed ping logged of each key: when, and what the server
     /// said.
     ping_failed_log: Mutex<HashMap<(String, String), (Instant, String)>>,
@@ -132,6 +134,14 @@ impl SqueezeState {
         self.enough.store(n, Ordering::Relaxed);
         for (_, board) in self.boards().values() {
             board.set_enough(n);
+        }
+    }
+
+    /// The reasoning effort of the tries and the pings, on every board.
+    pub fn set_effort(&self, effort: biwrite_providers::Effort) {
+        *self.effort.lock().unwrap_or_else(PoisonError::into_inner) = effort;
+        for (_, board) in self.boards().values() {
+            board.set_effort(effort);
         }
     }
 
@@ -520,6 +530,7 @@ impl SqueezeState {
             SqueezeBoard::new()
         };
         board.set_enough(self.enough.load(Ordering::Relaxed));
+        board.set_effort(*self.effort.lock().unwrap_or_else(PoisonError::into_inner));
         boards.insert(id.clone(), (target, Arc::clone(&board)));
         Some(board)
     }
@@ -752,6 +763,7 @@ fn start_run(
             .squeeze
             .set_means(s.keep_alive_minutes, s.squeeze_seconds);
         state.squeeze.set_enough(s.squeeze_enough);
+        state.squeeze.set_effort(s.squeeze_effort);
     }
     board.set_pace(state.squeeze.pace());
     let fingerprints: Vec<String> = keys.iter().map(|k| key_fingerprint(k)).collect();
@@ -1129,6 +1141,7 @@ async fn keep_alive(app: &AppHandle, announce: bool) {
             .squeeze
             .set_means(s.keep_alive_minutes, s.squeeze_seconds);
         state.squeeze.set_enough(s.squeeze_enough);
+        state.squeeze.set_effort(s.squeeze_effort);
         s.providers.clone()
     };
     state.squeeze.stop_unused_runs(&entries);
@@ -1306,6 +1319,7 @@ mod tests {
                 service_tier: None,
                 key_concurrency: Some(2),
                 max_retries: None,
+                long_context: None,
             },
             has_key: keys > 0,
             key_count: keys,

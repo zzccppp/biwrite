@@ -44,7 +44,7 @@ pub use models::list_models;
 pub use observe::{
     Declared, KeyUse, NoObserver, RecordState, RequestObserver, RequestRecord, UsageDetail,
 };
-pub use probe::{config as light_config, test_question};
+pub use probe::{light_config, test_question};
 pub use prompt::{DefaultPrompts, PromptFiles, PromptSource};
 pub use provider::{HttpProvider, KEEP_ALIVE, TRANSLATE};
 pub use squeeze::{

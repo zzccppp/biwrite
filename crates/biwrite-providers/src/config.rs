@@ -142,6 +142,10 @@ pub struct ProviderConfig {
     /// the engine's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,
+    /// Claude models get the 1M-token context window (the default, unset),
+    /// or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_context: Option<bool>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -279,10 +283,37 @@ pub const ANYROUTER: Preset = Preset {
     max_retries: Some(10),
 };
 
+/// [`ANYROUTER`] with GPT-6.1 Sol.
+pub const ANYROUTER_SOL: Preset = Preset {
+    name: "AnyRouter (GPT-6.1 Sol)",
+    model: "gpt-6.1-sol",
+    ..ANYROUTER
+};
+
+/// AnyRouter's Claude Fable 5.1, on the Messages API (Claude format) with
+/// the 1M-token context window.
+pub const ANYROUTER_FABLE: Preset = Preset {
+    name: "AnyRouter (Claude Fable 5.1)",
+    kind: ProviderKind::Anthropic,
+    wire_api: WireApi::Chat,
+    base_url: "https://anyrouter.top",
+    model: "claude-fable-5-1-reversed",
+    service_tier: None,
+    ..ANYROUTER
+};
+
+/// The base of the Messages API for `base_url`: an address that ends in
+/// the API version (`…/v1`, as a relay's OpenAI address does) without it.
+pub fn anthropic_base(base_url: &str) -> &str {
+    base_url.strip_suffix("/v1").unwrap_or(base_url)
+}
+
 pub fn presets() -> Vec<Preset> {
     let openai = ProviderKind::OpenaiCompatible;
     vec![
         ANYROUTER,
+        ANYROUTER_SOL,
+        ANYROUTER_FABLE,
         Preset::new(
             "Anthropic",
             ProviderKind::Anthropic,
@@ -329,6 +360,7 @@ mod tests {
             service_tier: None,
             key_concurrency: None,
             max_retries: None,
+            long_context: None,
         }
     }
 
@@ -419,6 +451,32 @@ mod tests {
         assert_eq!(p.model, "gpt-6-astra");
         assert_eq!(p.effort, Effort::High);
         assert_eq!(p.service_tier, Some(ServiceTier::Priority));
+    }
+
+    #[test]
+    fn anyrouter_offers_sol_and_fable() {
+        let all = presets();
+        let sol = all.iter().find(|p| p.model == "gpt-6.1-sol").unwrap();
+        assert_eq!(
+            (sol.kind, sol.wire_api),
+            (ProviderKind::OpenaiCompatible, WireApi::Responses)
+        );
+        assert_eq!(sol.base_url, ANYROUTER.base_url);
+        let fable = all
+            .iter()
+            .find(|p| p.model == "claude-fable-5-1-reversed")
+            .unwrap();
+        assert_eq!(fable.kind, ProviderKind::Anthropic);
+        assert_eq!(fable.service_tier, None);
+        assert_eq!(anthropic_base(fable.base_url), "https://anyrouter.top");
+        assert_eq!(
+            anthropic_base("https://anyrouter.top/v1"),
+            "https://anyrouter.top"
+        );
+        assert_eq!(
+            anthropic_base("https://api.anthropic.com"),
+            "https://api.anthropic.com"
+        );
     }
 
     #[test]

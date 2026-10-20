@@ -740,6 +740,11 @@ export const messages = {
     zh: "每个密钥空闲约这么久后保活一次，每次在 {low} 到 {high} 分钟之间随机。",
   },
   "squeeze.tryEvery": { en: "try about every", zh: "挤一挤约每" },
+  "squeeze.effort": { en: "effort", zh: "思考强度" },
+  "squeeze.effortHint": {
+    en: "Reasoning effort of the tries of a squeeze and of keep-alives. The model is the provider's own.",
+    zh: "挤一挤和保活请求的思考强度。模型与接口所选的模型一致。",
+  },
   "squeeze.enough": { en: "stop at", zh: "挤到" },
   "squeeze.enoughUnit": { en: "keys", zh: "个就停" },
   "squeeze.enoughHint": {
@@ -1061,6 +1066,11 @@ export const messages = {
   "provider.tierNote": {
     en: "Priority is the fast tier (Codex “fast”). The Log shows whether the server declares it back.",
     zh: "Priority 是快速档（即 Codex 的 “fast”）。请求日志会显示服务器是否声明了这一档。",
+  },
+  "provider.longContext": { en: "1M context", zh: "1M 上下文" },
+  "provider.longContextNote": {
+    en: "Claude models read up to a million tokens. Some relays serve their Claude models only this way.",
+    zh: "Claude 模型可读入最多一百万 token。有的中转只以这种方式提供 Claude 模型。",
   },
   "provider.keys": { en: "API keys", zh: "API 密钥" },
   "provider.add": { en: "Add provider", zh: "添加接口" },

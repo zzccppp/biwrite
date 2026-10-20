@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { count, t } from "../i18n.svelte";
+  import { count, type MessageKey, t } from "../i18n.svelte";
   import { errorMessage, settingsIpc } from "../ipc";
-  import type { KeyEntry, ProviderView, SettingsView, SqueezeKey, SqueezeView } from "../types";
+  import type { Effort, KeyEntry, ProviderView, SettingsView, SqueezeKey, SqueezeView } from "../types";
+
 
   interface Props {
     provider: ProviderView;
@@ -31,6 +32,23 @@
   let trySeconds = $state(3);
   /** A squeeze stops once this many keys got through. */
   let enough = $state(2);
+  /** The reasoning effort of the tries and the keep-alives. */
+  let squeezeEffort = $state<Effort>("low");
+  const squeezeEfforts: { value: Effort; label: MessageKey }[] = [
+    { value: "low", label: "provider.effort.low" },
+    { value: "medium", label: "provider.effort.medium" },
+    { value: "high", label: "provider.effort.high" },
+    { value: "xhigh", label: "provider.effort.xhigh" },
+    { value: "max", label: "provider.effort.max" },
+  ];
+
+  async function setSqueezeEffort(effort: Effort): Promise<void> {
+    const view = await act("effort", () => settingsIpc.setSqueezeEffort(effort));
+    if (view) {
+      squeezeEffort = view.squeezeEffort;
+      onchange(view);
+    }
+  }
 
   async function setPacing(minutes: number, seconds: number, keys = enough): Promise<void> {
     if (!(minutes > 0) || !(seconds > 0) || !(keys >= 1)) return;
@@ -257,6 +275,7 @@
         keepMinutes = view.keepAliveMinutes ?? 4;
         trySeconds = view.squeezeSeconds ?? 3;
         enough = view.squeezeEnough ?? 2;
+        squeezeEffort = view.squeezeEffort ?? "low";
       })
       .catch(() => {});
     const timer = setInterval(() => {
@@ -341,6 +360,15 @@
         />
         <span class="label smallcaps">{t("squeeze.forever")}</span>
       </label>
+    {/if}
+    {#if squeeze?.running || (provider.squeezable && keys.length > 0)}
+      <span class="spacer"></span>
+      <button class="btn squeeze" class:primary={!squeeze?.running} onclick={toggleSqueeze} disabled={!!busy}>
+        {squeeze?.running ? t("squeeze.stop") : t("squeeze.start")}
+      </button>
+    {/if}
+    {#if provider.squeezable && keepAlive !== null}
+      <span class="break"></span>
       <label class="inline pace" title={t("squeeze.keepEveryHint", { low: round(keepMinutes - keepSpread(keepMinutes)), high: round(keepMinutes + keepSpread(keepMinutes)) })}>
         <span class="label smallcaps">{t("squeeze.keepEvery")}</span>
         <input
@@ -383,12 +411,17 @@
         />
         <span class="label">{t("squeeze.enoughUnit")}</span>
       </label>
-    {/if}
-    {#if squeeze?.running || (provider.squeezable && keys.length > 0)}
-      <span class="spacer"></span>
-      <button class="btn squeeze" class:primary={!squeeze?.running} onclick={toggleSqueeze} disabled={!!busy}>
-        {squeeze?.running ? t("squeeze.stop") : t("squeeze.start")}
-      </button>
+      <label class="inline pace" title={t("squeeze.effortHint")}>
+        <span class="label smallcaps">{t("squeeze.effort")}</span>
+        <select
+          class="input"
+          value={squeezeEffort}
+          disabled={!!busy}
+          onchange={(e) => void setSqueezeEffort(e.currentTarget.value as Effort)}
+        >
+          {#each squeezeEfforts as o (o.value)}<option value={o.value}>{t(o.label)}</option>{/each}
+        </select>
+      </label>
     {/if}
   </div>
 
@@ -661,6 +694,15 @@
   .pace .input {
     width: 58px;
     padding: 2px 6px;
+  }
+  .pace select.input {
+    width: auto;
+  }
+  /* The pauses, the number of keys and the effort go on a line of their
+     own, below the button. */
+  .break {
+    flex-basis: 100%;
+    height: 0;
   }
   .entry[data-squeeze="refused"] .state {
     color: var(--error);

@@ -19,7 +19,10 @@ pub async fn list_models(
             .get(format!("{}/models", config.base_url))
             .bearer_auth(key),
         ProviderKind::Anthropic => client
-            .get(format!("{}/v1/models?limit=1000", config.base_url))
+            .get(format!(
+                "{}/v1/models?limit=1000",
+                crate::config::anthropic_base(&config.base_url)
+            ))
             .header("x-api-key", key)
             .header("anthropic-version", API_VERSION),
     };

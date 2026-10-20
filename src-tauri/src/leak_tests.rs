@@ -36,6 +36,7 @@ async fn key_never_appears_in_views_or_settings_file() {
             service_tier: None,
             key_concurrency: None,
             max_retries: None,
+            long_context: None,
         },
         has_key: true,
         key_count: 1,

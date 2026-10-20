@@ -29,6 +29,7 @@
     serviceTier: null,
     keyConcurrency: null,
     maxRetries: null,
+    longContext: null,
   });
   let keyInput = $state("");
   let models = $state<string[]>([]);
@@ -74,10 +75,23 @@
       serviceTier: p.serviceTier ?? null,
       keyConcurrency: p.keyConcurrency ?? null,
       maxRetries: p.maxRetries ?? null,
+      longContext: p.longContext ?? null,
     };
   }
 
   function setApi(next: Api): void {
+    // The same host on another API: the Messages API takes the address
+    // without the version, the OpenAI API with it.
+    const base = draft.baseUrl.trim().replace(/\/+$/, "");
+    if (next === "anthropic" && base.endsWith("/v1")) {
+      draft.baseUrl = base.slice(0, -3);
+    } else if (next !== "anthropic" && draft.kind === "anthropic") {
+      try {
+        if (new URL(base).pathname === "/") draft.baseUrl = `${base}/v1`;
+      } catch {
+        // Not an address yet: left as typed.
+      }
+    }
     draft.kind = next === "anthropic" ? "anthropic" : "openai_compatible";
     draft.wireApi = next === "responses" ? "responses" : "chat";
     if (next === "anthropic") draft.serviceTier = null;
@@ -251,6 +265,17 @@
     {/if}
   {/if}
 
+  {#if api === "anthropic"}
+    <label class="check" title={t("provider.longContextNote")}>
+      <input
+        type="checkbox"
+        checked={draft.longContext !== false}
+        onchange={(e) => (draft.longContext = e.currentTarget.checked ? null : false)}
+      />
+      <span>{t("provider.longContext")}</span>
+    </label>
+  {/if}
+
   <div class="field">
     <span class="label">
       {t("provider.keys")}{#if provider.keyCount > 0}&nbsp;· {t("keys.inKeychain", { n: provider.keyCount })}{/if}
@@ -329,6 +354,18 @@
   input[type="range"] {
     width: 100%;
     accent-color: var(--accent);
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .check input {
+    accent-color: var(--seal);
   }
   .note {
     margin: -6px 0 12px;

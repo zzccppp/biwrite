@@ -39,6 +39,7 @@ fn config(kind: ProviderKind, base: &str, model: &str) -> ProviderConfig {
         service_tier: None,
         key_concurrency: None,
         max_retries: None,
+        long_context: None,
     }
     .validated()
     .unwrap()
@@ -61,6 +62,19 @@ fn translator(
     )
     .unwrap();
     (t, calls)
+}
+
+/// A Claude translator at `base`, with the 1M-token context set as
+/// `long_context` says.
+fn claude_translator(base: &str, model: &str, long_context: Option<bool>) -> Arc<dyn Translator> {
+    let mut config = config(ProviderKind::Anthropic, base, model);
+    config.long_context = long_context;
+    build_translator(
+        &config,
+        key_fn(Arc::new(AtomicUsize::new(0))),
+        Arc::new(DefaultPrompts),
+    )
+    .unwrap()
 }
 
 fn request(source: &str) -> TranslationRequest {
@@ -339,8 +353,8 @@ async fn anthropic_streams_text_and_usage() {
     assert_eq!(r.header("x-api-key"), Some(KEY));
     assert_eq!(r.header("anthropic-version"), Some("2023-06-01"));
     assert_eq!(r.header("authorization"), None);
-    // Not the first-party host: no fallback beta.
-    assert_eq!(r.header("anthropic-beta"), None);
+    // Not the first-party host: no fallback beta, the 1M context only.
+    assert_eq!(r.header("anthropic-beta"), Some("context-1m-2025-08-07"));
     let body = r.json();
     assert_eq!(body["model"], "claude-opus-5-5");
     assert_eq!(body["stream"], true);
@@ -370,9 +384,40 @@ async fn anthropic_older_models_get_temperature_and_unsupported_effort_is_droppe
     assert!(reqs[1].json().get("output_config").is_none());
 }
 
+/// Claude models get the 1M-token context by default, also from a relay
+/// whose address ends in `/v1` (as its OpenAI address does); turned off,
+/// they do not.
+#[tokio::test]
+async fn anthropic_sends_the_1m_context_by_default() {
+    let server = MockServer::start().await;
+    server.push(anthropic_ok(&["好"], "end_turn"));
+    server.push(anthropic_ok(&["好"], "end_turn"));
+    let t = claude_translator(
+        &format!("{}/v1", server.base),
+        "claude-fable-5-1-reversed",
+        None,
+    );
+    assert_eq!(run(&t, &request("Good")).await.0.unwrap(), "好");
+    let off = claude_translator(&server.base, "claude-fable-5-1-reversed", Some(false));
+    assert_eq!(run(&off, &request("Good")).await.0.unwrap(), "好");
+    let reqs = server.requests();
+    assert_eq!(reqs[0].path, "/v1/messages", "not /v1/v1/messages");
+    assert_eq!(
+        reqs[0].header("anthropic-beta"),
+        Some("context-1m-2025-08-07")
+    );
+    assert_eq!(reqs[0].json()["model"], "claude-fable-5-1-reversed");
+    assert!(
+        reqs[0].json().get("temperature").is_none(),
+        "Fable takes no temperature"
+    );
+    assert_eq!(reqs[1].header("anthropic-beta"), None);
+}
+
 /// A relay that serves its Claude models with the 1M-token context only
-/// turns a request without it away (HTTP 400). The request goes again with
-/// the beta header, and so does every later one. Another 400 adds nothing.
+/// turns a request without it away (HTTP 400), when it was turned off. The
+/// request goes again with the beta header, and so does every later one.
+/// Another 400 adds nothing.
 #[tokio::test]
 async fn anthropic_relays_asking_for_the_1m_context_get_it() {
     let server = MockServer::start().await;
@@ -382,7 +427,7 @@ async fn anthropic_relays_asking_for_the_1m_context_get_it() {
     ));
     server.push(anthropic_ok(&["好"], "end_turn"));
     server.push(anthropic_ok(&["好"], "end_turn"));
-    let (t, _) = translator(ProviderKind::Anthropic, &server, "claude-opus-4-7");
+    let t = claude_translator(&server.base, "claude-opus-4-7", Some(false));
     assert_eq!(run(&t, &request("Good")).await.0.unwrap(), "好");
     assert_eq!(run(&t, &request("Good")).await.0.unwrap(), "好");
     let reqs = server.requests();
@@ -403,7 +448,7 @@ async fn anthropic_relays_asking_for_the_1m_context_get_it() {
         400,
         r#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: too large"}}"#,
     ));
-    let (t, _) = translator(ProviderKind::Anthropic, &other, "claude-opus-4-7");
+    let t = claude_translator(&other.base, "claude-opus-4-7", Some(false));
     assert!(run(&t, &request("Good")).await.0.is_err());
     let reqs = other.requests();
     assert_eq!(reqs.len(), 1, "not sent again");

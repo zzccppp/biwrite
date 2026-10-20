@@ -263,6 +263,17 @@ const state = {
         maxRetries: 10,
       },
       {
+        name: "AnyRouter (Claude Fable 5.1)",
+        kind: "anthropic",
+        wireApi: "chat",
+        baseUrl: "https://anyrouter.top",
+        model: "claude-fable-5-1-reversed",
+        effort: "high",
+        serviceTier: null,
+        keyConcurrency: 2,
+        maxRetries: 10,
+      },
+      {
         name: "DeepSeek",
         kind: "openai_compatible",
         wireApi: "chat",
@@ -294,6 +305,7 @@ const state = {
     keepAliveMinutes: 4,
     squeezeSeconds: 3,
     squeezeEnough: 2,
+    squeezeEffort: "low",
     assistedApply: true,
     version: "0.1.1",
   } as SettingsView,
@@ -1474,6 +1486,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
   set_key_ignored: (a) => {
     if (a.ignored) state.ignoredKeys.add(String(a.fingerprint));
     else state.ignoredKeys.delete(String(a.fingerprint));
+    return clone(state.settings);
+  },
+  set_squeeze_effort: (a) => {
+    state.settings.squeezeEffort = String(a.effort) as typeof state.settings.squeezeEffort;
     return clone(state.settings);
   },
   set_pacing: (a) => {

@@ -313,6 +313,7 @@ pub fn run() {
             settings_commands::set_keys_in_file,
             settings_commands::set_key_ignored,
             settings_commands::set_pacing,
+            settings_commands::set_squeeze_effort,
             settings_commands::set_assisted_apply,
             settings_commands::set_close_to_tray,
             settings_commands::set_tray_language,

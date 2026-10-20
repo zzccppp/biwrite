@@ -146,6 +146,7 @@ mod tests {
             service_tier: None,
             key_concurrency: None,
             max_retries: None,
+            long_context: None,
         };
         let identity = config.cache_identity();
         settings.providers.push(ProviderEntry {

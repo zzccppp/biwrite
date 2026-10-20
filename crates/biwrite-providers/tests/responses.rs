@@ -61,6 +61,7 @@ fn config(server: &MockServer) -> ProviderConfig {
         service_tier: Some(ServiceTier::Priority),
         key_concurrency: None,
         max_retries: None,
+        long_context: None,
     }
     .validated()
     .unwrap()

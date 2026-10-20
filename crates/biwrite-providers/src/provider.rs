@@ -108,7 +108,10 @@ impl HttpProvider {
         let endpoint = match wire {
             Wire::Chat => format!("{}/chat/completions", config.base_url),
             Wire::Responses => format!("{}/responses", config.base_url),
-            Wire::Anthropic => format!("{}/v1/messages", config.base_url),
+            Wire::Anthropic => format!(
+                "{}/v1/messages",
+                crate::config::anthropic_base(&config.base_url)
+            ),
         };
         Ok(Self {
             core: Core::new(config, keys, prompts, observer)?,

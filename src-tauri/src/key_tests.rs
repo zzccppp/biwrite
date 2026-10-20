@@ -65,6 +65,7 @@ async fn added_keys_leave_requests_in_flight_alone() {
                 service_tier: None,
                 key_concurrency: Some(1),
                 max_retries: None,
+                long_context: None,
             }
             .validated()
             .unwrap(),
@@ -139,6 +140,7 @@ async fn a_provider_built_for_another_host_is_not_reused() {
             service_tier: None,
             key_concurrency: None,
             max_retries: Some(0),
+            long_context: None,
         }
         .validated()
         .unwrap()
@@ -202,6 +204,7 @@ async fn an_assistant_provider_built_across_a_key_change_is_not_kept() {
         service_tier: None,
         key_concurrency: None,
         max_retries: Some(0),
+        long_context: None,
     }
     .validated()
     .unwrap();
@@ -269,6 +272,7 @@ fn pool_state(dir: &std::path::Path, keys: &[&str]) -> tauri::App<tauri::test::M
             service_tier: None,
             key_concurrency: Some(1),
             max_retries: None,
+            long_context: None,
         }
         .validated()
         .unwrap(),

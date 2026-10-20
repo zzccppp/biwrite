@@ -112,7 +112,7 @@ pub(crate) fn body(core: &Core, system: &str, user: &str, images: &[ImageInput])
         json["fallbacks"] = json!("default");
         sent.push("fallbacks");
     }
-    if core.is_wanted("context-1m") {
+    if config.long_context.unwrap_or(true) || core.is_wanted("context-1m") {
         sent.push("context-1m");
     }
     Body {

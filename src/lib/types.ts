@@ -164,6 +164,8 @@ export interface ProviderConfig {
   keyConcurrency?: number | null;
   /** Retries for transient errors (null: the default). */
   maxRetries?: number | null;
+  /** Claude models get the 1M-token context (null: yes, the default). */
+  longContext?: boolean | null;
 }
 
 export interface ProviderView extends ProviderConfig {
@@ -237,6 +239,8 @@ export interface SettingsView {
   squeezeSeconds: number;
   /** A squeeze stops once this many keys got through. */
   squeezeEnough: number;
+  /** The reasoning effort of the tries of a squeeze and of keep-alives. */
+  squeezeEffort: Effort;
   /** Accept and Revert go through the model and a build (LaTeX). */
   assistedApply: boolean;
   /** This build's version. */

@@ -45,6 +45,7 @@ async fn anyrouter_translates_with_the_preset() {
         service_tier: ANYROUTER.service_tier,
         key_concurrency: ANYROUTER.key_concurrency,
         max_retries: ANYROUTER.max_retries,
+        long_context: None,
     }
     .validated()
     .unwrap();
@@ -135,6 +136,7 @@ fn anyrouter_config(id: &str) -> ProviderConfig {
         service_tier: ANYROUTER.service_tier,
         key_concurrency: ANYROUTER.key_concurrency,
         max_retries: ANYROUTER.max_retries,
+        long_context: None,
     }
     .validated()
     .unwrap()
@@ -485,6 +487,7 @@ async fn deepseek_translates_and_answers() {
         service_tier: preset.service_tier,
         key_concurrency: preset.key_concurrency,
         max_retries: preset.max_retries,
+        long_context: None,
     }
     .validated()
     .unwrap();
@@ -550,6 +553,7 @@ async fn anyrouter_claude_gets_the_1m_context() {
         service_tier: None,
         key_concurrency: None,
         max_retries: None,
+        long_context: None,
     }
     .validated()
     .unwrap();
@@ -617,6 +621,7 @@ async fn anyrouter_squeeze_gets_a_key_through() {
         service_tier: ANYROUTER.service_tier,
         key_concurrency: ANYROUTER.key_concurrency,
         max_retries: ANYROUTER.max_retries,
+        long_context: None,
     }
     .validated()
     .unwrap();
