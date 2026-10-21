@@ -25,7 +25,8 @@ pub fn copy(text: &str) -> Result<(), String> {
         command
     };
 
-    // clip.exe otherwise interprets bytes in the current Windows code page.
+    // The ASCII key characters make UTF-16LE recognizable to clip.exe.
+    // A BOM must not be added: clip.exe keeps it in the clipboard text.
     #[cfg(windows)]
     let encoded = windows_input(text);
     #[cfg(windows)]
@@ -37,10 +38,7 @@ pub fn copy(text: &str) -> Result<(), String> {
 
 #[cfg(any(windows, test))]
 fn windows_input(text: &str) -> Vec<u8> {
-    std::iter::once(0xfeff_u16)
-        .chain(text.encode_utf16())
-        .flat_map(u16::to_le_bytes)
-        .collect()
+    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
 fn write_to_command(command: &mut Command, input: &[u8]) -> Result<(), String> {
@@ -82,12 +80,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_receives_unicode_with_a_byte_order_mark() {
+    fn windows_receives_utf16_without_a_clipboard_byte_order_mark() {
         assert_eq!(
             windows_input("sk-中🔑+/="),
             [
-                0xff, 0xfe, b's', 0, b'k', 0, b'-', 0, 0x2d, 0x4e, 0x3d, 0xd8, 0x11, 0xdd, b'+', 0,
-                b'/', 0, b'=', 0,
+                b's', 0, b'k', 0, b'-', 0, 0x2d, 0x4e, 0x3d, 0xd8, 0x11, 0xdd, b'+', 0, b'/', 0,
+                b'=', 0,
             ]
         );
     }
