@@ -94,6 +94,13 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Verify native clipboard in the disposable runner
+        shell: bash
+        run: |
+          rustc --edition=2024 --test src-tauri/src/clipboard.rs -o "$RUNNER_TEMP/biwrite-clipboard-tests.exe"
+          "$RUNNER_TEMP/biwrite-clipboard-tests.exe"
+          "$RUNNER_TEMP/biwrite-clipboard-tests.exe" --ignored native_clipboard_round_trip
+
       - name: Build the app and the installer
         run: npx tauri build ${{ matrix.tauri-args }}
 

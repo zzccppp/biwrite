@@ -143,6 +143,7 @@ pub async fn save_provider(
     if let Some(entry) = saved {
         state.squeeze.board_for(&entry);
     }
+    crate::squeeze_commands::record_through(&state);
     if is_active {
         state.apply_active_provider()?;
     }
@@ -178,6 +179,7 @@ pub async fn delete_provider(
         state.persist(&s)?;
         was_active
     };
+    crate::squeeze_commands::record_through(&state);
     state.invalidate_assistant();
     if was_active {
         state.apply_active_provider()?;
@@ -278,6 +280,7 @@ pub async fn add_api_keys(
     }
     // The squeeze tries the keys it read when it started.
     state.squeeze.keys_changed(&id);
+    crate::squeeze_commands::record_through(&state);
     // Added keys: requests in flight go on.
     state.reload_keys(&id)?;
     Ok(state.settings_view())
@@ -547,13 +550,25 @@ pub async fn test_api_key(
     ask_test(provider.as_ref(), Duration::from_secs(120)).await
 }
 
-/// The key `fingerprint` of provider `id`, for the author to copy.
+/// Put the key `fingerprint` of provider `id` on the clipboard. The key
+/// does not go through the window, so no browser clipboard permission is asked.
 #[tauri::command]
-pub async fn reveal_api_key(
+pub async fn copy_api_key(
     state: State<'_, AppState>,
     id: String,
     fingerprint: String,
-) -> CommandResult<String> {
+) -> CommandResult<()> {
+    let key = key_of(&state, &id, &fingerprint).await?;
+    tokio::task::spawn_blocking(move || crate::clipboard::copy(&key))
+        .await
+        .map_err(|e| CommandError::Task(e.to_string()))?
+        .map_err(CommandError::Settings)
+}
+
+/// The key `fingerprint` of provider `id`.
+async fn key_of(state: &AppState, id: &str, fingerprint: &str) -> CommandResult<String> {
+    let id = id.to_owned();
+    let fingerprint = fingerprint.to_owned();
     let entry = state
         .settings()
         .provider(&id)
@@ -648,6 +663,7 @@ pub async fn set_key_ignored(
             entry.key_ignored.remove(&fingerprint)
         };
         if !changed {
+            drop(s);
             return Ok(state.settings_view());
         }
         state.persist(&s)?;
@@ -658,6 +674,7 @@ pub async fn set_key_ignored(
     } else {
         state.squeeze.take_back(&id);
     }
+    crate::squeeze_commands::record_through(&state);
     // Providers read their keys again, without the ones set aside.
     state.invalidate_assistant();
     if is_active {
@@ -714,6 +731,7 @@ pub async fn set_keep_alive(
     state: State<'_, AppState>,
     on: bool,
 ) -> CommandResult<SettingsView> {
+    let _keys = state.keys_lock.lock().await;
     {
         let mut s = state.settings();
         s.keep_alive = on;
@@ -760,6 +778,22 @@ pub async fn set_keep_alive_forever(
     };
     state.squeeze.set_forever(on);
     crate::squeeze_commands::keep_alive_changed(&app, keeping);
+    Ok(state.settings_view())
+}
+
+/// Failed keep-alives may rejoin a manual squeeze that is still running.
+#[tauri::command]
+pub async fn set_keep_alive_rejoin(
+    state: State<'_, AppState>,
+    on: bool,
+) -> CommandResult<SettingsView> {
+    let _keys = state.keys_lock.lock().await;
+    {
+        let mut s = state.settings();
+        s.keep_alive_rejoin = on;
+        state.persist(&s)?;
+    }
+    state.squeeze.set_rejoin_failed(on);
     Ok(state.settings_view())
 }
 
@@ -857,6 +891,7 @@ fn update_key_count(
         state.persist(&s)?;
         s.active_provider == id
     };
+    crate::squeeze_commands::record_through(state);
     // Fresh providers read the new keys.
     state.invalidate_assistant();
     if is_active {

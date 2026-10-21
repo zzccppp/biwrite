@@ -231,6 +231,8 @@ export interface SettingsView {
   keepAlive: boolean;
   /** Kept alive however long the author is away (else 30 minutes). */
   keepAliveForever: boolean;
+  /** Retry a stopped key only in a manual squeeze that has not reached its target. */
+  keepAliveRejoin: boolean;
   /** API keys in a local file only this account reads (no keychain prompt), else in the keychain. */
   keysInFile: boolean;
   /** Mean minutes between two keep-alives of a key. */
@@ -314,6 +316,10 @@ export interface SqueezeKey {
   keptAt: number | null;
   /** Its latest keep-alive failed, and it is tried again shortly. */
   keepRetrying: boolean;
+  keepAliveFailures: number;
+  /** Background requests stopped after consecutive keep-alive failures. */
+  backgroundStopped: boolean;
+  stopReason: string | null;
   tries: number;
   trying: boolean;
   refused: boolean;
@@ -356,6 +362,7 @@ export type SqueezeChange =
   | { kind: "tried" }
   | { kind: "through"; number: number }
   | { kind: "ended"; allThrough: boolean }
+  | { kind: "keyStopped"; number: number; fingerprint: string; failures: number; reason: string; rejoined: boolean }
   /** A round of keeping keys alive went by. */
   | { kind: "kept" };
 

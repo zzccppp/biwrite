@@ -1,6 +1,7 @@
 //! BiWrite desktop app: wires the engine to Tauri (commands, events, dialogs).
 
 mod assist_commands;
+mod clipboard;
 mod commands;
 mod disk_commands;
 mod error;
@@ -228,6 +229,7 @@ pub fn run() {
             squeeze_commands::squeeze_status,
             squeeze_commands::squeeze_start,
             squeeze_commands::squeeze_stop,
+            squeeze_commands::squeeze_resume_key,
             settings_commands::set_batch_size,
             settings_commands::set_translate_delay,
             settings_commands::set_match_pool,
@@ -310,11 +312,12 @@ pub fn run() {
             settings_commands::set_check_updates,
             settings_commands::set_keep_alive,
             settings_commands::set_keep_alive_forever,
+            settings_commands::set_keep_alive_rejoin,
             settings_commands::set_keys_in_file,
             settings_commands::set_key_ignored,
             settings_commands::set_pacing,
             settings_commands::set_squeeze_effort,
-            settings_commands::reveal_api_key,
+            settings_commands::copy_api_key,
             settings_commands::set_assisted_apply,
             settings_commands::set_close_to_tray,
             settings_commands::set_tray_language,

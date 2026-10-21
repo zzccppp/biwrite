@@ -136,12 +136,6 @@ impl HttpProvider {
         self.core.keys.join_board(board);
     }
 
-    /// [`Self::join_board`] for pings and the tries of a squeeze: their
-    /// requests are not the author's use of the keys.
-    pub(crate) fn join_board_quietly(&self, board: Arc<SqueezeBoard>) {
-        self.core.keys.join_board_quietly(board);
-    }
-
     /// The keys changed: read them from `keys` before the next request.
     /// Requests in flight go on; keys that stay keep their state.
     pub fn reload_keys(&self, keys: KeyFn) {

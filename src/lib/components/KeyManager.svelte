@@ -4,7 +4,6 @@
   import { errorMessage, settingsIpc } from "../ipc";
   import type { Effort, KeyEntry, ProviderView, SettingsView, SqueezeKey, SqueezeView } from "../types";
 
-
   interface Props {
     provider: ProviderView;
     onchange: (view: SettingsView) => void;
@@ -27,6 +26,7 @@
   let keepAlive = $state<boolean | null>(null);
   /** However long the author is away, or half an hour after the last use. */
   let forever = $state(true);
+  let rejoin = $state(false);
   /** Mean minutes between keep-alives, and seconds between tries. */
   let keepMinutes = $state(4);
   let trySeconds = $state(3);
@@ -86,6 +86,14 @@
       onchange(view);
     }
   }
+
+  async function setRejoin(on: boolean): Promise<void> {
+    const view = await act("rejoin", () => settingsIpc.setKeepAliveRejoin(on));
+    if (view) {
+      rejoin = view.keepAliveRejoin;
+      onchange(view);
+    }
+  }
   /** Ticks every few seconds, so "3 min ago" moves on. */
   let now = $state(Date.now());
 
@@ -134,6 +142,13 @@
       squeeze?.running ? settingsIpc.squeezeStop(provider.id) : settingsIpc.squeezeStart(provider.id),
     );
     if (view) squeeze = view;
+  }
+
+  async function resumeKey(k: KeyEntry): Promise<void> {
+    const view = await act(`resume-${k.fingerprint}`, () => settingsIpc.squeezeResumeKey(provider.id, k.fingerprint));
+    if (!view) return;
+    squeeze = view;
+    message = { ok: true, text: t(view.running ? "squeeze.resumedRunning" : "squeeze.resumed", { n: k.number }) };
   }
 
   function squeezeOf(k: KeyEntry): SqueezeKey | undefined {
@@ -231,17 +246,15 @@
 
   /** Copy key `k` to the clipboard. */
   async function copyKey(k: KeyEntry): Promise<void> {
-    const key = await act(`copy-${k.fingerprint}`, () => settingsIpc.revealApiKey(provider.id, k.fingerprint));
-    if (key === undefined) return;
-    try {
-      await navigator.clipboard.writeText(key);
-      copied = k.fingerprint;
-      setTimeout(() => {
-        if (copied === k.fingerprint) copied = null;
-      }, 1500);
-    } catch (e) {
-      message = { ok: false, text: errorMessage(e) };
-    }
+    const done = await act(`copy-${k.fingerprint}`, async () => {
+      await settingsIpc.copyApiKey(provider.id, k.fingerprint);
+      return true;
+    });
+    if (!done) return;
+    copied = k.fingerprint;
+    setTimeout(() => {
+      if (copied === k.fingerprint) copied = null;
+    }, 1500);
   }
 
   async function test(k: KeyEntry): Promise<void> {
@@ -290,6 +303,7 @@
       .then((view) => {
         keepAlive = view.keepAlive;
         forever = view.keepAliveForever;
+        rejoin = view.keepAliveRejoin ?? false;
         keepMinutes = view.keepAliveMinutes ?? 4;
         trySeconds = view.squeezeSeconds ?? 3;
         enough = view.squeezeEnough ?? 2;
@@ -378,6 +392,15 @@
         />
         <span class="label smallcaps">{t("squeeze.forever")}</span>
       </label>
+      <label class="inline rejoin" title={t("squeeze.rejoinHint")}>
+        <input
+          type="checkbox"
+          checked={rejoin}
+          disabled={!!busy || !keepAlive}
+          onchange={(e) => void setRejoin(e.currentTarget.checked)}
+        />
+        <span class="label smallcaps">{t("squeeze.rejoin")}</span>
+      </label>
     {/if}
     {#if squeeze?.running || (provider.squeezable && keys.length > 0)}
       <span class="spacer"></span>
@@ -454,18 +477,21 @@
     </div>
     {#each keys as k (k.fingerprint)}
       {@const sq = squeezeOf(k)}
-      {@const through = showThrough && !!sq?.throughSince && k.state !== "cooling" && k.state !== "rejected"}
+      {@const through = showThrough && !!sq?.throughSince && !sq.backgroundStopped && k.state !== "cooling" && k.state !== "rejected"}
       <div
         class="entry"
         class:ignored={k.ignored}
+        data-fingerprint={k.fingerprint}
         data-state={k.state}
-        data-squeeze={through
-          ? "through"
-          : sq?.refused
-            ? "refused"
-            : squeeze?.running && sq && !sq.throughSince
-              ? "trying"
-              : null}
+        data-squeeze={sq?.backgroundStopped
+          ? "stopped"
+          : through
+            ? "through"
+            : sq?.refused
+              ? "refused"
+              : squeeze?.running && sq && !sq.throughSince
+                ? "trying"
+                : null}
         class:stale={through && !!sq?.lastOk && now - sq.lastOk > STALE_MS}
       >
         <span class="mono faint">{k.number}</span>
@@ -480,6 +506,8 @@
         <span class="mono">…{k.tail}</span>
         {#if k.ignored}
           <span class="state" title={t("keys.ignoreHint")}>{t("keys.ignored")}</span>
+        {:else if sq?.backgroundStopped}
+          <span class="state" title={sq.stopReason ?? ""}>{t("squeeze.stopped")}</span>
         {:else if through && sq?.throughSince}
           <!-- Got through, then kept alive (since the latest keep-alive), or
                its keep-alive being tried again. -->
@@ -490,6 +518,7 @@
               t("squeeze.throughSince", { ago: ago(sq.throughSince) }),
               sq.lastOk ? t("squeeze.lastOk", { ago: ago(sq.lastOk) }) : "",
               sq.keptAt ? t("squeeze.keptAt", { ago: ago(sq.keptAt) }) : "",
+              sq.keepRetrying ? t("squeeze.failures", { n: sq.keepAliveFailures }) : "",
             ]
               .filter(Boolean)
               .join(" · ")}
@@ -533,6 +562,14 @@
           <button class="remove" onclick={() => remove(k)} disabled={!!busy} aria-label={t("common.remove")}>✕</button>
         </span>
       </div>
+      {#if sq?.backgroundStopped && !k.ignored}
+        <div class="stop-detail" data-fingerprint={k.fingerprint}>
+          <span>{t("squeeze.stopDetail", { n: sq.keepAliveFailures })} {sq.stopReason ?? ""}</span>
+          <button class="btn resume" onclick={() => void resumeKey(k)} disabled={!!busy}>
+            {t("squeeze.resume")}
+          </button>
+        </div>
+      {/if}
       {#if swapping === k.fingerprint}
         <div class="swap row">
           <input
@@ -727,6 +764,27 @@
   }
   .entry[data-squeeze="refused"] .state {
     color: var(--error);
+  }
+  .entry[data-squeeze="stopped"] .state {
+    color: var(--error);
+    font-style: normal;
+  }
+  .stop-detail {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 5px 0 8px 38px;
+    border-bottom: 1px solid var(--rule);
+    color: var(--error);
+    font-size: 12.5px;
+  }
+  .stop-detail > span {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .stop-detail .resume {
+    flex-shrink: 0;
   }
   .entry[data-squeeze="through"] .state {
     color: #3f8f5a;

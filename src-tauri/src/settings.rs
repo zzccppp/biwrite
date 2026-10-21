@@ -183,6 +183,8 @@ pub struct AppSettings {
     /// They are kept alive however long the author is away; off, only
     /// within half an hour of the author's last use.
     pub keep_alive_forever: bool,
+    /// Allow a failed keep-alive to rejoin a manual squeeze still running.
+    pub keep_alive_rejoin: bool,
     /// Mean minutes between two keep-alives of a key; each wait is drawn
     /// within a quarter of it either way.
     pub keep_alive_minutes: f64,
@@ -202,6 +204,10 @@ pub struct AppSettings {
     /// by provider id: after a restart or an update they are squeezed back
     /// in. `None` from versions that did not note them.
     pub kept_keys: Option<BTreeMap<String, Vec<String>>>,
+    /// Background work stopped after failed keep-alives. Only fingerprints
+    /// and redacted error text are stored, tied to the provider target.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stopped_keys: BTreeMap<String, BTreeMap<String, crate::squeeze_commands::StoppedKey>>,
     /// Files paired by the author (Import translation), by the path of the
     /// document, with the path of its other-language file: the pair comes
     /// back when the document opens again, and builds of its project use
@@ -252,12 +258,14 @@ impl Default for AppSettings {
             close_to_tray: true,
             keep_alive: true,
             keep_alive_forever: true,
+            keep_alive_rejoin: false,
             keys_in_file: true,
             keep_alive_minutes: 4.0,
             squeeze_seconds: 3.0,
             squeeze_enough: 2,
             squeeze_effort: Effort::Low,
             kept_keys: None,
+            stopped_keys: BTreeMap::new(),
             pairs: BTreeMap::new(),
             assisted_apply: true,
             keep_file: false,
@@ -539,6 +547,7 @@ pub struct SettingsView {
     pub close_to_tray: bool,
     pub keep_alive: bool,
     pub keep_alive_forever: bool,
+    pub keep_alive_rejoin: bool,
     pub keys_in_file: bool,
     pub keep_alive_minutes: f64,
     pub squeeze_seconds: f64,
@@ -585,6 +594,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         close_to_tray: settings.close_to_tray,
         keep_alive: settings.keep_alive,
         keep_alive_forever: settings.keep_alive_forever,
+        keep_alive_rejoin: settings.keep_alive_rejoin,
         keys_in_file: settings.keys_in_file,
         keep_alive_minutes: settings.keep_alive_minutes,
         squeeze_seconds: settings.squeeze_seconds,
@@ -654,6 +664,11 @@ mod tests {
     fn keeping_alive_always_and_assisted_apply_are_on_unless_turned_off() {
         let old: AppSettings = serde_json::from_str(r#"{"keepAlive": true}"#).unwrap();
         assert!(old.keep_alive_forever && old.assisted_apply);
+        assert!(
+            !old.keep_alive_rejoin,
+            "failed keys do not rejoin by default"
+        );
+        assert!(old.stopped_keys.is_empty());
         assert_eq!(old.kept_keys, None, "not noted by an older version");
         let off: AppSettings =
             serde_json::from_str(r#"{"keepAliveForever": false, "assistedApply": false}"#).unwrap();
@@ -661,6 +676,7 @@ mod tests {
         let paths = Paths::in_dir(&std::env::temp_dir());
         let v = view(&AppSettings::default(), String::new(), &paths);
         assert!(v.keep_alive_forever && v.assisted_apply);
+        assert!(!v.keep_alive_rejoin);
     }
 
     fn deepseek() -> ProviderEntry {

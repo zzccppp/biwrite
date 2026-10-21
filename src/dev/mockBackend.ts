@@ -71,6 +71,8 @@ const SLOW = Number(PARAMS.get("slow") ?? 0);
 const ACTIVE = PARAMS.get("active");
 /** `squeeze=N`: a squeeze gets key k through on its (N + k - 1)-th try, key 6 is invalid. */
 const SQUEEZE = Number(PARAMS.get("squeeze") ?? 3);
+/** `enough=N`: use a different target in an isolated browser fixture. */
+const SQUEEZE_ENOUGH = Math.min(99, Math.max(1, Number(PARAMS.get("enough") ?? 2)));
 /** Figures come as TikZ with a color the template defined before xcolor (?figcolor). */
 const FIGCOLOR = PARAMS.has("figcolor");
 /** The check of an answer cannot repair it (?checkfail). */
@@ -157,6 +159,8 @@ We also report the running time of every method on each dataset, measured on one
 const state = {
   /** Keys of the pool the author set aside, by fingerprint. */
   ignoredKeys: new Set<string>(),
+  /** The key the pool last copied. */
+  copied: null as string | null,
   /** The pictures of `missingimages` were downloaded. */
   imagesDownloaded: false,
   /** The project file open (relative), and the text each other one had. */
@@ -301,13 +305,14 @@ const state = {
     closeToTray: true,
     keepAlive: true,
     keepAliveForever: true,
+    keepAliveRejoin: false,
     keysInFile: true,
     keepAliveMinutes: 4,
     squeezeSeconds: 3,
-    squeezeEnough: 2,
+    squeezeEnough: SQUEEZE_ENOUGH,
     squeezeEffort: "low",
     assistedApply: true,
-    version: "0.1.1",
+    version: "0.2.28",
   } as SettingsView,
   records: [] as RequestRecord[],
   /** Translations the assistant handed over (for UI tests). */
@@ -318,6 +323,10 @@ const state = {
    * answered, and whether one is being tried again. */
   keptAt: [] as (number | null)[],
   keepRetrying: [] as boolean[],
+  keepAliveFailures: [] as number[],
+  backgroundStopped: [] as boolean[],
+  stopReason: [] as (string | null)[],
+  testedKeys: [] as string[],
   /** The preamble lines each smart revert was asked to check. */
   tidies: [] as string[],
   /** Reference images and papers taken from the materials folder. */
@@ -502,15 +511,18 @@ function squeezeView() {
           // Set by a test: the latest keep-alive, or one being tried again.
           keptAt: squeezeRun.through[i] === null ? null : (state.keptAt[i] ?? null),
           keepRetrying: squeezeRun.through[i] !== null && !!state.keepRetrying[i],
+          keepAliveFailures: state.keepAliveFailures[i] ?? 0,
+          backgroundStopped: !!state.backgroundStopped[i],
+          stopReason: state.stopReason[i] ?? null,
           tries: squeezeRun.tries[i],
-          trying: squeezeRun.running && squeezeRun.through[i] === null && !(i === 5 && squeezeRun.tries[i] > 0),
+          trying: squeezeRun.running && !state.backgroundStopped[i] && !state.ignoredKeys.has(k.fingerprint) && squeezeRun.through[i] === null && !(i === 5 && squeezeRun.tries[i] > 0),
           refused: i === 5 && squeezeRun.tries[i] > 0,
           lastError:
-            squeezeRun.tries[i] === 0 || squeezeRun.through[i] !== null
+            state.stopReason[i] ?? (squeezeRun.tries[i] === 0 || squeezeRun.through[i] !== null
               ? null
               : i === 5
                 ? "request rejected (HTTP 401): invalid token"
-                : "provider server error (HTTP 500)",
+                : "provider server error (HTTP 500)"),
         })),
   };
 }
@@ -521,7 +533,7 @@ function squeezeEvent(change: Record<string, unknown>): void {
     providerId: "p-relay",
     providerName: RELAY.name,
     running: squeezeRun.running,
-    through: squeezeRun.through.filter((t) => t !== null).length,
+    through: throughCount(),
     total: POOL.length,
     keeping: state.settings.keepAlive && squeezeRun.started !== null,
   });
@@ -532,11 +544,50 @@ setInterval(() => {
   if (state.settings.keepAlive && squeezeRun.started !== null) squeezeEvent({ kind: "kept" });
 }, 2000);
 
-/** A key kept alive loses its place (for UI tests): with keeping alive on, it is squeezed back in. */
-function dropKey(index: number): void {
+function throughCount(): number {
+  return squeezeRun.through.filter((t, i) => t !== null && !state.backgroundStopped[i] && !state.ignoredKeys.has(POOL[i].fingerprint)).length;
+}
+
+function hasEnough(): boolean {
+  return throughCount() >= state.settings.squeezeEnough;
+}
+
+/** Inject one failed keep-alive, without making a network request. */
+function failKeepAlive(index: number, reason = "provider server error (HTTP 500): temporarily unavailable", refused = false): void {
+  if (!POOL[index] || state.backgroundStopped[index] || squeezeRun.through[index] === null || state.ignoredKeys.has(POOL[index].fingerprint)) return;
+  const failures = (state.keepAliveFailures[index] ?? 0) + 1;
+  state.keepAliveFailures[index] = failures;
+  state.keepRetrying[index] = true;
+  if (failures < 10 && !refused) {
+    squeezeEvent({ kind: "kept" });
+    return;
+  }
+  const rejoined = !refused && state.settings.keepAliveRejoin && squeezeRun.running && !hasEnough();
   squeezeRun.through[index] = null;
+  state.keptAt[index] = null;
+  state.keepRetrying[index] = false;
+  state.backgroundStopped[index] = !rejoined;
+  state.stopReason[index] = rejoined ? null : reason;
+  if (rejoined) {
+    squeezeRun.tries[index] = 0;
+    state.keepAliveFailures[index] = 0;
+  }
+  squeezeEvent({ kind: "keyStopped", number: POOL[index].number, fingerprint: POOL[index].fingerprint, failures, reason, rejoined });
+}
+
+/** A successful keep-alive resets consecutive failures, unless already stopped. */
+function answerKeepAlive(index: number): void {
+  if (!POOL[index] || state.backgroundStopped[index] || squeezeRun.through[index] === null) return;
+  state.keptAt[index] = Date.now();
+  state.keepAliveFailures[index] = 0;
+  state.keepRetrying[index] = false;
   squeezeEvent({ kind: "kept" });
-  if (state.settings.keepAlive && !squeezeRun.running) startSqueeze();
+}
+
+/** Compatibility helper for older UI tests: exhaust a key's retry allowance. */
+function dropKey(index: number): void {
+  state.keepAliveFailures[index] = 9;
+  failKeepAlive(index);
 }
 
 function startSqueeze(): void {
@@ -545,18 +596,28 @@ function startSqueeze(): void {
   squeezeRun.running = true;
   squeezeRun.started = Date.now();
   squeezeEvent({ kind: "started" });
+  if (hasEnough()) {
+    stopSqueeze(true);
+    return;
+  }
   squeezeRun.timer = setInterval(() => {
-    POOL.forEach((_, i) => {
-      if (squeezeRun.through[i] !== null || (i === 5 && squeezeRun.tries[i] > 0)) return;
+    for (let i = 0; i < POOL.length; i++) {
+      if (state.backgroundStopped[i] || state.ignoredKeys.has(POOL[i].fingerprint) || squeezeRun.through[i] !== null || (i === 5 && squeezeRun.tries[i] > 0)) continue;
       squeezeRun.tries[i] += 1;
       if (i < 5 && squeezeRun.tries[i] >= SQUEEZE + i) {
         squeezeRun.through[i] = Date.now();
+        state.keepAliveFailures[i] = 0;
+        state.keepRetrying[i] = false;
         squeezeEvent({ kind: "through", number: i + 1 });
+        if (hasEnough()) {
+          stopSqueeze(true);
+          break;
+        }
       } else {
         squeezeEvent({ kind: "tried" });
       }
-    });
-    if (squeezeRun.through.slice(0, 5).every((t) => t !== null)) stopSqueeze(true);
+    }
+    if (squeezeRun.running && POOL.every((k, i) => state.ignoredKeys.has(k.fingerprint) || state.backgroundStopped[i] || squeezeRun.through[i] !== null || (i === 5 && squeezeRun.tries[i] > 0))) stopSqueeze(true);
   }, 600);
 }
 
@@ -1108,6 +1169,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.settings.keepAliveForever = Boolean(a.on);
     return clone(state.settings);
   },
+  set_keep_alive_rejoin: (a) => {
+    state.settings.keepAliveRejoin = Boolean(a.on);
+    return clone(state.settings);
+  },
   set_tray_language: () => null,
   latex_pdf: async (a) => {
     state.pdfReads[a.lang === "zh" ? "zh" : "en"]++;
@@ -1484,11 +1549,18 @@ const handlers: Record<string, (args: Args) => unknown> = {
       ignored: state.ignoredKeys.has(k.fingerprint),
     })),
   set_key_ignored: (a) => {
-    if (a.ignored) state.ignoredKeys.add(String(a.fingerprint));
-    else state.ignoredKeys.delete(String(a.fingerprint));
+    const fingerprint = String(a.fingerprint);
+    if (a.ignored) {
+      state.ignoredKeys.add(fingerprint);
+      const index = POOL.findIndex((k) => k.fingerprint === fingerprint);
+      if (index >= 0) squeezeRun.through[index] = null;
+    } else state.ignoredKeys.delete(fingerprint);
     return clone(state.settings);
   },
-  reveal_api_key: (a) => `sk-mock-${String(a.fingerprint)}`,
+  copy_api_key: (a) => {
+    state.copied = `sk-mock-${String(a.fingerprint)}`;
+    return null;
+  },
   set_squeeze_effort: (a) => {
     state.settings.squeezeEffort = String(a.effort) as typeof state.settings.squeezeEffort;
     return clone(state.settings);
@@ -1497,6 +1569,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.settings.keepAliveMinutes = Math.min(30, Math.max(1, Number(a.keepAliveMinutes)));
     state.settings.squeezeSeconds = Math.min(120, Math.max(1, Number(a.squeezeSeconds)));
     state.settings.squeezeEnough = Math.min(99, Math.max(1, Math.round(Number(a.squeezeEnough))));
+    if (squeezeRun.running && hasEnough()) stopSqueeze(true);
     return clone(state.settings);
   },
   rename_api_key: (a) => {
@@ -1516,7 +1589,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.swapped.push(Number(a.number));
     return clone(state.settings);
   },
-  test_api_key: () => ({ question: "考考你：用一句话形容熊猫。像天气预报员一样说。", answer: "今日熊猫指数满格，黑白配色稳定，局部地区有竹子降落。" }),
+  test_api_key: (a) => {
+    state.testedKeys.push(String(a.fingerprint));
+    return { question: "考考你：用一句话形容熊猫。像天气预报员一样说。", answer: "今日熊猫指数满格，黑白配色稳定，局部地区有竹子降落。" };
+  },
   test_provider: () => ({ question: "Name a city that starts with K. Answer like a pirate.", answer: "Arr, Kyoto it be, matey!" }),
   set_active_provider: (a) => {
     const p = state.settings.providers.find((x) => x.id === String(a.id));
@@ -1532,6 +1608,18 @@ const handlers: Record<string, (args: Args) => unknown> = {
   },
   squeeze_stop: () => {
     stopSqueeze(false);
+    return clone(squeezeView());
+  },
+  squeeze_resume_key: (a) => {
+    const index = POOL.findIndex((k) => k.fingerprint === String(a.fingerprint));
+    if (index < 0) throw new Error("the keys have changed; reopen the settings and try again");
+    if (state.ignoredKeys.has(POOL[index].fingerprint)) throw new Error("the key is ignored");
+    state.backgroundStopped[index] = false;
+    state.stopReason[index] = null;
+    state.keepAliveFailures[index] = 0;
+    state.keepRetrying[index] = false;
+    squeezeRun.tries[index] = 0;
+    squeezeEvent({ kind: "kept" });
     return clone(squeezeView());
   },
   set_batch_size: (a) => {
@@ -1623,4 +1711,4 @@ export function installMockBackend(): void {
   }, 1500);
 }
 
-export const mockState = Object.assign(state, { dropKey });
+export const mockState = Object.assign(state, { dropKey, failKeepAlive, answerKeepAlive, squeezeStatus: squeezeView });

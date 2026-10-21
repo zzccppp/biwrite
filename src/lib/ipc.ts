@@ -154,8 +154,10 @@ export const settingsIpc = {
   squeezeStatus: (id: string) => invoke<SqueezeView>("squeeze_status", { id }),
   squeezeStart: (id: string) => invoke<SqueezeView>("squeeze_start", { id }),
   squeezeStop: (id: string) => invoke<SqueezeView>("squeeze_stop", { id }),
+  squeezeResumeKey: (id: string, fingerprint: string) => invoke<SqueezeView>("squeeze_resume_key", { id, fingerprint }),
   setKeepAlive: (on: boolean) => invoke<SettingsView>("set_keep_alive", { on }),
   setKeepAliveForever: (on: boolean) => invoke<SettingsView>("set_keep_alive_forever", { on }),
+  setKeepAliveRejoin: (on: boolean) => invoke<SettingsView>("set_keep_alive_rejoin", { on }),
   /** Accept and Revert with the model's help and a build (LaTeX), or as they are. */
   setAssistedApply: (on: boolean) => invoke<SettingsView>("set_assisted_apply", { on }),
   setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),
@@ -166,7 +168,7 @@ export const settingsIpc = {
   setKeysInFile: (on: boolean) => invoke<SettingsView>("set_keys_in_file", { on }),
   setKeyIgnored: (id: string, fingerprint: string, ignored: boolean) =>
     invoke<SettingsView>("set_key_ignored", { id, fingerprint, ignored }),
-  revealApiKey: (id: string, fingerprint: string) => invoke<string>("reveal_api_key", { id, fingerprint }),
+  copyApiKey: (id: string, fingerprint: string) => invoke<void>("copy_api_key", { id, fingerprint }),
   setSqueezeEffort: (effort: Effort) => invoke<SettingsView>("set_squeeze_effort", { effort }),
   setPacing: (keepAliveMinutes: number, squeezeSeconds: number, squeezeEnough: number) =>
     invoke<SettingsView>("set_pacing", { keepAliveMinutes, squeezeSeconds, squeezeEnough }),

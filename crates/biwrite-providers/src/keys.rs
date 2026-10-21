@@ -22,7 +22,7 @@
 //!   drops it. Otherwise the pool takes turns as without a board.
 
 use std::pin::pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -195,9 +195,6 @@ pub(crate) struct KeyPool {
     freed: Notify,
     /// The keys of this provider that got through a crowded relay.
     board: OnceLock<Arc<SqueezeBoard>>,
-    /// The pool sends pings or the tries of a squeeze, not the author's
-    /// requests (see [`SqueezeBoard::note_use`]).
-    quiet: AtomicBool,
 }
 
 /// A key handed out for one request. Dropping it frees the key's slot.
@@ -327,7 +324,6 @@ impl KeyPool {
             state: Mutex::new(PoolState::default()),
             freed: Notify::new(),
             board: OnceLock::new(),
-            quiet: AtomicBool::new(false),
         }
     }
 
@@ -336,14 +332,6 @@ impl KeyPool {
     /// counts.
     pub fn join_board(&self, board: Arc<SqueezeBoard>) {
         let _ = self.board.set(board);
-    }
-
-    /// [`Self::join_board`] for pings and the tries of a squeeze, which are
-    /// not the author's use.
-    pub fn join_board_quietly(&self, board: Arc<SqueezeBoard>) {
-        if self.board.set(board).is_ok() {
-            self.quiet.store(true, Ordering::Release);
-        }
     }
 
     fn state(&self) -> MutexGuard<'_, PoolState> {
@@ -411,9 +399,7 @@ impl KeyPool {
             freed.as_mut().enable();
             match self.pick(epoch, &keys) {
                 Pick::Key(index, route) => {
-                    if let Some(board) = self.board.get()
-                        && !self.quiet.load(Ordering::Acquire)
-                    {
+                    if let Some(board) = self.board.get() {
                         board.note_use();
                     }
                     return Ok(Lease {
@@ -1179,7 +1165,7 @@ mod tests {
     }
 
     /// The author's requests count as use of the keys, pings and the tries
-    /// of a squeeze (a quiet pool) do not.
+    /// of a squeeze (whose pool does not join the board) do not.
     #[tokio::test]
     async fn only_the_authors_requests_count_as_use() {
         let hour = Duration::from_secs(3600);
@@ -1190,7 +1176,6 @@ mod tests {
 
         let quiet = pool(&["k-aaaa"], None);
         let board = SqueezeBoard::for_relay();
-        quiet.join_board_quietly(Arc::clone(&board));
         drop(quiet.acquire().await.unwrap());
         assert!(!board.used_within(hour));
     }

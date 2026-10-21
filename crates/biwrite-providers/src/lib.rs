@@ -48,8 +48,9 @@ pub use probe::{light_config, test_question};
 pub use prompt::{DefaultPrompts, PromptFiles, PromptSource};
 pub use provider::{HttpProvider, KEEP_ALIVE, TRANSLATE};
 pub use squeeze::{
-    CROWDED_AFTER, ChangeFn, DROP_AFTER, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress,
-    STALE_AFTER, Squeeze, SqueezeBoard, SqueezeChange, ThroughView, jitter, ping,
+    CROWDED_AFTER, ChangeFn, DROP_AFTER, KEEP_ALIVE_AFTER, KEEP_ALIVE_FAILURE_LIMIT,
+    KEEP_ALIVE_FOR, KeyProgress, PingOutcome, STALE_AFTER, Squeeze, SqueezeBoard, SqueezeChange,
+    ThroughView, jitter, ping, ping_checked,
 };
 
 /// Build the translator for a (validated) provider configuration, without a

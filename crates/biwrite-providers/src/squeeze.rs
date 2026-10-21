@@ -15,7 +15,7 @@
 //! [`ping`] sends it a short translation, which keeps its place.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -50,6 +50,9 @@ pub const KEEP_ALIVE_AFTER: Duration = Duration::from_secs(3 * 60);
 /// author last used their provider: someone away for longer pays for no
 /// requests.
 pub const KEEP_ALIVE_FOR: Duration = Duration::from_secs(30 * 60);
+/// Full keep-alive requests that may fail consecutively before background
+/// requests for a key stop. Foreground requests remain available.
+pub const KEEP_ALIVE_FAILURE_LIMIT: u32 = 10;
 /// Pause between two tries of one key.
 const PROBE_GAP: Duration = Duration::from_secs(3);
 /// Longest pause between two tries of a squeeze nobody watches, which
@@ -68,6 +71,15 @@ struct Through {
     last_ok_wall: SystemTime,
     /// Server errors since the last answer.
     fails: u32,
+}
+
+#[derive(Debug, Default)]
+struct BackgroundKey {
+    generation: u64,
+    failures: u32,
+    stopped: Option<String>,
+    target_met_at_stop: bool,
+    rejoinable_stop: bool,
 }
 
 /// The keys of one provider that got through, by fingerprint.
@@ -105,6 +117,10 @@ pub struct SqueezeBoard {
     /// The reasoning effort of the tries of a squeeze and of the pings the
     /// author chose (low unless set).
     effort: Mutex<Effort>,
+    /// Separate from foreground routing: an ordinary successful request
+    /// cannot silently resume background work stopped by failed pings.
+    background: Mutex<HashMap<String, BackgroundKey>>,
+    background_generation: AtomicU64,
 }
 
 /// A pause drawn around `mean`: a normal distribution with that mean, kept
@@ -185,6 +201,195 @@ impl SqueezeBoard {
 
     fn given_up(&self) -> MutexGuard<'_, HashMap<String, String>> {
         self.given_up.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn background(&self) -> MutexGuard<'_, HashMap<String, BackgroundKey>> {
+        self.background
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn next_generation(&self) -> u64 {
+        self.background_generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Authorize a background request. A result from an older generation
+    /// cannot change this key after it was stopped, removed or resumed.
+    pub fn background_token(&self, fingerprint: &str) -> Option<u64> {
+        let mut keys = self.background();
+        let key = keys
+            .entry(fingerprint.to_owned())
+            .or_insert_with(|| BackgroundKey {
+                generation: self.next_generation(),
+                ..BackgroundKey::default()
+            });
+        key.stopped.is_none().then_some(key.generation)
+    }
+
+    pub fn background_token_current(&self, fingerprint: &str, token: u64) -> bool {
+        self.background()
+            .get(fingerprint)
+            .is_some_and(|k| k.generation == token && k.stopped.is_none())
+    }
+
+    pub fn background_generation_matches(&self, fingerprint: &str, generation: u64) -> bool {
+        self.background()
+            .get(fingerprint)
+            .is_some_and(|k| k.generation == generation)
+    }
+
+    /// Invalidate requests already in flight, without changing the user's
+    /// background stop decision or the consecutive ping count.
+    pub fn invalidate_background(&self, fingerprint: &str) {
+        let mut keys = self.background();
+        let key = keys.entry(fingerprint.to_owned()).or_default();
+        key.generation = self.next_generation();
+    }
+
+    pub fn invalidate_background_requests(&self) {
+        for key in self.background().values_mut() {
+            key.generation = self.next_generation();
+        }
+    }
+
+    pub fn background_state(&self, fingerprint: &str) -> (u32, bool, Option<String>) {
+        self.background()
+            .get(fingerprint)
+            .map_or((0, false, None), |k| {
+                (k.failures, k.stopped.is_some(), k.stopped.clone())
+            })
+    }
+
+    pub fn background_stopped(&self, fingerprint: &str) -> bool {
+        self.background()
+            .get(fingerprint)
+            .is_some_and(|k| k.stopped.is_some())
+    }
+
+    pub fn stop_target_was_met(&self, fingerprint: &str) -> bool {
+        self.background()
+            .get(fingerprint)
+            .is_some_and(|k| k.target_met_at_stop)
+    }
+
+    pub fn stop_can_rejoin(&self, fingerprint: &str) -> bool {
+        self.background()
+            .get(fingerprint)
+            .is_some_and(|k| k.rejoinable_stop)
+    }
+
+    pub fn stopped_keys(&self) -> Vec<(String, u32, String)> {
+        self.background()
+            .iter()
+            .filter_map(|(f, k)| {
+                k.stopped
+                    .as_ref()
+                    .map(|reason| (f.clone(), k.failures, reason.clone()))
+            })
+            .collect()
+    }
+
+    pub fn restore_stopped(&self, fingerprint: &str, failures: u32, reason: &str) {
+        self.background().insert(
+            fingerprint.to_owned(),
+            BackgroundKey {
+                generation: self.next_generation(),
+                failures,
+                stopped: Some(reason.to_owned()),
+                target_met_at_stop: true,
+                rejoinable_stop: false,
+            },
+        );
+        self.forget(fingerprint);
+    }
+
+    /// An explicit user choice. It only makes the key eligible; it does
+    /// not start a squeeze or issue a request.
+    pub fn resume_background(&self, fingerprint: &str) -> bool {
+        let mut keys = self.background();
+        let Some(key) = keys.get_mut(fingerprint) else {
+            return false;
+        };
+        if key.stopped.is_none() {
+            return false;
+        }
+        key.generation = self.next_generation();
+        key.failures = 0;
+        key.stopped = None;
+        key.target_met_at_stop = false;
+        key.rejoinable_stop = false;
+        self.given_up().remove(fingerprint);
+        self.forget(fingerprint);
+        true
+    }
+
+    /// Apply a full ping once. Internal protocol retries do not count as
+    /// separate failures. Every successful ping resets the count.
+    fn finish_ping(
+        &self,
+        fingerprint: &str,
+        token: u64,
+        result: &Result<(), TranslateError>,
+    ) -> Option<u64> {
+        let target_met = self.has_enough();
+        let mut keys = self.background();
+        let key = keys
+            .get_mut(fingerprint)
+            .filter(|k| k.generation == token && k.stopped.is_none())?;
+        match result {
+            Ok(()) => {
+                key.failures = 0;
+                self.answered(fingerprint);
+            }
+            Err(err) => {
+                key.failures = key.failures.saturating_add(1);
+                if key.failures >= KEEP_ALIVE_FAILURE_LIMIT || refuses_key(err) {
+                    key.stopped = Some(err.to_string());
+                    key.target_met_at_stop = target_met;
+                    key.rejoinable_stop = !refuses_key(err);
+                    key.generation = self.next_generation();
+                    self.forget(fingerprint);
+                    if refuses_key(err) {
+                        self.give_up(fingerprint, &err.to_string());
+                    }
+                } else if crate::keys::answered_anyway(err) {
+                    self.answered(fingerprint);
+                } else if matches!(err, TranslateError::Server { .. })
+                    && !self.is_through(fingerprint)
+                {
+                    self.note_turned_away();
+                }
+            }
+        }
+        Some(key.generation)
+    }
+
+    fn finish_try(
+        &self,
+        fingerprint: &str,
+        token: u64,
+        result: &Result<(), TranslateError>,
+        sent: Instant,
+    ) -> bool {
+        let keys = self.background();
+        if !keys
+            .get(fingerprint)
+            .is_some_and(|k| k.generation == token && k.stopped.is_none())
+        {
+            return false;
+        }
+        match result {
+            Ok(()) => self.answered(fingerprint),
+            Err(err) if crate::keys::answered_anyway(err) => self.answered(fingerprint),
+            Err(err) => {
+                let was_through = self.is_through(fingerprint);
+                self.failed(fingerprint, err, sent);
+                if !was_through && matches!(err, TranslateError::Server { .. }) {
+                    self.note_turned_away();
+                }
+            }
+        }
+        true
     }
 
     /// The mean pause between two tries of one key (`None`: the default).
@@ -269,8 +474,9 @@ impl SqueezeBoard {
     /// A squeeze need not try this key: answered within [`STALE_AFTER`], or
     /// through and kept alive by the keeper.
     fn holds(&self, fingerprint: &str) -> bool {
-        self.is_fresh(fingerprint)
-            || (self.keeping.load(Ordering::Acquire) && self.is_through(fingerprint))
+        !self.background_stopped(fingerprint)
+            && (self.is_fresh(fingerprint)
+                || (self.keeping.load(Ordering::Acquire) && self.is_through(fingerprint)))
     }
 
     /// Through and answered within [`STALE_AFTER`].
@@ -374,6 +580,19 @@ impl SqueezeBoard {
     pub fn clear(&self) {
         self.lock().clear();
         self.given_up().clear();
+        self.background().clear();
+    }
+
+    /// A pool edit invalidates old requests but retains user decisions
+    /// for keys whose fingerprints remain in the pool.
+    pub fn clear_through(&self) {
+        self.lock().clear();
+        self.given_up().clear();
+        self.invalidate_background_requests();
+    }
+
+    pub fn retain_background_keys(&self, fingerprints: &[String]) {
+        self.background().retain(|f, _| fingerprints.contains(f));
     }
 
     /// This key is no longer in the pool.
@@ -392,6 +611,7 @@ impl SqueezeBoard {
                 last_ok_ms: unix_ms(t.last_ok_wall),
             })
             .collect();
+        out.retain(|t| !self.background_stopped(&t.fingerprint));
         out.sort_by_key(|t| t.since_ms);
         out
     }
@@ -430,9 +650,25 @@ pub enum SqueezeChange {
     },
     /// A round of keeping keys alive went by (said by the keeper).
     Kept,
+    /// A key stopped its background work after failed keep-alives.
+    #[serde(rename = "keyStopped")]
+    KeyStopped {
+        number: usize,
+        fingerprint: String,
+        failures: u32,
+        reason: String,
+        rejoined: bool,
+    },
 }
 
 pub type ChangeFn = Arc<dyn Fn(SqueezeChange) + Send + Sync>;
+
+/// The result of one complete ping and the generation that accepted it.
+/// A result discarded after a pool edit or stop has no generation.
+pub struct PingOutcome {
+    pub result: Result<(), TranslateError>,
+    pub generation: Option<u64>,
+}
 
 /// Send `key` of the provider `config` a short translation, which keeps its
 /// place at a crowded relay. The answer, or the failure, is recorded on
@@ -445,15 +681,43 @@ pub async fn ping(
     prompts: Arc<dyn PromptSource>,
     observer: Arc<dyn RequestObserver>,
 ) -> Result<(), TranslateError> {
+    ping_checked(config, key, board, prompts, observer)
+        .await
+        .result
+}
+
+pub async fn ping_checked(
+    config: &ProviderConfig,
+    key: String,
+    board: Arc<SqueezeBoard>,
+    prompts: Arc<dyn PromptSource>,
+    observer: Arc<dyn RequestObserver>,
+) -> PingOutcome {
     let print = fingerprint(&key);
+    let Some(token) = board.background_token(&print) else {
+        return PingOutcome {
+            result: Err(TranslateError::Network(
+                "background requests for this key are stopped".into(),
+            )),
+            generation: None,
+        };
+    };
     // Not joined to the board: a ping that fails is sent again soon, and
     // the key keeps its place meanwhile.
-    let provider = HttpProvider::new(
+    let provider = match HttpProvider::new(
         crate::probe::config(config, board.effort()),
         Arc::new(move || Ok(vec![key.clone()])),
         prompts,
         observer,
-    )?;
+    ) {
+        Ok(provider) => provider,
+        Err(err) => {
+            return PingOutcome {
+                result: Err(err),
+                generation: None,
+            };
+        }
+    };
     let result = match tokio::time::timeout(
         PROBE_TIMEOUT,
         provider.probe(crate::provider::KEEP_ALIVE),
@@ -466,20 +730,8 @@ pub async fn ping(
             PROBE_TIMEOUT.as_secs()
         ))),
     };
-    match &result {
-        Ok(()) => board.answered(&print),
-        Err(err) if crate::keys::answered_anyway(err) => board.answered(&print),
-        Err(err) if refuses_key(err) => {
-            // Refused: it loses its place and is not squeezed back in.
-            board.forget(&print);
-            board.give_up(&print, &err.to_string());
-        }
-        Err(TranslateError::Server { .. }) if !board.is_through(&print) => {
-            board.note_turned_away();
-        }
-        Err(_) => {}
-    }
-    result
+    let generation = board.finish_ping(&print, token, &result);
+    PingOutcome { result, generation }
 }
 
 /// The relay turned the try away for now: trying again may get through.
@@ -532,7 +784,6 @@ impl Squeeze {
                 Arc::clone(&prompts),
                 Arc::new(NoObserver),
             )?;
-            provider.join_board_quietly(Arc::clone(&board));
             providers.push(provider);
         }
         board.allow_crowding();
@@ -604,6 +855,22 @@ impl Squeeze {
         self.lock().clone()
     }
 
+    /// Rejoin an eligible key in this existing squeeze. This never starts
+    /// a new run and cannot undo a completed target.
+    pub fn rejoin_key(&self, board: &SqueezeBoard, fingerprint: &str) -> bool {
+        if !self.running() || self.done.load(Ordering::Acquire) || board.has_enough() {
+            return false;
+        }
+        if !self
+            .lock()
+            .iter()
+            .any(|p| p.fingerprint == fingerprint && !p.refused)
+        {
+            return false;
+        }
+        board.resume_background(fingerprint)
+    }
+
     fn lock(&self) -> MutexGuard<'_, Vec<KeyProgress>> {
         self.progress.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -616,9 +883,9 @@ impl Squeeze {
         }
         let progress = self.lock();
         progress.iter().any(|p| board.holds(&p.fingerprint))
-            && progress
-                .iter()
-                .all(|p| p.refused || board.holds(&p.fingerprint))
+            && progress.iter().all(|p| {
+                p.refused || board.background_stopped(&p.fingerprint) || board.holds(&p.fingerprint)
+            })
     }
 
     fn stopped(&self) -> bool {
@@ -659,6 +926,21 @@ impl Squeeze {
                 self.done.store(true, Ordering::Release);
                 return;
             }
+            if board.background_stopped(&fingerprint) {
+                // Keep a worker available for an explicit rejoin while
+                // another eligible key is still being squeezed.
+                if self
+                    .lock()
+                    .iter()
+                    .all(|p| p.refused || board.background_stopped(&p.fingerprint))
+                {
+                    return;
+                }
+                if self.pause(Duration::from_millis(100)).await {
+                    return;
+                }
+                continue;
+            }
             if board.holds(&fingerprint) {
                 // Watch it: translations may find it lost its place.
                 if self.pause(Duration::from_secs(1)).await {
@@ -667,6 +949,10 @@ impl Squeeze {
                 continue;
             }
             let was_through = board.is_through(&fingerprint);
+            let Some(token) = board.background_token(&fingerprint) else {
+                continue;
+            };
+            let sent = Instant::now();
             self.lock()[index].trying = true;
             // Each try asks for other words (see `crate::probe`).
             let attempt =
@@ -678,8 +964,15 @@ impl Squeeze {
                     return;
                 }
             };
-            if matches!(result, Ok(Ok(_))) {
-                board.answered(&fingerprint);
+            let result = result.unwrap_or_else(|_| {
+                Err(TranslateError::Network(format!(
+                    "no answer within {} seconds",
+                    PROBE_TIMEOUT.as_secs()
+                )))
+            });
+            if !board.finish_try(&fingerprint, token, &result, sent) {
+                self.lock()[index].trying = false;
+                continue;
             }
             // An answer counts even when it held no translation.
             let through = board.is_fresh(&fingerprint);
@@ -699,11 +992,11 @@ impl Squeeze {
                 p.trying = false;
                 p.tries += 1;
                 match &result {
-                    Ok(Ok(_)) => {
+                    Ok(_) => {
                         p.last_error = None;
                         gap
                     }
-                    Ok(Err(err)) => {
+                    Err(err) => {
                         let why = err.to_string();
                         p.refused = !through && !worth_another_try(err);
                         if p.refused {
@@ -712,13 +1005,6 @@ impl Squeeze {
                         p.last_error = Some(why);
                         err.retry_after()
                             .map_or(gap, |d| d.clamp(gap, PROBE_TIMEOUT))
-                    }
-                    Err(_) => {
-                        p.last_error = Some(format!(
-                            "no answer within {} seconds",
-                            PROBE_TIMEOUT.as_secs()
-                        ));
-                        gap
                     }
                 }
             };
@@ -790,6 +1076,160 @@ mod tests {
 
     fn fail(board: &SqueezeBoard, key: &str, err: &TranslateError) -> bool {
         board.failed(key, err, Instant::now())
+    }
+
+    #[test]
+    fn ten_failed_pings_stop_background_work_without_disabling_foreground_requests() {
+        let board = SqueezeBoard::new();
+        board.answered("a");
+        let token = board.background_token("a").unwrap();
+        for expected in 1..KEEP_ALIVE_FAILURE_LIMIT {
+            let _ = board.finish_ping("a", token, &Err(server()));
+            assert_eq!(board.background_state("a").0, expected);
+            assert!(board.is_through("a"));
+        }
+        board.answered("a");
+        assert_eq!(
+            board.background_state("a").0,
+            9,
+            "foreground success is separate"
+        );
+        let _ = board.finish_ping("a", token, &Ok(()));
+        assert_eq!(board.background_state("a"), (0, false, None));
+        for _ in 0..KEEP_ALIVE_FAILURE_LIMIT {
+            let _ = board.finish_ping("a", token, &Err(server()));
+        }
+        assert!(board.background_stopped("a"));
+        assert_eq!(board.background_state("a").0, KEEP_ALIVE_FAILURE_LIMIT);
+        assert!(!board.is_through("a"));
+        assert!(board.background_token("a").is_none());
+        // A foreground response may still route normally, but cannot
+        // restart the keeper or make this key count toward its target.
+        board.answered("a");
+        board.set_enough(1);
+        assert!(board.is_through("a"));
+        assert!(!board.has_enough());
+        assert!(board.through().is_empty());
+        let _ = board.finish_ping("a", token, &Ok(()));
+        assert_eq!(board.background_state("a").0, KEEP_ALIVE_FAILURE_LIMIT);
+        assert!(!board.finish_try("a", token, &Ok(()), Instant::now()));
+        assert!(board.resume_background("a"));
+        assert_eq!(board.background_state("a"), (0, false, None));
+        assert!(
+            !board.background_token_current("a", token),
+            "resume invalidates old responses too"
+        );
+        let fresh = board.background_token("a").unwrap();
+        let _ = board.finish_ping("a", fresh, &Ok(()));
+        assert!(board.has_enough());
+    }
+
+    #[test]
+    fn a_refused_ping_stops_immediately_and_cannot_resume_itself() {
+        let board = SqueezeBoard::new();
+        board.answered("a");
+        let token = board.background_token("a").unwrap();
+        let _ = board.finish_ping(
+            "a",
+            token,
+            &Err(TranslateError::Rejected {
+                status: 401,
+                message: "invalid key".into(),
+            }),
+        );
+        assert!(board.background_stopped("a"));
+        assert!(board.gave_up("a"));
+        assert_eq!(board.background_state("a").0, 1);
+        board.answered("a");
+        assert!(board.background_stopped("a"));
+        assert!(board.resume_background("a"));
+        assert_eq!(board.background_state("a"), (0, false, None));
+    }
+
+    #[test]
+    fn invalidated_background_results_cannot_reinsert_a_removed_key() {
+        let board = SqueezeBoard::new();
+        let token = board.background_token("a").unwrap();
+        board.invalidate_background("a");
+        assert!(!board.finish_try("a", token, &Ok(()), Instant::now()));
+        let _ = board.finish_ping("a", token, &Ok(()));
+        assert!(!board.is_through("a"));
+        let token = board.background_token("a").unwrap();
+        board.clear();
+        let fresh = board.background_token("a").unwrap();
+        assert_ne!(token, fresh);
+        let _ = board.finish_ping("a", token, &Err(server()));
+        assert_eq!(board.background_state("a").0, 0);
+    }
+
+    #[test]
+    fn unusable_ping_answers_count_as_failures_until_a_real_success() {
+        let board = SqueezeBoard::new();
+        let token = board.background_token("a").unwrap();
+        for _ in 0..KEEP_ALIVE_FAILURE_LIMIT {
+            let _ = board.finish_ping(
+                "a",
+                token,
+                &Err(TranslateError::InvalidResponse("cut off".into())),
+            );
+        }
+        assert!(board.background_stopped("a"));
+        assert_eq!(board.background_state("a").0, KEEP_ALIVE_FAILURE_LIMIT);
+    }
+
+    #[test]
+    fn editing_other_pool_keys_keeps_stops_and_invalidates_old_results() {
+        let board = SqueezeBoard::new();
+        board.restore_stopped("stopped", 10, "server unavailable");
+        let old = board.background_token("active").unwrap();
+        board.answered("active");
+        board.clear_through();
+        assert!(board.background_stopped("stopped"));
+        assert!(!board.is_through("active"));
+        let _ = board.finish_ping("active", old, &Ok(()));
+        assert!(!board.is_through("active"));
+        board.retain_background_keys(&["stopped".into(), "new".into()]);
+        assert!(board.background_stopped("stopped"));
+        board.retain_background_keys(&["new".into()]);
+        assert!(
+            board.stopped_keys().is_empty(),
+            "deleted fingerprints are pruned"
+        );
+    }
+
+    #[test]
+    fn background_completion_and_foreground_routing_can_run_concurrently() {
+        let board = SqueezeBoard::new();
+        board.set_enough(1);
+        let (done, received) = std::sync::mpsc::channel();
+        for worker in 0..3 {
+            let board = Arc::clone(&board);
+            let done = done.clone();
+            std::thread::spawn(move || {
+                for _ in 0..1000 {
+                    match worker {
+                        0 => {
+                            if let Some(token) = board.background_token("a") {
+                                let _ = board.finish_ping("a", token, &Err(server()));
+                            } else {
+                                board.resume_background("a");
+                            }
+                        }
+                        1 => board.answered("a"),
+                        _ => {
+                            let _ = board.has_enough();
+                            let _ = board.through();
+                        }
+                    }
+                }
+                let _ = done.send(());
+            });
+        }
+        for _ in 0..3 {
+            received
+                .recv_timeout(Duration::from_secs(5))
+                .expect("board lock ordering must complete");
+        }
     }
 
     #[test]

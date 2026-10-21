@@ -25,10 +25,11 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use biwrite_providers::{
-    CROWDED_AFTER, ChangeFn, HttpProvider, KEEP_ALIVE_AFTER, KEEP_ALIVE_FOR, KeyProgress, Squeeze,
-    SqueezeBoard, SqueezeChange, jitter, key_fingerprint, ping,
+    CROWDED_AFTER, ChangeFn, HttpProvider, KEEP_ALIVE_AFTER, KEEP_ALIVE_FAILURE_LIMIT,
+    KEEP_ALIVE_FOR, KeyProgress, Squeeze, SqueezeBoard, SqueezeChange, jitter, key_fingerprint,
+    ping_checked,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, UserAttentionType};
 
 use crate::error::{CommandError, CommandResult};
@@ -66,6 +67,15 @@ const ANSWERED_LATELY: u64 = 90 * 60 * 1000;
 /// A key turned away with the same words is logged again after this long.
 const TURNED_AWAY_LOG_EVERY: Duration = Duration::from_secs(5 * 60);
 
+/// A user-visible background stop, persisted without the key itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoppedKey {
+    pub target: String,
+    pub failures: u32,
+    pub reason: String,
+}
+
 /// Boards and running squeezes, by provider id.
 #[derive(Default)]
 pub struct SqueezeState {
@@ -76,6 +86,9 @@ pub struct SqueezeState {
     /// The keys of a provider as last read, for the keeper (`None`: they
     /// could not be read, and are not read again until they change).
     keys: Mutex<HashMap<String, Option<Vec<String>>>>,
+    /// Original pool positions, including ignored keys. Only fingerprints
+    /// are cached here, so notices identify the same row as the key pool.
+    key_numbers: Mutex<HashMap<String, HashMap<String, usize>>>,
     /// Keys whose ping failed, by provider id and fingerprint, with the
     /// time before which they are not pinged again.
     ping_after: Mutex<HashMap<(String, String), Instant>>,
@@ -90,6 +103,9 @@ pub struct SqueezeState {
     /// Keys are kept alive however long the author is away (the setting
     /// `keep_alive_forever`), not only within [`KEEP_ALIVE_FOR`].
     forever: AtomicBool,
+    /// Explicit opt-in to rejoin a failed key in a still-running manual
+    /// squeeze. It never starts a new run.
+    rejoin_failed: AtomicBool,
     /// Mean milliseconds between two keep-alives of a key, and between two
     /// tries of a key in a squeeze (the settings); zero before they are set.
     keep_mean_ms: AtomicU64,
@@ -107,9 +123,113 @@ pub struct SqueezeState {
     /// The latest failed ping logged of each key: when, and what the server
     /// said.
     ping_failed_log: Mutex<HashMap<(String, String), (Instant, String)>>,
+    /// Retry failed persistence even when the next keeper snapshot has
+    /// the same stopped/kept fingerprints.
+    persist_dirty: AtomicBool,
+    /// Keep snapshot collection and its persistence in order, so an old
+    /// keeper snapshot cannot overwrite an explicit resume.
+    record_lock: Mutex<()>,
 }
 
 impl SqueezeState {
+    fn note_key_order(&self, id: &str, keys: &[String]) {
+        let numbers = keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| (key_fingerprint(key), i + 1))
+            .collect();
+        self.key_numbers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.to_owned(), numbers);
+    }
+
+    fn key_number(&self, id: &str, fingerprint: &str) -> Option<usize> {
+        self.key_numbers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(|numbers| numbers.get(fingerprint))
+            .copied()
+    }
+
+    fn forget_key_order(&self, id: &str) {
+        self.key_numbers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+    }
+
+    pub fn set_rejoin_failed(&self, on: bool) {
+        self.rejoin_failed.store(on, Ordering::Relaxed);
+    }
+
+    fn stopped_keys(&self) -> BTreeMap<String, BTreeMap<String, StoppedKey>> {
+        self.boards()
+            .iter()
+            .filter_map(|(id, (target, board))| {
+                let stopped = board
+                    .stopped_keys()
+                    .into_iter()
+                    .map(|(f, failures, reason)| {
+                        (
+                            f,
+                            StoppedKey {
+                                target: target.clone(),
+                                failures,
+                                reason,
+                            },
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                (!stopped.is_empty()).then(|| (id.clone(), stopped))
+            })
+            .collect()
+    }
+
+    fn restore_stopped(
+        &self,
+        entries: &[ProviderEntry],
+        stopped: &BTreeMap<String, BTreeMap<String, StoppedKey>>,
+    ) {
+        for entry in entries {
+            let Some(stopped) = stopped.get(&entry.config.id) else {
+                continue;
+            };
+            let Some(board) = self.board_for(entry) else {
+                continue;
+            };
+            let target = entry.squeeze_target();
+            for (fingerprint, stop) in stopped.iter().filter(|(_, stop)| stop.target == target) {
+                board.restore_stopped(fingerprint, stop.failures, &stop.reason);
+            }
+        }
+    }
+
+    fn clear_ping_retry(&self, id: &str, fingerprint: &str) {
+        let key = (id.to_owned(), fingerprint.to_owned());
+        self.ping_after().remove(&key);
+        self.ping_every
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        self.ping_failed_log
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        if let Some(kept) = self.kept().get_mut(id) {
+            kept.remove(fingerprint);
+        }
+    }
+
+    fn rejoin_in_manual_run(&self, id: &str, fingerprint: &str, board: &SqueezeBoard) -> bool {
+        if self.auto().contains(id) {
+            return false;
+        }
+        let run = self.runs().get(id).cloned();
+        run.is_some_and(|run| run.rejoin_key(board, fingerprint))
+    }
+
     /// The mean wait between two keep-alives of a key (minutes) and between
     /// two tries of a key in a squeeze (seconds), as the settings say.
     pub fn set_means(&self, keep_alive_minutes: f64, squeeze_seconds: f64) {
@@ -205,6 +325,7 @@ impl SqueezeState {
     /// more. The other keys keep their places.
     pub fn set_aside(&self, id: &str, fingerprint: &str) {
         if let Some((_, board)) = self.boards().get(id) {
+            board.invalidate_background(fingerprint);
             board.forget(fingerprint);
         }
         if let Some(kept) = self.kept().get_mut(id) {
@@ -278,10 +399,12 @@ impl SqueezeState {
                 board.note_turned_away();
             }
             board.note_use();
-            self.kept()
-                .entry(e.config.id.clone())
-                .or_default()
-                .extend(prints.iter().cloned());
+            self.kept().entry(e.config.id.clone()).or_default().extend(
+                prints
+                    .iter()
+                    .filter(|f| !board.background_stopped(f))
+                    .cloned(),
+            );
             restored += prints.len();
         }
         restored
@@ -343,7 +466,7 @@ impl SqueezeState {
                     let mut kept = self.kept();
                     let kept = kept.entry(e.config.id.clone()).or_default();
                     kept.extend(through.iter().cloned());
-                    kept.retain(|f| !board.gave_up(f));
+                    kept.retain(|f| !board.gave_up(f) && !board.background_stopped(f));
                     kept.iter()
                         .filter(|f| !through.contains(*f))
                         .cloned()
@@ -399,6 +522,7 @@ impl SqueezeState {
         self.kept().clear();
         for (_, board) in self.boards().values() {
             board.set_keeping(false);
+            board.invalidate_background_requests();
         }
         let ids: Vec<String> = self.auto().drain().collect();
         let runs = self.runs();
@@ -522,6 +646,7 @@ impl SqueezeState {
         }
         self.keys().remove(id);
         self.ping_after().retain(|(owner, _), _| owner != id);
+        self.forget_key_order(id);
         self.kept().remove(id);
         self.auto().remove(id);
         let board = if entry.crowded_relay() {
@@ -540,9 +665,10 @@ impl SqueezeState {
     /// again (a removed key would count otherwise).
     pub fn keys_changed(&self, id: &str) {
         if let Some((_, board)) = self.boards().get(id) {
-            board.clear();
+            board.clear_through();
         }
         self.keys().remove(id);
+        self.forget_key_order(id);
         self.ping_after().retain(|(owner, _), _| owner != id);
         self.kept().remove(id);
         self.auto().remove(id);
@@ -562,6 +688,7 @@ impl SqueezeState {
     pub fn forget(&self, id: &str) {
         self.boards().remove(id);
         self.keys().remove(id);
+        self.forget_key_order(id);
         self.ping_after().retain(|(owner, _), _| owner != id);
         self.kept().remove(id);
         self.auto().remove(id);
@@ -592,6 +719,9 @@ pub struct SqueezeKeyView {
     pub kept_at: Option<u64>,
     /// Its latest keep-alive failed, and it is tried again shortly.
     pub keep_retrying: bool,
+    pub keep_alive_failures: u32,
+    pub background_stopped: bool,
+    pub stop_reason: Option<String>,
     pub tries: u32,
     pub trying: bool,
     pub refused: bool,
@@ -682,6 +812,27 @@ fn view(state: &SqueezeState, id: &str) -> SqueezeView {
             }),
         }
     }
+    if let Some(board) = &board {
+        for (fingerprint, _, _) in board.stopped_keys() {
+            if !keys.iter().any(|k| k.fingerprint == fingerprint) {
+                keys.push(SqueezeKeyView {
+                    fingerprint,
+                    ..SqueezeKeyView::default()
+                });
+            }
+        }
+        for key in &mut keys {
+            (
+                key.keep_alive_failures,
+                key.background_stopped,
+                key.stop_reason,
+            ) = board.background_state(&key.fingerprint);
+            if key.background_stopped {
+                key.keep_retrying = false;
+                key.trying = false;
+            }
+        }
+    }
     SqueezeView {
         crowded: board.as_ref().is_some_and(|b| b.crowded()),
         running: run.as_ref().is_some_and(|r| r.running()),
@@ -725,6 +876,13 @@ pub async fn squeeze_start(
     let account = id.clone();
     let vouched = entry.vouched();
     let keys = blocking(move || secrets::get_keys(store.as_ref(), &account, vouched)).await?;
+    state.squeeze.note_key_order(&id, &keys);
+    board.retain_background_keys(
+        &keys
+            .iter()
+            .map(|key| key_fingerprint(key))
+            .collect::<Vec<_>>(),
+    );
     // Keys set aside are not squeezed.
     let keys = entry.usable(keys);
     state.squeeze.cache_keys(&id, Some(keys.clone()));
@@ -759,6 +917,7 @@ fn start_run(
     // Tries paced around the mean the author chose.
     {
         let s = state.settings();
+        state.squeeze.set_rejoin_failed(s.keep_alive_rejoin);
         state
             .squeeze
             .set_means(s.keep_alive_minutes, s.squeeze_seconds);
@@ -773,7 +932,7 @@ fn start_run(
         .zip(&fingerprints)
         .enumerate()
         .filter(|(_, (_, f))| only.is_none_or(|only| only.contains(*f)))
-        .map(|(i, (k, _))| (i + 1, k.clone()))
+        .map(|(i, (k, f))| (state.squeeze.key_number(&id, f).unwrap_or(i + 1), k.clone()))
         .unzip();
     let auto = only.is_some();
     let unattended = backs_off(&state.squeeze, auto);
@@ -875,6 +1034,56 @@ pub async fn squeeze_stop(state: State<'_, AppState>, id: String) -> CommandResu
     Ok(view(&state.squeeze, &id))
 }
 
+/// Clear a background stop at the user's request. A live manual squeeze
+/// may take it back; otherwise it waits for the next manual squeeze.
+#[tauri::command]
+pub async fn squeeze_resume_key(
+    state: State<'_, AppState>,
+    id: String,
+    fingerprint: String,
+) -> CommandResult<SqueezeView> {
+    let _keys = state.keys_lock.lock().await;
+    let entry = state
+        .settings()
+        .provider(&id)
+        .cloned()
+        .ok_or_else(|| not_found(&id))?;
+    if entry.key_ignored.contains(&fingerprint) {
+        return Err(CommandError::Settings(
+            "Take this key back from ignored keys first.".into(),
+        ));
+    }
+    let board = state
+        .squeeze
+        .board_for(&entry)
+        .ok_or_else(|| CommandError::Settings("This provider has no squeeze board.".into()))?;
+    let store = state.secrets.clone();
+    let account = id.clone();
+    let vouched = entry.vouched();
+    let keys = blocking(move || secrets::get_keys(store.as_ref(), &account, vouched)).await?;
+    if !keys.iter().any(|key| key_fingerprint(key) == fingerprint) {
+        return Err(CommandError::Settings(
+            "This key is no longer in the provider's pool.".into(),
+        ));
+    }
+    state.squeeze.note_key_order(&id, &keys);
+    if !board.background_stopped(&fingerprint) {
+        return Ok(view(&state.squeeze, &id));
+    }
+    if !state
+        .squeeze
+        .rejoin_in_manual_run(&id, &fingerprint, &board)
+    {
+        if let Some(run) = state.squeeze.runs().get(&id) {
+            run.set_aside(&fingerprint);
+        }
+        board.resume_background(&fingerprint);
+    }
+    state.squeeze.clear_ping_retry(&id, &fingerprint);
+    record_through(&state);
+    Ok(view(&state.squeeze, &id))
+}
+
 /// A squeeze backs off while the author is away: one the keeper started
 /// (`auto`), unless keeping alive forever. Squeezing back in while keeping
 /// alive forever tries every few seconds, as a squeeze the author started
@@ -923,7 +1132,7 @@ impl SqueezeLog {
                     self.name
                 );
             }
-            SqueezeChange::Started | SqueezeChange::Kept => {}
+            SqueezeChange::Started | SqueezeChange::Kept | SqueezeChange::KeyStopped { .. } => {}
         }
     }
 
@@ -1012,12 +1221,20 @@ const THROUGH_NOTE_EVERY: u64 = 60 * 60 * 1000;
 /// while keeping alive is on. Settings of a version that did not note them
 /// give the keys of a crowded relay answered lately instead.
 fn restore_kept(state: &AppState) {
+    {
+        let (entries, stopped) = {
+            let s = state.settings();
+            (s.providers.clone(), s.stopped_keys.clone())
+        };
+        state.squeeze.restore_stopped(&entries, &stopped);
+    }
     let (entries, kept) = {
         let s = state.settings();
         if !s.keep_alive {
             return;
         }
         state.squeeze.set_forever(s.keep_alive_forever);
+        state.squeeze.set_rejoin_failed(s.keep_alive_rejoin);
         let kept = s
             .kept_keys
             .clone()
@@ -1052,6 +1269,11 @@ fn answered_lately(entries: &[ProviderEntry], now: u64) -> BTreeMap<String, Vec<
 }
 
 pub(crate) fn record_through(state: &AppState) {
+    let _record = state
+        .squeeze
+        .record_lock
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let through: Vec<(String, Vec<(String, u64)>)> = state
         .squeeze
         .boards()
@@ -1067,9 +1289,13 @@ pub(crate) fn record_through(state: &AppState) {
         .filter(|(_, t)| !t.is_empty())
         .collect();
     let kept = Some(state.squeeze.kept_keys());
+    let stopped = state.squeeze.stopped_keys();
     let mut s = state.settings();
     // The keys kept alive, squeezed back in after a restart.
-    let mut changed = s.kept_keys != kept;
+    let mut changed = s.kept_keys != kept
+        || s.stopped_keys != stopped
+        || state.squeeze.persist_dirty.load(Ordering::Relaxed);
+    s.stopped_keys = stopped;
     if changed {
         s.kept_keys = kept;
     }
@@ -1086,11 +1312,14 @@ pub(crate) fn record_through(state: &AppState) {
         }
     }
     // Settings that could not be read are not written over.
-    if changed
-        && !s.keep_file
-        && let Err(e) = state.persist(&s)
-    {
-        log::warn!("could not note the keys that got through or are kept alive: {e}");
+    if changed && !s.keep_file {
+        match state.persist(&s) {
+            Ok(()) => state.squeeze.persist_dirty.store(false, Ordering::Relaxed),
+            Err(e) => {
+                state.squeeze.persist_dirty.store(true, Ordering::Relaxed);
+                log::warn!("could not note keys that got through, are stopped or kept alive: {e}");
+            }
+        }
     }
 }
 
@@ -1107,6 +1336,15 @@ async fn keys_of(state: &AppState, entry: &ProviderEntry) -> Option<Vec<String>>
             let vouched = entry.vouched();
             match blocking(move || secrets::get_keys(store.as_ref(), &account, vouched)).await {
                 Ok(keys) => {
+                    state.squeeze.note_key_order(id, &keys);
+                    if let Some(board) = state.squeeze.board_of(entry) {
+                        board.retain_background_keys(
+                            &keys
+                                .iter()
+                                .map(|key| key_fingerprint(key))
+                                .collect::<Vec<_>>(),
+                        );
+                    }
                     // Keys set aside are not kept alive.
                     let keys = entry.usable(keys);
                     state.squeeze.cache_keys(id, Some(keys.clone()));
@@ -1137,6 +1375,7 @@ async fn keep_alive(app: &AppHandle, announce: bool) {
             return;
         }
         state.squeeze.set_forever(s.keep_alive_forever);
+        state.squeeze.set_rejoin_failed(s.keep_alive_rejoin);
         state
             .squeeze
             .set_means(s.keep_alive_minutes, s.squeeze_seconds);
@@ -1263,7 +1502,7 @@ async fn ping_one(
     if !unchanged || !state.squeeze.has_key(id, print) || !board.is_through(print) {
         return;
     }
-    let outcome = ping(
+    let outcome = ping_checked(
         &entry.config,
         key,
         Arc::clone(&board),
@@ -1271,16 +1510,73 @@ async fn ping_one(
         state.request_log.clone(),
     )
     .await;
-    if !state.squeeze.has_key(id, print) {
-        // The key was removed meanwhile: its answer does not count.
-        board.forget(print);
+    // Resume, ignore and pool/provider edits use the same lock. Only the
+    // result commit is serialized; no network request holds this lock.
+    let _keys = state.keys_lock.lock().await;
+    let current = {
+        let s = state.settings();
+        s.keep_alive
+            && s.provider(id)
+                .is_some_and(|e| e.squeeze_target() == entry.squeeze_target())
+    } && state
+        .squeeze
+        .board_of(entry)
+        .is_some_and(|b| Arc::ptr_eq(&b, &board));
+    if !current || !state.squeeze.has_key(id, print) {
+        // Pool edits already invalidate/remove their own state. A stale
+        // background result must not erase a newer foreground answer.
+        return;
+    }
+    if !outcome
+        .generation
+        .is_some_and(|generation| board.background_generation_matches(print, generation))
+    {
+        return;
+    }
+    let number = state.squeeze.key_number(id, print).unwrap_or(index + 1);
+    let (failures, stopped, reason) = board.background_state(print);
+    if stopped {
+        state.squeeze.clear_ping_retry(id, print);
+        // Immediate authentication/quota refusals have fewer than ten
+        // failures and are never automatically retried by this opt-in.
+        let rejoined = failures >= KEEP_ALIVE_FAILURE_LIMIT
+            && board.stop_can_rejoin(print)
+            && !board.stop_target_was_met(print)
+            && state.squeeze.rejoin_failed.load(Ordering::Relaxed)
+            && state.squeeze.rejoin_in_manual_run(id, print, &board);
+        let reason = reason.unwrap_or_else(|| "keep-alive failed".into());
+        record_through(&state);
+        let change = SqueezeChange::KeyStopped {
+            number,
+            fingerprint: print.to_owned(),
+            failures,
+            reason: reason.clone(),
+            rejoined,
+        };
+        log::info!(
+            "background requests for key {} of {} stopped after {failures} failed keep-alives: {reason}; rejoined={rejoined}",
+            number,
+            entry.config.name
+        );
+        let event = SqueezeEvent {
+            provider_id: id.clone(),
+            provider_name: entry.config.name.clone(),
+            change,
+            running: state.squeeze.runs().get(id).is_some_and(|r| r.running()),
+            through: board.through().len(),
+            total: entry.key_count,
+            keeping: state.settings().keep_alive && keeps(&state.squeeze, &board),
+        };
+        if let Err(e) = app.emit(EVENT_SQUEEZE, event) {
+            log::warn!("could not emit {EVENT_SQUEEZE}: {e}");
+        }
         return;
     }
     let name = &entry.config.name;
-    match outcome {
+    match outcome.result {
         Ok(()) => {
             state.squeeze.pinged(id, print, None);
-            log::info!("kept key {} of {name} alive", index + 1);
+            log::info!("kept key {number} of {name} alive");
         }
         Err(e) => {
             // Sent again soon, until it is answered.
@@ -1291,7 +1587,7 @@ async fn ping_one(
             state.squeeze.pinged(id, print, Some(wait));
             let words = without_request_id(&e.to_string());
             if state.squeeze.log_ping_failure(id, print, &words) {
-                log::info!("keeping key {} of {name} alive failed: {e}", index + 1);
+                log::info!("keeping key {number} of {name} alive failed: {e}");
             }
         }
     }
@@ -1532,6 +1828,164 @@ mod tests {
         assert_eq!(started["kind"], "started");
         let kept = serde_json::to_value(event(SqueezeChange::Kept)).unwrap();
         assert_eq!(kept["kind"], "kept");
+        let stopped = serde_json::to_value(event(SqueezeChange::KeyStopped {
+            number: 3,
+            fingerprint: "fp-c".into(),
+            failures: 10,
+            reason: "server unavailable".into(),
+            rejoined: false,
+        }))
+        .unwrap();
+        assert_eq!(stopped["kind"], "keyStopped");
+        assert_eq!(stopped["number"], 3);
+        assert_eq!(stopped["failures"], 10);
+        assert_eq!(stopped["rejoined"], false);
+    }
+
+    #[test]
+    fn notices_keep_original_pool_numbers_when_an_earlier_key_is_ignored() {
+        let state = SqueezeState::default();
+        let mut relay = entry("https://anyrouter.top/v1", 3);
+        state.board_for(&relay).unwrap();
+        let raw = ["sk-first", "sk-second", "sk-third"]
+            .map(String::from)
+            .to_vec();
+        relay.key_ignored.insert(key_fingerprint(&raw[0]));
+        state.note_key_order("p-relay", &raw);
+        let usable = relay.usable(raw.clone());
+        let print = key_fingerprint(&usable[0]);
+        assert_eq!(usable, raw[1..]);
+        assert_eq!(state.key_number("p-relay", &print), Some(2));
+        let event = serde_json::to_value(SqueezeChange::KeyStopped {
+            number: state.key_number("p-relay", &print).unwrap(),
+            fingerprint: print.clone(),
+            failures: 10,
+            reason: "server unavailable".into(),
+            rejoined: false,
+        })
+        .unwrap();
+        assert_eq!(event["number"], 2);
+        state.keys_changed("p-relay");
+        assert_eq!(state.key_number("p-relay", &print), None);
+        state.note_key_order("p-relay", &raw);
+        relay.config.model = "another-model".into();
+        state.board_for(&relay).unwrap();
+        assert_eq!(state.key_number("p-relay", &print), None);
+        state.note_key_order("p-relay", &raw);
+        state.forget("p-relay");
+        assert_eq!(state.key_number("p-relay", &print), None);
+    }
+
+    #[test]
+    fn stopped_background_keys_survive_restart_only_for_the_same_target() {
+        let state = SqueezeState::default();
+        state.set_forever(true);
+        let relay = entry("https://anyrouter.top/v1", 3);
+        let board = state.board_for(&relay).unwrap();
+        board.note_squeezed();
+        board.answered("fp-a");
+        board.answered("fp-b");
+        assert!(state.dropped_keys(std::slice::from_ref(&relay)).is_empty());
+        board.restore_stopped("fp-a", 10, "provider server error");
+        board.answered("fp-a");
+        assert!(state.dropped_keys(std::slice::from_ref(&relay)).is_empty());
+        assert!(!state.kept_keys()["p-relay"].contains(&"fp-a".to_owned()));
+        let stopped = state.stopped_keys();
+        assert_eq!(stopped["p-relay"]["fp-a"].target, relay.squeeze_target());
+        let after = SqueezeState::default();
+        after.restore_stopped(std::slice::from_ref(&relay), &stopped);
+        let after_board = after.board_for(&relay).unwrap();
+        assert!(after_board.background_stopped("fp-a"));
+        let key = view(&after, "p-relay")
+            .keys
+            .into_iter()
+            .find(|k| k.fingerprint == "fp-a")
+            .unwrap();
+        assert_eq!(key.keep_alive_failures, 10);
+        assert!(key.background_stopped);
+        assert_eq!(key.stop_reason.as_deref(), Some("provider server error"));
+        let mut moved = relay.clone();
+        moved.config.model = "another-model".into();
+        let different = SqueezeState::default();
+        different.restore_stopped(&[moved.clone()], &stopped);
+        assert!(
+            !different
+                .board_for(&moved)
+                .unwrap()
+                .background_stopped("fp-a")
+        );
+        assert!(different.stopped_keys().is_empty());
+        state.keys_changed("p-relay");
+        assert!(
+            board.background_stopped("fp-a"),
+            "editing other pool keys cannot resume this key"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_stop_save_is_retried_and_an_explicit_resume_is_saved_immediately() {
+        let dir = std::env::temp_dir().join(format!(
+            "biwrite-stop-save-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = crate::pair_tests::app_state(&dir);
+        let relay = entry("https://anyrouter.top/v1", 3);
+        state.settings().providers.push(relay.clone());
+        let board = state.squeeze.board_for(&relay).unwrap();
+        board.restore_stopped("fp-a", 10, "provider server error");
+        // A directory where a file belongs makes the first atomic save
+        // fail, without changing permissions or accessing user data.
+        std::fs::create_dir_all(&state.paths.settings).unwrap();
+        record_through(&state);
+        assert!(state.squeeze.persist_dirty.load(Ordering::Relaxed));
+        std::fs::remove_dir(&state.paths.settings).unwrap();
+        record_through(&state);
+        assert!(!state.squeeze.persist_dirty.load(Ordering::Relaxed));
+        let saved = crate::settings::load(&state.paths.settings);
+        assert_eq!(saved.stopped_keys["p-relay"]["fp-a"].failures, 10);
+        let restarted = crate::pair_tests::app_state(&dir);
+        *restarted.settings() = saved;
+        restore_kept(&restarted);
+        assert!(
+            restarted
+                .squeeze
+                .board_for(&relay)
+                .unwrap()
+                .background_stopped("fp-a")
+        );
+        assert!(board.resume_background("fp-a"));
+        record_through(&state);
+        assert!(
+            crate::settings::load(&state.paths.settings)
+                .stopped_keys
+                .is_empty()
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn rejoining_a_stopped_key_never_creates_or_resumes_a_background_run() {
+        let state = SqueezeState::default();
+        let relay = entry("https://anyrouter.top/v1", 3);
+        let board = state.board_for(&relay).unwrap();
+        board.restore_stopped("fp-a", 10, "server unavailable");
+        assert!(!state.rejoin_in_manual_run("p-relay", "fp-a", &board));
+        assert!(state.runs().is_empty());
+        assert!(board.resume_background("fp-a"));
+        assert!(!board.is_through("fp-a"));
+        assert!(state.runs().is_empty());
+        let run = run_for(&state, &relay);
+        let print = run.progress()[0].fingerprint.clone();
+        board.restore_stopped(&print, 10, "server unavailable");
+        state.auto().insert("p-relay".into());
+        assert!(!state.rejoin_in_manual_run("p-relay", &print, &board));
+        assert!(board.background_stopped(&print));
+        state.auto().remove("p-relay");
+        assert!(state.rejoin_in_manual_run("p-relay", &print, &board));
+        assert!(!board.background_stopped(&print));
+        run.stop();
     }
 
     /// Keys kept alive that lose their place are squeezed back in, unless a

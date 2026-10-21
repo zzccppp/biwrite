@@ -446,6 +446,90 @@ async fn a_failed_ping_keeps_the_keys_place_unless_the_key_is_refused() {
     assert!(board.gave_up(&c), "and is not squeezed back in");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tenth_failed_ping_stops_requests_until_the_user_resumes_it() {
+    let relay = Relay::start().await;
+    let board = SqueezeBoard::for_relay();
+    board.answered(&key_fingerprint(A));
+    for _ in 0..10 {
+        assert!(
+            biwrite_providers::ping(
+                &config(&relay.base),
+                A.into(),
+                Arc::clone(&board),
+                Arc::new(DefaultPrompts),
+                Arc::new(NoObserver),
+            )
+            .await
+            .is_err()
+        );
+    }
+    let print = key_fingerprint(A);
+    assert_eq!(board.background_state(&print).0, 10);
+    assert!(board.background_stopped(&print));
+    let sent = relay.requests_with(A);
+    assert_eq!(sent, 10, "count full requests exactly once");
+    relay.rules.lock().unwrap().through.insert(A.into());
+    assert!(
+        biwrite_providers::ping(
+            &config(&relay.base),
+            A.into(),
+            Arc::clone(&board),
+            Arc::new(DefaultPrompts),
+            Arc::new(NoObserver),
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        relay.requests_with(A),
+        sent,
+        "stopped keys issue no background request"
+    );
+    assert!(board.resume_background(&print));
+    biwrite_providers::ping(
+        &config(&relay.base),
+        A.into(),
+        Arc::clone(&board),
+        Arc::new(DefaultPrompts),
+        Arc::new(NoObserver),
+    )
+    .await
+    .unwrap();
+    assert_eq!(board.background_state(&print), (0, false, None));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_key_is_not_tried_by_a_new_squeeze_without_explicit_rejoin() {
+    let relay = Relay::start().await;
+    let board = SqueezeBoard::new();
+    board.set_pace(Some(Duration::from_millis(80)));
+    let print = key_fingerprint(A);
+    board.restore_stopped(&print, 10, "server unavailable");
+    let (run, changes) = start(&relay, &board);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(relay.requests_with(A), 0);
+    assert!(run.running());
+    relay.rules.lock().unwrap().through.insert(A.into());
+    assert!(run.rejoin_key(&board, &print));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !board.is_through(&print) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(relay.requests_with(A) > 0);
+    assert_eq!(board.background_state(&print), (0, false, None));
+    run.stop();
+    assert!(!until_ended(&changes, Duration::from_secs(3)).await);
+    board.restore_stopped(&print, 10, "server unavailable");
+    assert!(
+        !run.rejoin_key(&board, &print),
+        "an ended squeeze never restarts itself"
+    );
+}
+
 /// A relay that answers a key, though with an output cut off by its limit
 /// or declined by its content filter, let the key through: the squeeze does
 /// not ask it again every few seconds.

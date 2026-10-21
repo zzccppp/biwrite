@@ -104,6 +104,15 @@
   let updateAvailable = $state<string | null>(null);
   /** Squeezes running in the background, and keys kept alive, by provider id. */
   let squeezes = $state<Record<string, SqueezeEvent>>({});
+  /** Keep failure notices separate from transient status and file errors. */
+  let keyStopNotices = $state<{
+    id: string;
+    name: string;
+    number: number;
+    failures: number;
+    reason: string;
+    rejoined: boolean;
+  }[]>([]);
   const squeezeLabel = $derived.by(() => {
     const shown = Object.values(squeezes).filter((e) => e.running || (e.keeping && e.through > 0));
     if (shown.length === 0) return null;
@@ -165,6 +174,17 @@
 
   function onSqueeze(event: SqueezeEvent): void {
     squeezes = { ...squeezes, [event.providerId]: event };
+    if (event.kind === "keyStopped") {
+      const notice = {
+        id: `${event.providerId}|${event.fingerprint}`,
+        name: event.providerName,
+        number: event.number,
+        failures: event.failures,
+        reason: event.reason,
+        rejoined: event.rejoined,
+      };
+      keyStopNotices = [...keyStopNotices.filter((n) => n.id !== notice.id), notice];
+    }
     if (event.kind === "through") {
       session.flash(t("squeeze.noticeThrough", { name: event.providerName, n: event.number }));
       alertNow = Date.now();
@@ -2518,6 +2538,7 @@
   {/if}
   </div>
 
+
   {#if squeezeAlert}
     <div class="squeeze-alert" role="status" class:stale={alertNow - squeezeAlert.lastOk > 5 * 60_000}>
       <span>{t("squeeze.alert", { name: squeezeAlert.name, through: squeezeAlert.through, total: squeezeAlert.total })}</span>
@@ -2591,6 +2612,23 @@
   />
 </div>
 
+  {#if keyStopNotices.length > 0}
+    <div class="key-stop-alerts" class:with-through={!!squeezeAlert}>
+      {#each keyStopNotices as notice (notice.id)}
+        <div class="key-stop-alert" role="alert" data-rejoined={notice.rejoined}>
+          <div>
+            <span>{t(notice.rejoined ? "squeeze.rejoinNotice" : "squeeze.stopNotice", { name: notice.name, n: notice.number, failures: notice.failures })}</span>
+            <p class="reason">{notice.reason}</p>
+          </div>
+          <button class="btn" onclick={() => (keyStopNotices = keyStopNotices.filter((n) => n.id !== notice.id))}>
+            {t("squeeze.dismiss")}
+          </button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+
 {#if diffFiles}
   <DiffSheet files={diffFiles} onclose={() => (diffFiles = null)} />
 {/if}
@@ -2653,6 +2691,45 @@
 {/if}
 
 <style>
+  .key-stop-alerts {
+    position: fixed;
+    left: 16px;
+    bottom: 34px;
+    z-index: 80;
+    display: grid;
+    gap: 8px;
+    width: min(560px, calc(100vw - 32px));
+    max-height: 45vh;
+    overflow-y: auto;
+  }
+  .key-stop-alerts.with-through {
+    bottom: 100px;
+  }
+  .key-stop-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 9px 12px;
+    background: var(--paper);
+    border: 1px solid var(--error);
+    border-radius: 6px;
+    box-shadow: 0 12px 32px -18px rgba(0, 0, 0, 0.45);
+    font-size: 13.5px;
+    color: var(--ink);
+  }
+  .key-stop-alert > div {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .key-stop-alert .reason {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+  .key-stop-alert .btn {
+    flex-shrink: 0;
+  }
   .squeeze-alert {
     position: fixed;
     right: 16px;
