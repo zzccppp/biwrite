@@ -166,6 +166,7 @@ export const settingsIpc = {
   setKeysInFile: (on: boolean) => invoke<SettingsView>("set_keys_in_file", { on }),
   setKeyIgnored: (id: string, fingerprint: string, ignored: boolean) =>
     invoke<SettingsView>("set_key_ignored", { id, fingerprint, ignored }),
+  revealApiKey: (id: string, fingerprint: string) => invoke<string>("reveal_api_key", { id, fingerprint }),
   setSqueezeEffort: (effort: Effort) => invoke<SettingsView>("set_squeeze_effort", { effort }),
   setPacing: (keepAliveMinutes: number, squeezeSeconds: number, squeezeEnough: number) =>
     invoke<SettingsView>("set_pacing", { keepAliveMinutes, squeezeSeconds, squeezeEnough }),

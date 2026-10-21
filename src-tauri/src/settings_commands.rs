@@ -547,6 +547,28 @@ pub async fn test_api_key(
     ask_test(provider.as_ref(), Duration::from_secs(120)).await
 }
 
+/// The key `fingerprint` of provider `id`, for the author to copy.
+#[tauri::command]
+pub async fn reveal_api_key(
+    state: State<'_, AppState>,
+    id: String,
+    fingerprint: String,
+) -> CommandResult<String> {
+    let entry = state
+        .settings()
+        .provider(&id)
+        .cloned()
+        .ok_or_else(|| not_found(&id))?;
+    let store = state.secrets.clone();
+    let vouched = entry.vouched();
+    blocking(move || secrets::get_keys(store.as_ref(), &id, vouched))
+        .await?
+        .into_iter()
+        .find(|k| key_fingerprint(k) == fingerprint)
+        .map(|k| k.trim().to_owned())
+        .ok_or_else(|| CommandError::Settings("that key is no longer in the pool".into()))
+}
+
 /// Paragraphs per translation request (1: one per request).
 #[tauri::command]
 pub async fn set_batch_size(

@@ -226,6 +226,24 @@
     if (path) message = { ok: true, text: t("keys.exported", { path }) };
   }
 
+  /** The key just copied, for a moment. */
+  let copied = $state<string | null>(null);
+
+  /** Copy key `k` to the clipboard. */
+  async function copyKey(k: KeyEntry): Promise<void> {
+    const key = await act(`copy-${k.fingerprint}`, () => settingsIpc.revealApiKey(provider.id, k.fingerprint));
+    if (key === undefined) return;
+    try {
+      await navigator.clipboard.writeText(key);
+      copied = k.fingerprint;
+      setTimeout(() => {
+        if (copied === k.fingerprint) copied = null;
+      }, 1500);
+    } catch (e) {
+      message = { ok: false, text: errorMessage(e) };
+    }
+  }
+
   async function test(k: KeyEntry): Promise<void> {
     const out = await act(`test-${k.fingerprint}`, () => settingsIpc.testKey(provider.id, k.fingerprint));
     if (out !== undefined)
@@ -506,6 +524,9 @@
           <button class="btn" onclick={() => test(k)} disabled={!!busy}>
             {busy === `test-${k.fingerprint}` ? t("common.testing") : t("common.test")}
           </button>
+          <button class="btn copy" onclick={() => void copyKey(k)} disabled={!!busy} title={t("keys.copyHint")}>
+            {copied === k.fingerprint ? t("keys.copied") : t("keys.copy")}
+          </button>
           <button class="btn ignore" onclick={() => void setIgnored(k, !k.ignored)} disabled={!!busy} title={t("keys.ignoreHint")}>
             {k.ignored ? t("keys.unignore") : t("keys.ignore")}
           </button>
@@ -643,7 +664,7 @@
   .head,
   .entry {
     display: grid;
-    grid-template-columns: 28px minmax(110px, 1fr) 90px minmax(110px, 0.8fr) 60px 236px;
+    grid-template-columns: 28px minmax(110px, 1fr) 90px minmax(110px, 0.8fr) 60px 290px;
     gap: 10px;
     align-items: center;
   }

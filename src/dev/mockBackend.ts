@@ -1488,6 +1488,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     else state.ignoredKeys.delete(String(a.fingerprint));
     return clone(state.settings);
   },
+  reveal_api_key: (a) => `sk-mock-${String(a.fingerprint)}`,
   set_squeeze_effort: (a) => {
     state.settings.squeezeEffort = String(a.effort) as typeof state.settings.squeezeEffort;
     return clone(state.settings);
