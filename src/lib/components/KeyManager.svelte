@@ -89,11 +89,13 @@
     }
   }
 
-  async function setRejoin(on: boolean): Promise<void> {
-    const view = await act("rejoin", () => settingsIpc.setKeepAliveRejoin(on));
+  async function setRejoin(checkbox: HTMLInputElement): Promise<void> {
+    const view = await act("rejoin", () => settingsIpc.setKeepAliveRejoin(checkbox.checked));
     if (view) {
       rejoin = view.keepAliveRejoin;
       onchange(view);
+    } else {
+      checkbox.checked = rejoin;
     }
   }
 
@@ -411,7 +413,7 @@
           type="checkbox"
           checked={rejoin}
           disabled={!!busy || !keepAlive}
-          onchange={(e) => void setRejoin(e.currentTarget.checked)}
+          onchange={(e) => void setRejoin(e.currentTarget)}
         />
         <span class="label smallcaps">{t("squeeze.rejoin")}</span>
       </label>

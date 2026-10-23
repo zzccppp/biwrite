@@ -188,7 +188,7 @@ pub struct AppSettings {
     /// They are kept alive however long the author is away; off, only
     /// within half an hour of the author's last use.
     pub keep_alive_forever: bool,
-    /// Allow a failed keep-alive to rejoin a manual squeeze still running.
+    /// Automatically queue retryable failed keep-alives when below the target.
     pub keep_alive_rejoin: bool,
     /// Full consecutive failed keep-alives before background requests stop.
     pub keep_alive_failure_limit: u32,

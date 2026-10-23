@@ -231,7 +231,7 @@ export interface SettingsView {
   keepAlive: boolean;
   /** Kept alive however long the author is away (else 30 minutes). */
   keepAliveForever: boolean;
-  /** Retry a stopped key only in a manual squeeze that has not reached its target. */
+  /** Automatically queue retryable failed keep-alives, including after reaching the target. */
   keepAliveRejoin: boolean;
   /** Consecutive failed keep-alives before a key's background requests stop. */
   keepAliveFailureLimit: number;

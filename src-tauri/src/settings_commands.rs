@@ -781,19 +781,24 @@ pub async fn set_keep_alive_forever(
     Ok(state.settings_view())
 }
 
-/// Failed keep-alives may rejoin a manual squeeze that is still running.
+fn update_keep_alive_rejoin(state: &AppState, on: bool) -> CommandResult<()> {
+    let mut settings = state.settings();
+    let mut updated = settings.clone();
+    updated.keep_alive_rejoin = on;
+    state.persist(&updated)?;
+    *settings = updated;
+    state.squeeze.set_rejoin_failed(on);
+    Ok(())
+}
+
+/// Failed keep-alives may be queued again, including after a completed run.
 #[tauri::command]
 pub async fn set_keep_alive_rejoin(
     state: State<'_, AppState>,
     on: bool,
 ) -> CommandResult<SettingsView> {
     let _keys = state.keys_lock.lock().await;
-    {
-        let mut s = state.settings();
-        s.keep_alive_rejoin = on;
-        state.persist(&s)?;
-    }
-    state.squeeze.set_rejoin_failed(on);
+    update_keep_alive_rejoin(&state, on)?;
     Ok(state.settings_view())
 }
 
@@ -1114,6 +1119,25 @@ mod tests {
 
     use super::*;
     use crate::settings::same_destination;
+
+    #[tokio::test]
+    async fn rejoin_setting_changes_only_after_a_successful_save() {
+        let dir = std::env::temp_dir().join(format!("biwrite-rejoin-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = crate::pair_tests::app_state(&dir);
+        std::fs::create_dir(&state.paths.settings).unwrap();
+        assert!(update_keep_alive_rejoin(&state, true).is_err());
+        assert!(!state.settings_view().keep_alive_rejoin);
+        std::fs::remove_dir(&state.paths.settings).unwrap();
+        update_keep_alive_rejoin(&state, true).unwrap();
+        assert!(state.settings_view().keep_alive_rejoin);
+        assert!(crate::settings::load(&state.paths.settings).keep_alive_rejoin);
+        std::fs::remove_file(&state.paths.settings).unwrap();
+        std::fs::create_dir(&state.paths.settings).unwrap();
+        assert!(update_keep_alive_rejoin(&state, false).is_err());
+        assert!(state.settings_view().keep_alive_rejoin);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[tokio::test]
     async fn keep_alive_limit_is_applied_only_when_saved_successfully() {

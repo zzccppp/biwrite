@@ -80,6 +80,33 @@ struct BackgroundKey {
     stopped: Option<String>,
     target_met_at_stop: bool,
     rejoinable_stop: bool,
+    /// The keeper has not yet decided whether this stop rejoins its run.
+    stop_decision_pending: bool,
+}
+
+/// A stopped ping remains eligible for rejoining until its caller has
+/// committed that decision. Dropping an unused outcome accepts the stop.
+struct StopDecision {
+    board: Arc<SqueezeBoard>,
+    fingerprint: String,
+    generation: u64,
+}
+
+impl Drop for StopDecision {
+    fn drop(&mut self) {
+        let mut keys = self.board.background();
+        if let Some(key) = keys
+            .get_mut(&self.fingerprint)
+            .filter(|key| key.generation == self.generation)
+        {
+            key.stop_decision_pending = false;
+        }
+    }
+}
+
+struct PingCommit {
+    generation: u64,
+    stop_decision: Option<StopDecision>,
 }
 
 /// The keys of one provider that got through, by fingerprint.
@@ -246,11 +273,13 @@ impl SqueezeBoard {
         let mut keys = self.background();
         let key = keys.entry(fingerprint.to_owned()).or_default();
         key.generation = self.next_generation();
+        key.stop_decision_pending = false;
     }
 
     pub fn invalidate_background_requests(&self) {
         for key in self.background().values_mut() {
             key.generation = self.next_generation();
+            key.stop_decision_pending = false;
         }
     }
 
@@ -266,6 +295,13 @@ impl SqueezeBoard {
         self.background()
             .get(fingerprint)
             .is_some_and(|k| k.stopped.is_some())
+    }
+
+    /// A stopped key is terminal only after the keeper's rejoin decision.
+    fn background_stop_settled(&self, fingerprint: &str) -> bool {
+        self.background()
+            .get(fingerprint)
+            .is_some_and(|key| key.stopped.is_some() && !key.stop_decision_pending)
     }
 
     pub fn stop_target_was_met(&self, fingerprint: &str) -> bool {
@@ -314,6 +350,7 @@ impl SqueezeBoard {
                 stopped: Some(reason.to_owned()),
                 target_met_at_stop: true,
                 rejoinable_stop: false,
+                stop_decision_pending: false,
             },
         );
         self.forget(fingerprint);
@@ -334,6 +371,7 @@ impl SqueezeBoard {
         key.stopped = None;
         key.target_met_at_stop = false;
         key.rejoinable_stop = false;
+        key.stop_decision_pending = false;
         self.given_up().remove(fingerprint);
         self.forget(fingerprint);
         true
@@ -342,11 +380,11 @@ impl SqueezeBoard {
     /// Apply a full ping once. Internal protocol retries do not count as
     /// separate failures. Every successful ping resets the count.
     fn finish_ping(
-        &self,
+        self: &Arc<Self>,
         fingerprint: &str,
         token: u64,
         result: &Result<(), TranslateError>,
-    ) -> Option<u64> {
+    ) -> Option<PingCommit> {
         let target_met = self.has_enough();
         let mut keys = self.background();
         let key = keys
@@ -357,12 +395,17 @@ impl SqueezeBoard {
                 key.failures = 0;
                 self.answered(fingerprint);
             }
+            // A temporary rate limit only delays the next request. It
+            // neither increments nor resets consecutive failures, and
+            // does not count as a successful keep-alive.
+            Err(TranslateError::RateLimited { .. }) => {}
             Err(err) => {
                 key.failures = key.failures.saturating_add(1);
                 if key.failures >= self.keep_alive_failure_limit() || refuses_key(err) {
                     key.stopped = Some(err.to_string());
                     key.target_met_at_stop = target_met;
                     key.rejoinable_stop = !refuses_key(err);
+                    key.stop_decision_pending = key.rejoinable_stop;
                     key.generation = self.next_generation();
                     self.forget(fingerprint);
                     if refuses_key(err) {
@@ -377,7 +420,14 @@ impl SqueezeBoard {
                 }
             }
         }
-        Some(key.generation)
+        Some(PingCommit {
+            generation: key.generation,
+            stop_decision: key.stop_decision_pending.then(|| StopDecision {
+                board: Arc::clone(self),
+                fingerprint: fingerprint.to_owned(),
+                generation: key.generation,
+            }),
+        })
     }
 
     fn finish_try(
@@ -681,9 +731,13 @@ pub type ChangeFn = Arc<dyn Fn(SqueezeChange) + Send + Sync>;
 
 /// The result of one complete ping and the generation that accepted it.
 /// A result discarded after a pool edit or stop has no generation.
+/// Keep this value alive until the caller has decided whether to rejoin a
+/// stopped key. Dropping it accepts the stop and lets idle workers finish.
 pub struct PingOutcome {
     pub result: Result<(), TranslateError>,
     pub generation: Option<u64>,
+    // Keep the worker alive until the caller rejoins or drops this result.
+    _stop_decision: Option<StopDecision>,
 }
 
 /// Send `key` of the provider `config` a short translation, which keeps its
@@ -716,6 +770,7 @@ pub async fn ping_checked(
                 "background requests for this key are stopped".into(),
             )),
             generation: None,
+            _stop_decision: None,
         };
     };
     // Not joined to the board: a ping that fails is sent again soon, and
@@ -731,6 +786,7 @@ pub async fn ping_checked(
             return PingOutcome {
                 result: Err(err),
                 generation: None,
+                _stop_decision: None,
             };
         }
     };
@@ -746,8 +802,13 @@ pub async fn ping_checked(
             PROBE_TIMEOUT.as_secs()
         ))),
     };
-    let generation = board.finish_ping(&print, token, &result);
-    PingOutcome { result, generation }
+    let committed = board.finish_ping(&print, token, &result);
+    let generation = committed.as_ref().map(|commit| commit.generation);
+    PingOutcome {
+        result,
+        generation,
+        _stop_decision: committed.and_then(|commit| commit.stop_decision),
+    }
 }
 
 /// The relay turned the try away for now: trying again may get through.
@@ -900,7 +961,9 @@ impl Squeeze {
         let progress = self.lock();
         progress.iter().any(|p| board.holds(&p.fingerprint))
             && progress.iter().all(|p| {
-                p.refused || board.background_stopped(&p.fingerprint) || board.holds(&p.fingerprint)
+                p.refused
+                    || board.background_stop_settled(&p.fingerprint)
+                    || board.holds(&p.fingerprint)
             })
     }
 
@@ -948,7 +1011,7 @@ impl Squeeze {
                 if self
                     .lock()
                     .iter()
-                    .all(|p| p.refused || board.background_stopped(&p.fingerprint))
+                    .all(|p| p.refused || board.background_stop_settled(&p.fingerprint))
                 {
                     return;
                 }
@@ -1194,6 +1257,98 @@ mod tests {
         }
         let _ = board.finish_ping("a", fresh, &Ok(()));
         assert_eq!(board.background_state("a"), (0, false, None));
+    }
+
+    #[test]
+    fn rate_limits_preserve_failures_without_refreshing_or_stopping_the_key() {
+        let board = SqueezeBoard::new();
+        board.set_keep_alive_failure_limit(3);
+        board.answered("a");
+        let last_ok = board.lock()["a"].last_ok;
+        let token = board.background_token("a").unwrap();
+        for _ in 0..2 {
+            let _ = board.finish_ping("a", token, &Err(server()));
+        }
+        let limited = Err(TranslateError::RateLimited {
+            retry_after: Some(Duration::from_secs(30)),
+            message: "too many requests".into(),
+        });
+        // Even lowering the limit below the existing count must not make
+        // a temporary rate limit stop the key.
+        board.set_keep_alive_failure_limit(1);
+        for _ in 0..40 {
+            let _ = board.finish_ping("a", token, &limited);
+        }
+        assert_eq!(board.background_state("a"), (2, false, None));
+        assert_eq!(board.lock()["a"].last_ok, last_ok);
+        assert!(board.is_through("a"));
+        let _ = board.finish_ping("a", token, &Err(server()));
+        assert_eq!(board.background_state("a").0, 3);
+        assert!(board.background_stopped("a"));
+        assert!(board.resume_background("a"));
+        board.set_keep_alive_failure_limit(3);
+        let fresh = board.background_token("a").unwrap();
+        let _ = board.finish_ping("a", fresh, &Err(server()));
+        let _ = board.finish_ping("a", fresh, &limited);
+        assert_eq!(board.background_state("a"), (1, false, None));
+        assert!(
+            !board.is_through("a"),
+            "a rate limit does not get a key through"
+        );
+        let _ = board.finish_ping("a", fresh, &Ok(()));
+        assert_eq!(board.background_state("a"), (0, false, None));
+        assert!(board.is_through("a"));
+    }
+
+    #[test]
+    fn only_the_current_ping_decision_can_settle_a_pending_stop() {
+        let board = SqueezeBoard::new();
+        board.set_keep_alive_failure_limit(1);
+        let token = board.background_token("a").unwrap();
+        let previous = board.finish_ping("a", token, &Err(server())).unwrap();
+        assert!(board.background_stopped("a"));
+        assert!(!board.background_stop_settled("a"));
+        assert!(board.resume_background("a"));
+        let token = board.background_token("a").unwrap();
+        let current = board.finish_ping("a", token, &Err(server())).unwrap();
+        drop(previous);
+        assert!(!board.background_stop_settled("a"));
+        drop(current);
+        assert!(board.background_stop_settled("a"));
+    }
+
+    #[test]
+    fn edits_settle_pending_stops_and_ignore_late_ping_results() {
+        for edit in 0..3 {
+            let board = SqueezeBoard::new();
+            board.set_keep_alive_failure_limit(1);
+            let token = board.background_token("a").unwrap();
+            let pending = board.finish_ping("a", token, &Err(server())).unwrap();
+            match edit {
+                0 => board.invalidate_background("a"),
+                1 => board.invalidate_background_requests(),
+                _ => board.restore_stopped("a", 1, "restored stop"),
+            }
+            assert!(board.background_stop_settled("a"));
+            assert!(board.resume_background("a"));
+            let fresh = board.background_token("a").unwrap();
+            let current = board.finish_ping("a", fresh, &Err(server())).unwrap();
+            drop(pending);
+            for result in [
+                Ok(()),
+                Err(server()),
+                Err(TranslateError::RateLimited {
+                    retry_after: None,
+                    message: "too many requests".into(),
+                }),
+            ] {
+                assert!(board.finish_ping("a", token, &result).is_none());
+                assert_eq!(board.background_state("a").0, 1);
+                assert!(!board.background_stop_settled("a"));
+            }
+            drop(current);
+            assert!(board.background_stop_settled("a"));
+        }
     }
 
     #[test]

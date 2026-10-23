@@ -179,7 +179,18 @@ pub(crate) async fn error_from_response(mut resp: Response, key: &str) -> Transl
         }
     }
     let body = String::from_utf8_lossy(&body);
-    let message = redact(&error_message(&body), key);
+    body_error(status, &body, key, retry_after)
+}
+
+fn body_error(status: u16, body: &str, key: &str, retry_after: Option<Duration>) -> TranslateError {
+    let message = redact(&error_message(body), key);
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        let err = value
+            .get("error")
+            .filter(|e| e.is_object())
+            .unwrap_or(&value);
+        return object_error(status, err, message, retry_after);
+    }
     status_error(status, message, retry_after)
 }
 
@@ -194,25 +205,102 @@ pub(crate) fn status_error(
             status,
             message: "the provider answered with a redirect; check the base URL".into(),
         },
-        // OpenAI reports an exhausted balance as 429; retrying won't help.
-        429 if lower.contains("insufficient_quota") || lower.contains("current quota") => {
-            TranslateError::Rejected { status, message }
-        }
+        401 | 403 => TranslateError::Rejected {
+            status,
+            message: format!("{message} — check the API key"),
+        },
+        402 => TranslateError::Rejected { status, message },
+        // Exhausted balances are permanent even when a relay wraps them in 5xx.
+        _ if exhausted_quota_message(&lower) => TranslateError::Rejected { status, message },
         429 => TranslateError::RateLimited {
             retry_after,
             message,
         },
+        // Some relays wrap upstream token limits in a generic server error.
+        408 | 409 | 500..=599 if temporary_rate_limit_message(&lower) => {
+            TranslateError::RateLimited {
+                retry_after,
+                message,
+            }
+        }
         408 | 409 | 500..=599 => TranslateError::Server {
             status,
             retry_after,
             message,
         },
-        401 | 403 => TranslateError::Rejected {
-            status,
-            message: format!("{message} — check the API key"),
-        },
         _ => TranslateError::Rejected { status, message },
     }
+}
+
+fn exhausted_quota_message(lower: &str) -> bool {
+    [
+        "insufficient_quota",
+        "exceeded your current quota",
+        "insufficient balance",
+        "insufficient credit",
+        "余额不足",
+        "余额已用尽",
+        "额度已用尽",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
+}
+
+fn temporary_rate_limit_message(lower: &str) -> bool {
+    lower == "rate limit exceeded"
+        || lower.starts_with("rate limit exceeded:")
+        || lower.starts_with("rate_limit_exceeded:")
+        || lower.contains("have exceeded token rate limit")
+}
+
+/// Preserve upstream business errors when a relay supplies a generic status.
+/// Authentication and exhausted balances take precedence over rate limits.
+fn object_error(
+    status: u16,
+    err: &Value,
+    message: String,
+    retry_after: Option<Duration>,
+) -> TranslateError {
+    if matches!(status, 300..=399 | 401..=403) {
+        return status_error(status, message, retry_after);
+    }
+    let code = err.get("code").and_then(Value::as_str).unwrap_or("");
+    let kind = err.get("type").and_then(Value::as_str).unwrap_or("");
+    let is = |names: &[&str]| names.contains(&code) || names.contains(&kind);
+    if is(&["insufficient_quota"]) {
+        return TranslateError::Rejected {
+            status: 429,
+            message,
+        };
+    }
+    let status = if is(&["invalid_api_key", "authentication_error", "unauthorized"]) {
+        401
+    } else if is(&["permission_error", "permission_denied"]) {
+        403
+    } else if is(&[
+        "billing_error",
+        "insufficient_balance",
+        "insufficient_credit",
+    ]) {
+        402
+    } else if is(&[
+        "rate_limit_exceeded",
+        "rate_limit_error",
+        "too_many_requests",
+    ]) || (matches!(status, 408 | 409 | 500..=599)
+        && temporary_rate_limit_message(&message.to_lowercase()))
+    {
+        429
+    } else if is(&[
+        "invalid_prompt",
+        "invalid_request_error",
+        "context_length_exceeded",
+    ]) {
+        400
+    } else {
+        status
+    };
+    status_error(status, message, retry_after)
 }
 
 /// A short description of an in-stream error object for the request log:
@@ -241,42 +329,12 @@ pub(crate) fn stream_error_object(err: &Value, key: &str) -> TranslateError {
             .unwrap_or("stream error"),
         key,
     );
-    if let Some(code) = err
+    let status = err
         .get("code")
         .and_then(Value::as_u64)
         .and_then(|c| u16::try_from(c).ok())
-    {
-        return status_error(code, message, None);
-    }
-    let code = err.get("code").and_then(Value::as_str).unwrap_or("");
-    let kind = err.get("type").and_then(Value::as_str).unwrap_or("");
-    let is = |names: &[&str]| names.contains(&code) || names.contains(&kind);
-    if is(&["insufficient_quota"]) {
-        return TranslateError::Rejected {
-            status: 429,
-            message,
-        };
-    }
-    let status = if is(&[
-        "rate_limit_exceeded",
-        "rate_limit_error",
-        "too_many_requests",
-    ]) {
-        429
-    } else if is(&["invalid_api_key", "authentication_error", "unauthorized"]) {
-        401
-    } else if is(&["permission_error", "permission_denied"]) {
-        403
-    } else if is(&[
-        "invalid_prompt",
-        "invalid_request_error",
-        "context_length_exceeded",
-    ]) {
-        400
-    } else {
-        500
-    };
-    status_error(status, message, None)
+        .unwrap_or(500);
+    object_error(status, err, message, None)
 }
 
 /// The provider's error message from a JSON error body, else the raw body.
@@ -478,5 +536,110 @@ mod tests {
         ));
         let auth = status_error(401, "invalid x-api-key".into(), None);
         assert!(auth.to_string().contains("check the API key"));
+    }
+
+    const TOKEN_LIMIT: &str = "rate limit exceeded: Your requests to gpt-6-astra for gpt-6-astra in eastus2 have exceeded token rate limit.";
+
+    #[test]
+    fn a_server_wrapper_preserves_the_upstream_rate_limit_and_retry_hint() {
+        for body in [
+            TOKEN_LIMIT.to_owned(),
+            serde_json::json!({"error": {"code": "rate_limit_exceeded", "message": "slow down"}})
+                .to_string(),
+            serde_json::json!({"type": "rate_limit_error", "message": "slow down"}).to_string(),
+            serde_json::json!({"error": {"code": "server_error", "message": TOKEN_LIMIT}})
+                .to_string(),
+            serde_json::json!({"error": {"type": "invalid_request_error", "message": TOKEN_LIMIT}})
+                .to_string(),
+        ] {
+            let err = body_error(500, &body, "", Some(Duration::from_secs(13)));
+            assert!(
+                matches!(err, TranslateError::RateLimited { retry_after: Some(delay), .. } if delay == Duration::from_secs(13)),
+                "{err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_numeric_and_generic_errors_preserve_an_explicit_token_rate_limit() {
+        for err in [
+            serde_json::json!({"code": 500, "message": TOKEN_LIMIT}),
+            serde_json::json!({"code": 500, "type": "rate_limit_exceeded", "message": "slow down"}),
+            serde_json::json!({"code": "server_error", "message": TOKEN_LIMIT}),
+            serde_json::json!({"message": TOKEN_LIMIT}),
+        ] {
+            let mapped = stream_error_object(&err, "");
+            assert!(
+                matches!(mapped, TranslateError::RateLimited { .. }),
+                "{mapped:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn genuine_server_errors_do_not_become_rate_limits_from_loose_keywords() {
+        for message in [
+            "internal server error",
+            "rate limit service unavailable",
+            "token limit configuration failed",
+            "current model load has reached its limit",
+            "当前模型负载已经达到上限，请稍后重试",
+        ] {
+            let body = serde_json::json!({"error": {"code": "server_error", "message": message}})
+                .to_string();
+            assert!(matches!(
+                body_error(500, &body, "", None),
+                TranslateError::Server { status: 500, .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn exhausted_balances_and_refused_keys_take_precedence_over_rate_limits() {
+        for code in [
+            "insufficient_quota",
+            "invalid_api_key",
+            "permission_denied",
+            "billing_error",
+        ] {
+            let err = serde_json::json!({"code": code, "type": "rate_limit_error", "message": TOKEN_LIMIT});
+            let body = serde_json::json!({"error": err}).to_string();
+            assert!(matches!(
+                body_error(500, &body, "", None),
+                TranslateError::Rejected { .. }
+            ));
+            assert!(matches!(
+                stream_error_object(&err, ""),
+                TranslateError::Rejected { .. }
+            ));
+        }
+        for message in [
+            "insufficient balance",
+            "You exceeded your current quota",
+            "余额不足",
+        ] {
+            let err = serde_json::json!({"code": "rate_limit_exceeded", "message": message});
+            let body = serde_json::json!({"error": err}).to_string();
+            assert!(matches!(
+                body_error(500, &body, "", None),
+                TranslateError::Rejected { .. }
+            ));
+            assert!(matches!(
+                stream_error_object(&err, ""),
+                TranslateError::Rejected { .. }
+            ));
+        }
+        for status in [401, 402, 403] {
+            let err = serde_json::json!({"code": status, "type": "rate_limit_error", "message": TOKEN_LIMIT});
+            assert!(matches!(
+                stream_error_object(&err, ""),
+                TranslateError::Rejected { .. }
+            ));
+            let body = serde_json::json!({"error": {"code": "rate_limit_exceeded", "message": TOKEN_LIMIT}}).to_string();
+            assert!(matches!(
+                body_error(status, &body, "", None),
+                TranslateError::Rejected { .. }
+            ));
+        }
     }
 }

@@ -216,6 +216,28 @@ async fn a_rate_limit_inside_the_stream_is_retryable() {
 }
 
 #[tokio::test]
+async fn a_token_rate_limit_inside_a_generic_stream_error_is_retryable() {
+    for code in [serde_json::json!(500), serde_json::json!("server_error")] {
+        let server = MockServer::start().await;
+        let event = serde_json::json!({
+            "type": "response.failed",
+            "response": {
+                "status": "failed",
+                "error": {
+                    "code": code,
+                    "message": "rate limit exceeded: Your requests to gpt-6-astra for gpt-6-astra in eastus2 have exceeded token rate limit."
+                }
+            }
+        });
+        server.push(Canned::sse(&[&format!("data: {event}")]));
+        let (p, _) = provider(&server, &[KEY_A]);
+        let err = translate(p.as_ref(), "x").await.unwrap_err();
+        assert!(matches!(err, TranslateError::RateLimited { .. }), "{err:?}");
+        assert_eq!(server.requests().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn a_rate_limited_key_hands_over_to_the_next_one() {
     let server = MockServer::start().await;
     server.push(stream_rate_limited());

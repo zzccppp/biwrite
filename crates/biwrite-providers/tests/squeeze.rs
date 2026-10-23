@@ -11,13 +11,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use biwrite_engine::{TranslationRequest, Translator};
+use biwrite_engine::{TranslateError, TranslationRequest, Translator};
 use biwrite_providers::{
     DefaultPrompts, Effort, KEEP_ALIVE, NoObserver, ProviderConfig, ProviderKind, RequestObserver,
     RequestRecord, Squeeze, SqueezeBoard, SqueezeChange, WireApi, build_http, key_fingerprint,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 /// Keys the relay answers. A key in `after` is answered from its n-th
 /// request on, and a key in `refused` is invalid. A key in `cut_off` is
@@ -31,6 +32,9 @@ struct Rules {
     refused: HashSet<String>,
     cut_off: HashSet<String>,
     filtered: HashSet<String>,
+    rate_limited: HashSet<String>,
+    /// Tests release individual responses after arranging competing work.
+    gates: HashMap<String, Arc<Semaphore>>,
     no_model: bool,
 }
 
@@ -66,17 +70,25 @@ impl Relay {
                         .unwrap_or_default()
                         .trim_start_matches("Bearer ")
                         .to_owned();
+                    // Capture the gate before publishing the arrival so
+                    // the test can safely remove it for a newer request.
+                    let gate = r.rules.lock().unwrap().gates.get(&key).cloned();
                     let n = {
                         let mut seen = r.seen.lock().unwrap();
                         seen.push(key.clone());
                         seen.iter().filter(|k| **k == key).count()
                     };
+                    if let Some(gate) = gate {
+                        gate.acquire().await.unwrap().forget();
+                    }
                     let answer = {
                         let rules = r.rules.lock().unwrap();
                         if rules.no_model {
                             Err((404, "model not found"))
                         } else if rules.refused.contains(&key) {
                             Err((401, "invalid token"))
+                        } else if rules.rate_limited.contains(&key) {
+                            Err((429, "too many requests, try again later"))
                         } else if rules.cut_off.contains(&key) {
                             Ok("length")
                         } else if rules.filtered.contains(&key) {
@@ -198,6 +210,16 @@ async fn until_ended(changes: &Changes, within: Duration) -> bool {
     tokio::time::timeout(within, wait)
         .await
         .expect("the squeeze ended")
+}
+
+async fn wait_for(condition: impl Fn() -> bool) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the controlled relay reached the expected state");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -544,6 +566,217 @@ async fn selected_keep_alive_limits_are_independent_of_ordinary_request_retries(
             limit as usize,
             "stopped keys issue no background request"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn temporary_rate_limits_do_not_count_as_failed_or_successful_keep_alives() {
+    let relay = Relay::start().await;
+    let board = SqueezeBoard::for_relay();
+    board.set_keep_alive_failure_limit(3);
+    let print = key_fingerprint(A);
+    board.answered(&print);
+    let last_ok = board.through()[0].last_ok_ms;
+    let config = config(&relay.base);
+    let ping = || {
+        biwrite_providers::ping(
+            &config,
+            A.into(),
+            Arc::clone(&board),
+            Arc::new(DefaultPrompts),
+            Arc::new(NoObserver),
+        )
+    };
+    for _ in 0..2 {
+        assert!(matches!(ping().await, Err(TranslateError::Server { .. })));
+    }
+    board.set_keep_alive_failure_limit(1);
+    relay.rules.lock().unwrap().rate_limited.insert(A.into());
+    for _ in 0..40 {
+        assert!(matches!(
+            ping().await,
+            Err(TranslateError::RateLimited { .. })
+        ));
+        assert_eq!(board.background_state(&print), (2, false, None));
+    }
+    assert_eq!(board.through()[0].last_ok_ms, last_ok);
+    board.set_keep_alive_failure_limit(3);
+    {
+        let mut rules = relay.rules.lock().unwrap();
+        rules.rate_limited.remove(A);
+        rules.through.insert(A.into());
+    }
+    ping().await.unwrap();
+    assert_eq!(board.background_state(&print), (0, false, None));
+    relay.rules.lock().unwrap().through.remove(A);
+    for failures in 1..=3 {
+        assert!(matches!(ping().await, Err(TranslateError::Server { .. })));
+        assert_eq!(board.background_state(&print).0, failures);
+        assert_eq!(board.background_stopped(&print), failures == 3);
+    }
+    assert_eq!(relay.requests_with(A), 46);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pending_ping_decision_keeps_its_worker_available_after_other_keys_are_refused() {
+    // Exercise both completion paths: every other key is refused, or a
+    // different key still holds its place. Each pending decision is then
+    // either rejoined or dropped without rejoining.
+    for another_through in [false, true] {
+        for rejoin in [false, true] {
+            let relay = Relay::start().await;
+            let response = Arc::new(Semaphore::new(0));
+            {
+                let mut rules = relay.rules.lock().unwrap();
+                rules.gates.insert(B.into(), Arc::clone(&response));
+                rules.refused.insert(C.into());
+            }
+            let board = SqueezeBoard::new();
+            board.set_pace(Some(Duration::from_millis(80)));
+            board.set_keep_alive_failure_limit(1);
+            board.set_enough(3);
+            let print = key_fingerprint(A);
+            board.answered(&print);
+            if another_through {
+                board.answered(&key_fingerprint(C));
+            }
+            let (run, changes) = start(&relay, &board);
+            wait_for(|| relay.requests_with(B) == 1).await;
+            let outcome = biwrite_providers::ping_checked(
+                &config(&relay.base),
+                A.into(),
+                Arc::clone(&board),
+                Arc::new(DefaultPrompts),
+                Arc::new(NoObserver),
+            )
+            .await;
+            assert!(matches!(
+                &outcome.result,
+                Err(TranslateError::Server { .. })
+            ));
+            assert!(board.background_stopped(&print));
+            // Release B only after A's stop is committed, while its
+            // outcome and the keeper's decision are still outstanding.
+            relay.rules.lock().unwrap().refused.insert(B.into());
+            response.add_permits(1);
+            wait_for(|| {
+                let progress = run.progress();
+                progress[1].refused && (another_through || progress[2].refused)
+            })
+            .await;
+            // A watches a held key once per second. Leave its worker
+            // enough time to observe the stopped state and B's refusal.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            assert!(run.running(), "a pending stop must keep its worker alive");
+            assert_eq!(relay.requests_with(A), 1, "the decision is still pending");
+            if rejoin {
+                relay.rules.lock().unwrap().through.insert(A.into());
+                assert!(run.rejoin_key(&board, &print));
+            }
+            drop(outcome);
+            assert_eq!(
+                until_ended(&changes, Duration::from_secs(3)).await,
+                rejoin || another_through,
+            );
+            assert_eq!(relay.requests_with(A), if rejoin { 2 } else { 1 });
+            assert_eq!(board.background_stopped(&print), !rejoin);
+            assert_eq!(board.is_through(&print), rejoin);
+            if rejoin {
+                assert_eq!(board.background_state(&print), (0, false, None));
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_keep_alive_answers_do_not_replace_a_newer_failure_count() {
+    for late_answer in ["success", "rate_limit", "server_error"] {
+        let relay = Relay::start().await;
+        let board = SqueezeBoard::new();
+        let print = key_fingerprint(A);
+        board.answered(&print);
+        let config = config(&relay.base);
+        assert!(
+            biwrite_providers::ping(
+                &config,
+                A.into(),
+                Arc::clone(&board),
+                Arc::new(DefaultPrompts),
+                Arc::new(NoObserver),
+            )
+            .await
+            .is_err()
+        );
+        let response = Arc::new(Semaphore::new(0));
+        relay
+            .rules
+            .lock()
+            .unwrap()
+            .gates
+            .insert(A.into(), Arc::clone(&response));
+        let delayed = {
+            let board = Arc::clone(&board);
+            let config = config.clone();
+            tokio::spawn(async move {
+                biwrite_providers::ping_checked(
+                    &config,
+                    A.into(),
+                    board,
+                    Arc::new(DefaultPrompts),
+                    Arc::new(NoObserver),
+                )
+                .await
+            })
+        };
+        wait_for(|| relay.requests_with(A) == 2).await;
+        board.invalidate_background(&print);
+        relay.rules.lock().unwrap().gates.remove(A);
+        assert!(
+            biwrite_providers::ping(
+                &config,
+                A.into(),
+                Arc::clone(&board),
+                Arc::new(DefaultPrompts),
+                Arc::new(NoObserver),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(board.background_state(&print), (2, false, None));
+        {
+            let mut rules = relay.rules.lock().unwrap();
+            match late_answer {
+                "success" => {
+                    rules.through.insert(A.into());
+                }
+                "rate_limit" => {
+                    rules.rate_limited.insert(A.into());
+                }
+                _ => {}
+            }
+        }
+        response.add_permits(1);
+        let outcome = tokio::time::timeout(Duration::from_secs(3), delayed)
+            .await
+            .unwrap()
+            .unwrap();
+        match late_answer {
+            "success" => assert!(outcome.result.is_ok()),
+            "rate_limit" => assert!(matches!(
+                &outcome.result,
+                Err(TranslateError::RateLimited { .. })
+            )),
+            _ => assert!(matches!(
+                &outcome.result,
+                Err(TranslateError::Server { .. })
+            )),
+        }
+        assert!(
+            outcome.generation.is_none(),
+            "the old generation is discarded"
+        );
+        assert_eq!(board.background_state(&print), (2, false, None));
+        assert_eq!(relay.requests_with(A), 3);
     }
 }
 

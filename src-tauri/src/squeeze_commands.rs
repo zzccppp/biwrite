@@ -103,8 +103,7 @@ pub struct SqueezeState {
     /// Keys are kept alive however long the author is away (the setting
     /// `keep_alive_forever`), not only within [`KEEP_ALIVE_FOR`].
     forever: AtomicBool,
-    /// Explicit opt-in to rejoin a failed key in a still-running manual
-    /// squeeze. It never starts a new run.
+    /// Explicit opt-in to retry failed keep-alives when below the target.
     rejoin_failed: AtomicBool,
     /// Zero uses the default until the saved setting is applied.
     keep_alive_failure_limit: AtomicU32,
@@ -248,6 +247,24 @@ impl SqueezeState {
         }
         let run = self.runs().get(id).cloned();
         run.is_some_and(|run| run.rejoin_key(board, fingerprint))
+    }
+
+    /// A transient failure may rejoin a live run or wait for the keeper
+    /// to start recovery after the old target was met.
+    fn rejoin_after_failure(&self, id: &str, fingerprint: &str, board: &SqueezeBoard) -> bool {
+        if !self.rejoin_failed.load(Ordering::Relaxed) || !board.stop_can_rejoin(fingerprint) {
+            return false;
+        }
+        let run = self.runs().get(id).cloned();
+        let resumed = run.is_some_and(|run| run.rejoin_key(board, fingerprint))
+            || board.resume_background(fingerprint);
+        if resumed {
+            self.kept()
+                .entry(id.to_owned())
+                .or_default()
+                .insert(fingerprint.to_owned());
+        }
+        resumed
     }
 
     /// The mean wait between two keep-alives of a key (minutes) and between
@@ -510,6 +527,10 @@ impl SqueezeState {
     pub fn stop_squeezing_back(&self, id: &str) {
         self.kept().remove(id);
         self.auto().remove(id);
+        if let Some((_, board)) = self.boards().get(id) {
+            // Results already on their way cannot queue work after Stop.
+            board.invalidate_background_requests();
+        }
     }
 
     /// The squeezes the keeper started for providers among `entries` not
@@ -1051,10 +1072,12 @@ fn start_run(
 /// keys that lost their place are not squeezed back in.
 #[tauri::command]
 pub async fn squeeze_stop(state: State<'_, AppState>, id: String) -> CommandResult<SqueezeView> {
+    let _keys = state.keys_lock.lock().await;
     if let Some(run) = state.squeeze.runs().get(&id) {
         run.stop();
     }
     state.squeeze.stop_squeezing_back(&id);
+    record_through(&state);
     Ok(view(&state.squeeze, &id))
 }
 
@@ -1420,14 +1443,28 @@ async fn keep_alive(app: &AppHandle, announce: bool) {
             board.set_keeping(keeps(&state.squeeze, &board));
         }
     }
-    for (entry, board, dropped) in state.squeeze.dropped_keys(&entries) {
+    for (entry, _, _) in state.squeeze.dropped_keys(&entries) {
         // Keys and providers do not change while it starts.
         let _keys = state.keys_lock.lock().await;
-        let unchanged = state
+        let current = state
             .settings()
             .provider(&entry.config.id)
-            .is_some_and(|e| e.squeeze_target() == entry.squeeze_target());
-        let Some(keys) = keys_of(&state, &entry).await.filter(|_| unchanged) else {
+            .filter(|e| e.squeeze_target() == entry.squeeze_target())
+            .cloned();
+        let Some(entry) = current else {
+            continue;
+        };
+        // Stop, a completed target, or another run may have changed the
+        // queue while this round waited for the lock.
+        let Some((_, board, dropped)) = state
+            .squeeze
+            .dropped_keys(std::slice::from_ref(&entry))
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
+        let Some(keys) = keys_of(&state, &entry).await else {
             continue;
         };
         if let Err(e) = start_run(app, &entry, board, &keys, Some(&dropped)) {
@@ -1567,12 +1604,9 @@ async fn ping_one(
     let (failures, stopped, reason) = board.background_state(print);
     if stopped {
         state.squeeze.clear_ping_retry(id, print);
-        // Use the recorded stop cause even if the limit changed after
-        // this result. Authentication/quota refusals never rejoin.
-        let rejoined = board.stop_can_rejoin(print)
-            && !board.stop_target_was_met(print)
-            && state.squeeze.rejoin_failed.load(Ordering::Relaxed)
-            && state.squeeze.rejoin_in_manual_run(id, print, &board);
+        // Retryable failures rejoin even after an earlier target ended
+        // the run. Permanent refusals stay stopped.
+        let rejoined = state.squeeze.rejoin_after_failure(id, print, &board);
         let reason = reason.unwrap_or_else(|| "keep-alive failed".into());
         record_through(&state);
         let change = SqueezeChange::KeyStopped {
@@ -1621,6 +1655,10 @@ async fn ping_one(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../crates/biwrite-providers/tests/support/mod.rs"]
+mod test_http;
 
 #[cfg(test)]
 mod tests {
@@ -2044,6 +2082,183 @@ mod tests {
         assert!(state.rejoin_in_manual_run("p-relay", &print, &board));
         assert!(!board.background_stopped(&print));
         run.stop();
+    }
+
+    struct RecoveryCase {
+        state: SqueezeState,
+        entry: ProviderEntry,
+        board: Arc<SqueezeBoard>,
+        fingerprint: String,
+        _outcome: biwrite_providers::PingOutcome,
+        server: test_http::MockServer,
+    }
+
+    async fn failed_after_completed_target(status: u16) -> RecoveryCase {
+        let server = test_http::MockServer::start().await;
+        server.push(test_http::Canned::json(
+            status,
+            r#"{"error":{"message":"temporarily unavailable"}}"#,
+        ));
+        let state = SqueezeState::default();
+        state.set_forever(true);
+        state.set_enough(2);
+        state.set_keep_alive_failure_limit(1);
+        let mut entry = entry(&format!("{}/v1", server.base), 3);
+        entry.config.wire_api = WireApi::Chat;
+        let board = state.board_for(&entry).unwrap();
+        let fingerprint = key_fingerprint("sk-a");
+        board.note_squeezed();
+        board.set_keeping(true);
+        board.answered(&fingerprint);
+        board.answered(&key_fingerprint("sk-b"));
+        assert!(board.has_enough());
+        assert!(state.dropped_keys(std::slice::from_ref(&entry)).is_empty());
+        let run = run_for(&state, &entry);
+        assert!(ends(&run).await, "the earlier target really ended the run");
+        let outcome = ping_checked(
+            &entry.config,
+            "sk-a".into(),
+            Arc::clone(&board),
+            Arc::new(biwrite_providers::DefaultPrompts),
+            Arc::new(biwrite_providers::NoObserver),
+        )
+        .await;
+        assert!(outcome.result.is_err());
+        assert!(board.background_stopped(&fingerprint));
+        assert!(board.stop_target_was_met(&fingerprint));
+        state.clear_ping_retry(&entry.config.id, &fingerprint);
+        RecoveryCase {
+            state,
+            entry,
+            board,
+            fingerprint,
+            _outcome: outcome,
+            server,
+        }
+    }
+
+    #[tokio::test]
+    async fn opted_in_failures_recover_after_the_previous_target_ended() {
+        let case = failed_after_completed_target(500).await;
+        let id = &case.entry.config.id;
+        case.state.set_rejoin_failed(true);
+        assert!(
+            case.state
+                .rejoin_after_failure(id, &case.fingerprint, &case.board)
+        );
+        assert_eq!(
+            case.board.background_state(&case.fingerprint),
+            (0, false, None)
+        );
+        // Turning the option off affects later failures, not an accepted recovery.
+        case.state.set_rejoin_failed(false);
+        let dropped = case.state.dropped_keys(std::slice::from_ref(&case.entry));
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(
+            dropped[0].2.as_slice(),
+            std::slice::from_ref(&case.fingerprint)
+        );
+        assert!(case.state.stopped_keys().is_empty());
+        assert!(case.state.kept_keys()[id].contains(&case.fingerprint));
+        case.server.push(test_http::Canned::sse(&[
+            r#"data: {"choices":[{"index":0,"delta":{"content":"早上好。"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+        ]));
+        // Only the failed key is retried, not one that never got through.
+        let run = Squeeze::start(
+            &case.entry.config,
+            vec!["sk-a".into()],
+            Arc::clone(&case.board),
+            Arc::new(biwrite_providers::DefaultPrompts),
+            Arc::new(|_| {}),
+            &tokio::runtime::Handle::current(),
+            true,
+        )
+        .unwrap();
+        assert!(ends(&run).await);
+        assert!(case.board.has_enough());
+        assert!(case.board.is_through(&case.fingerprint));
+        let requests = case.server.requests();
+        assert_eq!(
+            requests.len(),
+            2,
+            "one failed ping and one real recovery request"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.header("authorization") == Some("Bearer sk-a"))
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_opt_in_does_not_override_refusals_or_the_target() {
+        let off = failed_after_completed_target(500).await;
+        assert!(!off.state.rejoin_after_failure(
+            &off.entry.config.id,
+            &off.fingerprint,
+            &off.board
+        ));
+        assert!(off.board.background_stopped(&off.fingerprint));
+        assert!(
+            off.state
+                .dropped_keys(std::slice::from_ref(&off.entry))
+                .is_empty()
+        );
+        let refused = failed_after_completed_target(401).await;
+        refused.state.set_rejoin_failed(true);
+        assert!(!refused.state.rejoin_after_failure(
+            &refused.entry.config.id,
+            &refused.fingerprint,
+            &refused.board
+        ));
+        assert!(refused.board.background_stopped(&refused.fingerprint));
+        let enough = failed_after_completed_target(500).await;
+        enough.state.set_rejoin_failed(true);
+        enough.board.answered("spare");
+        assert!(enough.state.rejoin_after_failure(
+            &enough.entry.config.id,
+            &enough.fingerprint,
+            &enough.board
+        ));
+        assert!(enough.board.has_enough());
+        assert!(
+            enough
+                .state
+                .dropped_keys(std::slice::from_ref(&enough.entry))
+                .is_empty(),
+            "no recovery while the target is satisfied"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_cancels_queued_recovery_and_invalidates_old_ping_decisions() {
+        let case = failed_after_completed_target(500).await;
+        case.state.set_rejoin_failed(true);
+        assert!(case.state.rejoin_after_failure(
+            &case.entry.config.id,
+            &case.fingerprint,
+            &case.board
+        ));
+        assert_eq!(
+            case.state
+                .dropped_keys(std::slice::from_ref(&case.entry))
+                .len(),
+            1
+        );
+        let generation = case.board.background_token(&case.fingerprint).unwrap();
+        case.state.stop_squeezing_back(&case.entry.config.id);
+        assert!(
+            !case
+                .board
+                .background_generation_matches(&case.fingerprint, generation)
+        );
+        assert!(
+            case.state
+                .dropped_keys(std::slice::from_ref(&case.entry))
+                .is_empty()
+        );
     }
 
     /// Keys kept alive that lose their place are squeezed back in, unless a

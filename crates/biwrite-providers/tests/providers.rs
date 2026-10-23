@@ -233,6 +233,27 @@ async fn openai_error_mapping() {
 }
 
 #[tokio::test]
+async fn openai_preserves_upstream_rate_limits_wrapped_in_http_500() {
+    for error in [
+        serde_json::json!({"code": "rate_limit_exceeded", "message": "slow down"}),
+        serde_json::json!({"code": "server_error", "message": "rate limit exceeded: Your requests to gpt-6-astra for gpt-6-astra in eastus2 have exceeded token rate limit."}),
+    ] {
+        let server = MockServer::start().await;
+        server.push(
+            Canned::json(500, &serde_json::json!({"error": error}).to_string())
+                .with_header("retry-after", "7"),
+        );
+        let (t, _) = translator(ProviderKind::OpenaiCompatible, &server, "m");
+        let err = run(&t, &request("x")).await.0.unwrap_err();
+        assert!(
+            matches!(err, TranslateError::RateLimited { retry_after: Some(delay), .. } if delay == Duration::from_secs(7)),
+            "{err:?}"
+        );
+        assert_eq!(server.requests().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn api_key_is_redacted_from_errors() {
     let server = MockServer::start().await;
     server.push(Canned::json(
