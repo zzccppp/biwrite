@@ -27,6 +27,8 @@
   /** However long the author is away, or half an hour after the last use. */
   let forever = $state(true);
   let rejoin = $state(false);
+  let keepAliveFailureLimit = $state(20);
+  const keepAliveFailureLimits = $derived([...new Set([5, 10, 20, 30, 50, 100, keepAliveFailureLimit])].sort((a, b) => a - b));
   /** Mean minutes between keep-alives, and seconds between tries. */
   let keepMinutes = $state(4);
   let trySeconds = $state(3);
@@ -92,6 +94,17 @@
     if (view) {
       rejoin = view.keepAliveRejoin;
       onchange(view);
+    }
+  }
+
+  async function setKeepAliveFailureLimit(select: HTMLSelectElement): Promise<void> {
+    const limit = Number(select.value);
+    const view = await act("keep-limit", () => settingsIpc.setKeepAliveFailureLimit(limit));
+    if (view) {
+      keepAliveFailureLimit = view.keepAliveFailureLimit;
+      onchange(view);
+    } else {
+      select.value = String(keepAliveFailureLimit);
     }
   }
   /** Ticks every few seconds, so "3 min ago" moves on. */
@@ -304,6 +317,7 @@
         keepAlive = view.keepAlive;
         forever = view.keepAliveForever;
         rejoin = view.keepAliveRejoin ?? false;
+        keepAliveFailureLimit = view.keepAliveFailureLimit ?? 20;
         keepMinutes = view.keepAliveMinutes ?? 4;
         trySeconds = view.squeezeSeconds ?? 3;
         enough = view.squeezeEnough ?? 2;
@@ -358,7 +372,7 @@
         {#each [1, 2, 3, 4, 6, 8] as n (n)}<option value={n}>{n}</option>{/each}
       </select>
     </label>
-    <label class="inline">
+    <label class="inline" title={t("keys.retriesHint")}>
       <span class="label smallcaps">{t("keys.retries")}</span>
       <select
         class="select"
@@ -410,6 +424,19 @@
     {/if}
     {#if provider.squeezable && keepAlive !== null}
       <span class="break"></span>
+      <label class="inline pace" title={t("squeeze.failureLimitHint")}>
+        <span class="label smallcaps">{t("squeeze.failureLimit")}</span>
+        <select
+          class="input"
+          value={keepAliveFailureLimit}
+          disabled={!!busy}
+          onchange={(e) => void setKeepAliveFailureLimit(e.currentTarget)}
+        >
+          {#each keepAliveFailureLimits as n (n)}
+            <option value={n}>{n === 20 ? t("squeeze.failureLimitDefault") : n}</option>
+          {/each}
+        </select>
+      </label>
       <label class="inline pace" title={t("squeeze.keepEveryHint", { low: round(keepMinutes - keepSpread(keepMinutes)), high: round(keepMinutes + keepSpread(keepMinutes)) })}>
         <span class="label smallcaps">{t("squeeze.keepEvery")}</span>
         <input

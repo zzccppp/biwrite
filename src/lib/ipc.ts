@@ -158,6 +158,7 @@ export const settingsIpc = {
   setKeepAlive: (on: boolean) => invoke<SettingsView>("set_keep_alive", { on }),
   setKeepAliveForever: (on: boolean) => invoke<SettingsView>("set_keep_alive_forever", { on }),
   setKeepAliveRejoin: (on: boolean) => invoke<SettingsView>("set_keep_alive_rejoin", { on }),
+  setKeepAliveFailureLimit: (limit: number) => invoke<SettingsView>("set_keep_alive_failure_limit", { limit }),
   /** Accept and Revert with the model's help and a build (LaTeX), or as they are. */
   setAssistedApply: (on: boolean) => invoke<SettingsView>("set_assisted_apply", { on }),
   setBatchSize: (size: number) => invoke<SettingsView>("set_batch_size", { size }),

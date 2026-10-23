@@ -20,12 +20,12 @@
 //! every few minutes), and the end of each squeeze.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use biwrite_providers::{
-    CROWDED_AFTER, ChangeFn, HttpProvider, KEEP_ALIVE_AFTER, KEEP_ALIVE_FAILURE_LIMIT,
+    CROWDED_AFTER, ChangeFn, DEFAULT_KEEP_ALIVE_FAILURE_LIMIT, HttpProvider, KEEP_ALIVE_AFTER,
     KEEP_ALIVE_FOR, KeyProgress, Squeeze, SqueezeBoard, SqueezeChange, jitter, key_fingerprint,
     ping_checked,
 };
@@ -106,6 +106,8 @@ pub struct SqueezeState {
     /// Explicit opt-in to rejoin a failed key in a still-running manual
     /// squeeze. It never starts a new run.
     rejoin_failed: AtomicBool,
+    /// Zero uses the default until the saved setting is applied.
+    keep_alive_failure_limit: AtomicU32,
     /// Mean milliseconds between two keep-alives of a key, and between two
     /// tries of a key in a squeeze (the settings); zero before they are set.
     keep_mean_ms: AtomicU64,
@@ -162,6 +164,24 @@ impl SqueezeState {
 
     pub fn set_rejoin_failed(&self, on: bool) {
         self.rejoin_failed.store(on, Ordering::Relaxed);
+    }
+
+    /// Update existing boards and the setting inherited by future boards.
+    pub fn set_keep_alive_failure_limit(&self, limit: u32) {
+        let limit = limit.clamp(1, crate::settings::MAX_KEEP_ALIVE_FAILURE_LIMIT);
+        let boards = self.boards();
+        self.keep_alive_failure_limit
+            .store(limit, Ordering::Relaxed);
+        for (_, board) in boards.values() {
+            board.set_keep_alive_failure_limit(limit);
+        }
+    }
+
+    fn keep_alive_failure_limit(&self) -> u32 {
+        match self.keep_alive_failure_limit.load(Ordering::Relaxed) {
+            0 => DEFAULT_KEEP_ALIVE_FAILURE_LIMIT,
+            limit => limit,
+        }
     }
 
     fn stopped_keys(&self) -> BTreeMap<String, BTreeMap<String, StoppedKey>> {
@@ -656,6 +676,7 @@ impl SqueezeState {
         };
         board.set_enough(self.enough.load(Ordering::Relaxed));
         board.set_effort(*self.effort.lock().unwrap_or_else(PoisonError::into_inner));
+        board.set_keep_alive_failure_limit(self.keep_alive_failure_limit());
         boards.insert(id.clone(), (target, Arc::clone(&board)));
         Some(board)
     }
@@ -918,6 +939,9 @@ fn start_run(
     {
         let s = state.settings();
         state.squeeze.set_rejoin_failed(s.keep_alive_rejoin);
+        state
+            .squeeze
+            .set_keep_alive_failure_limit(s.keep_alive_failure_limit);
         state
             .squeeze
             .set_means(s.keep_alive_minutes, s.squeeze_seconds);
@@ -1235,6 +1259,9 @@ fn restore_kept(state: &AppState) {
         }
         state.squeeze.set_forever(s.keep_alive_forever);
         state.squeeze.set_rejoin_failed(s.keep_alive_rejoin);
+        state
+            .squeeze
+            .set_keep_alive_failure_limit(s.keep_alive_failure_limit);
         let kept = s
             .kept_keys
             .clone()
@@ -1376,6 +1403,9 @@ async fn keep_alive(app: &AppHandle, announce: bool) {
         }
         state.squeeze.set_forever(s.keep_alive_forever);
         state.squeeze.set_rejoin_failed(s.keep_alive_rejoin);
+        state
+            .squeeze
+            .set_keep_alive_failure_limit(s.keep_alive_failure_limit);
         state
             .squeeze
             .set_means(s.keep_alive_minutes, s.squeeze_seconds);
@@ -1537,10 +1567,9 @@ async fn ping_one(
     let (failures, stopped, reason) = board.background_state(print);
     if stopped {
         state.squeeze.clear_ping_retry(id, print);
-        // Immediate authentication/quota refusals have fewer than ten
-        // failures and are never automatically retried by this opt-in.
-        let rejoined = failures >= KEEP_ALIVE_FAILURE_LIMIT
-            && board.stop_can_rejoin(print)
+        // Use the recorded stop cause even if the limit changed after
+        // this result. Authentication/quota refusals never rejoin.
+        let rejoined = board.stop_can_rejoin(print)
             && !board.stop_target_was_met(print)
             && state.squeeze.rejoin_failed.load(Ordering::Relaxed)
             && state.squeeze.rejoin_in_manual_run(id, print, &board);
@@ -1655,6 +1684,35 @@ mod tests {
         assert!(board.is_through("fp-b"), "the other key stays through");
         let due = state.due_for_keep_alive(std::slice::from_ref(&pool), Some(Duration::ZERO));
         assert_eq!(due[0].2, ["fp-b".to_owned()]);
+    }
+
+    #[test]
+    fn keep_alive_limit_updates_existing_and_future_boards() {
+        let state = SqueezeState::default();
+        let mut first = entry("https://api.example.com/v1", 3);
+        first.config.max_retries = Some(50);
+        let board = state.board_for(&first).unwrap();
+        assert_eq!(board.keep_alive_failure_limit(), 20);
+        board.restore_stopped("fp-a", 10, "server unavailable");
+        state.set_keep_alive_failure_limit(30);
+        assert_eq!(board.keep_alive_failure_limit(), 30);
+        assert!(board.background_stopped("fp-a"));
+        let mut second = first.clone();
+        second.config.id = "p-second".into();
+        assert_eq!(
+            state.board_for(&second).unwrap().keep_alive_failure_limit(),
+            30
+        );
+        first.config.model = "another-model".into();
+        let replaced = state.board_for(&first).unwrap();
+        assert!(!Arc::ptr_eq(&board, &replaced));
+        assert_eq!(replaced.keep_alive_failure_limit(), 30);
+        state.set_keep_alive_failure_limit(5);
+        assert_eq!(replaced.keep_alive_failure_limit(), 5);
+        assert_eq!(
+            state.board_for(&second).unwrap().keep_alive_failure_limit(),
+            5
+        );
     }
 
     #[test]

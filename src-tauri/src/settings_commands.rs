@@ -797,6 +797,28 @@ pub async fn set_keep_alive_rejoin(
     Ok(state.settings_view())
 }
 
+/// Persist the limit before applying it to existing background tasks.
+fn update_keep_alive_failure_limit(state: &AppState, limit: u32) -> CommandResult<()> {
+    let limit = limit.clamp(1, crate::settings::MAX_KEEP_ALIVE_FAILURE_LIMIT);
+    let mut settings = state.settings();
+    let mut updated = settings.clone();
+    updated.keep_alive_failure_limit = limit;
+    state.persist(&updated)?;
+    *settings = updated;
+    state.squeeze.set_keep_alive_failure_limit(limit);
+    Ok(())
+}
+
+/// Change the consecutive failure limit without restarting background work.
+#[tauri::command]
+pub async fn set_keep_alive_failure_limit(
+    state: State<'_, AppState>,
+    limit: u32,
+) -> CommandResult<SettingsView> {
+    update_keep_alive_failure_limit(&state, limit)?;
+    Ok(state.settings_view())
+}
+
 /// Close to the tray (hide the window) or quit when the window is closed.
 #[tauri::command]
 pub async fn set_close_to_tray(
@@ -1092,6 +1114,43 @@ mod tests {
 
     use super::*;
     use crate::settings::same_destination;
+
+    #[tokio::test]
+    async fn keep_alive_limit_is_applied_only_when_saved_successfully() {
+        let dir =
+            std::env::temp_dir().join(format!("biwrite-keep-limit-command-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = crate::pair_tests::app_state(&dir);
+        let mut entry = state.settings().active().clone();
+        entry.config.id = "p-pool".into();
+        entry.config.kind = ProviderKind::OpenaiCompatible;
+        entry.config.base_url = "https://api.example.com/v1".into();
+        entry.config.max_retries = Some(5);
+        entry.key_count = 3;
+        let board = state.squeeze.board_for(&entry).unwrap();
+        board.restore_stopped("fp-a", 10, "server unavailable");
+        update_keep_alive_failure_limit(&state, 30).unwrap();
+        assert_eq!(state.settings_view().keep_alive_failure_limit, 30);
+        assert_eq!(
+            crate::settings::load(&state.paths.settings).keep_alive_failure_limit,
+            30
+        );
+        assert_eq!(board.keep_alive_failure_limit(), 30);
+        assert!(board.background_stopped("fp-a"));
+        // Force a failed atomic save without touching the user's settings.
+        std::fs::remove_file(&state.paths.settings).unwrap();
+        std::fs::create_dir(&state.paths.settings).unwrap();
+        assert!(update_keep_alive_failure_limit(&state, 50).is_err());
+        assert_eq!(state.settings_view().keep_alive_failure_limit, 30);
+        assert_eq!(board.keep_alive_failure_limit(), 30);
+        std::fs::remove_dir(&state.paths.settings).unwrap();
+        for (input, expected) in [(0, 1), (1001, 1000)] {
+            update_keep_alive_failure_limit(&state, input).unwrap();
+            assert_eq!(state.settings_view().keep_alive_failure_limit, expected);
+            assert_eq!(board.keep_alive_failure_limit(), expected);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// Answers every request with its own question, said twice and padded.
     struct Echo;

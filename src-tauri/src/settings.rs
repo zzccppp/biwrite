@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 
 use biwrite_core::{Direction, GlossaryEntry};
 use biwrite_providers::prompt::{default_prompt, prompt_file_name};
-use biwrite_providers::{Effort, Preset, ProviderConfig, ProviderKind, WireApi, presets};
+use biwrite_providers::{
+    DEFAULT_KEEP_ALIVE_FAILURE_LIMIT, Effort, Preset, ProviderConfig, ProviderKind, WireApi,
+    presets,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::request_log::LogSettings;
@@ -140,6 +143,8 @@ impl ProviderEntry {
 
 /// Most keys a squeeze can be asked to get through before it stops.
 pub const MAX_SQUEEZE_ENOUGH: usize = 99;
+/// Largest selectable number of consecutive failed keep-alive requests.
+pub const MAX_KEEP_ALIVE_FAILURE_LIMIT: u32 = 1000;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -185,6 +190,8 @@ pub struct AppSettings {
     pub keep_alive_forever: bool,
     /// Allow a failed keep-alive to rejoin a manual squeeze still running.
     pub keep_alive_rejoin: bool,
+    /// Full consecutive failed keep-alives before background requests stop.
+    pub keep_alive_failure_limit: u32,
     /// Mean minutes between two keep-alives of a key; each wait is drawn
     /// within a quarter of it either way.
     pub keep_alive_minutes: f64,
@@ -259,6 +266,7 @@ impl Default for AppSettings {
             keep_alive: true,
             keep_alive_forever: true,
             keep_alive_rejoin: false,
+            keep_alive_failure_limit: DEFAULT_KEEP_ALIVE_FAILURE_LIMIT,
             keys_in_file: true,
             keep_alive_minutes: 4.0,
             squeeze_seconds: 3.0,
@@ -334,6 +342,9 @@ impl AppSettings {
         self.concurrency = self.concurrency.clamp(1, MAX_CONCURRENCY);
         self.batch_size = self.batch_size.clamp(1, biwrite_engine::MAX_BATCH);
         self.translate_delay = self.translate_delay.min(MAX_TRANSLATE_DELAY);
+        self.keep_alive_failure_limit = self
+            .keep_alive_failure_limit
+            .clamp(1, MAX_KEEP_ALIVE_FAILURE_LIMIT);
         self
     }
 
@@ -548,6 +559,7 @@ pub struct SettingsView {
     pub keep_alive: bool,
     pub keep_alive_forever: bool,
     pub keep_alive_rejoin: bool,
+    pub keep_alive_failure_limit: u32,
     pub keys_in_file: bool,
     pub keep_alive_minutes: f64,
     pub squeeze_seconds: f64,
@@ -595,6 +607,7 @@ pub fn view(settings: &AppSettings, doc_note: String, paths: &Paths) -> Settings
         keep_alive: settings.keep_alive,
         keep_alive_forever: settings.keep_alive_forever,
         keep_alive_rejoin: settings.keep_alive_rejoin,
+        keep_alive_failure_limit: settings.keep_alive_failure_limit,
         keys_in_file: settings.keys_in_file,
         keep_alive_minutes: settings.keep_alive_minutes,
         squeeze_seconds: settings.squeeze_seconds,
@@ -702,6 +715,43 @@ mod tests {
             key_parts: 0,
             key_ignored: Default::default(),
         }
+    }
+
+    #[test]
+    fn keep_alive_limit_defaults_to_twenty_and_survives_a_settings_reload() {
+        let dir = std::env::temp_dir().join(format!(
+            "biwrite-settings-keep-limit-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        // Existing installs did not store a separate keep-alive limit.
+        std::fs::write(&path, r#"{"keepAlive":true,"keepAliveRejoin":false}"#).unwrap();
+        let mut settings = load(&path);
+        assert_eq!(settings.keep_alive_failure_limit, 20);
+        settings.keep_alive_failure_limit = 30;
+        settings.stopped_keys.entry("p".into()).or_default().insert(
+            "fp".into(),
+            crate::squeeze_commands::StoppedKey {
+                target: "target".into(),
+                failures: 10,
+                reason: "server unavailable".into(),
+            },
+        );
+        save(&path, &settings).unwrap();
+        let loaded = load(&path);
+        assert_eq!(loaded.keep_alive_failure_limit, 30);
+        assert_eq!(loaded.stopped_keys, settings.stopped_keys);
+        let view = view(&loaded, String::new(), &Paths::in_dir(&dir));
+        assert_eq!(
+            serde_json::to_value(view).unwrap()["keepAliveFailureLimit"],
+            30
+        );
+        for (saved, expected) in [(0, 1), (1, 1), (1000, 1000), (1001, 1000)] {
+            std::fs::write(&path, format!(r#"{{"keepAliveFailureLimit":{saved}}}"#)).unwrap();
+            assert_eq!(load(&path).keep_alive_failure_limit, expected);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

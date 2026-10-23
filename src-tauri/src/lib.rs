@@ -313,6 +313,7 @@ pub fn run() {
             settings_commands::set_keep_alive,
             settings_commands::set_keep_alive_forever,
             settings_commands::set_keep_alive_rejoin,
+            settings_commands::set_keep_alive_failure_limit,
             settings_commands::set_keys_in_file,
             settings_commands::set_key_ignored,
             settings_commands::set_pacing,

@@ -15,7 +15,7 @@
 //! [`ping`] sends it a short translation, which keeps its place.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -50,9 +50,9 @@ pub const KEEP_ALIVE_AFTER: Duration = Duration::from_secs(3 * 60);
 /// author last used their provider: someone away for longer pays for no
 /// requests.
 pub const KEEP_ALIVE_FOR: Duration = Duration::from_secs(30 * 60);
-/// Full keep-alive requests that may fail consecutively before background
-/// requests for a key stop. Foreground requests remain available.
-pub const KEEP_ALIVE_FAILURE_LIMIT: u32 = 10;
+/// Default number of consecutive failed keep-alive requests before a key's
+/// background requests stop. Foreground requests remain available.
+pub const DEFAULT_KEEP_ALIVE_FAILURE_LIMIT: u32 = 20;
 /// Pause between two tries of one key.
 const PROBE_GAP: Duration = Duration::from_secs(3);
 /// Longest pause between two tries of a squeeze nobody watches, which
@@ -121,6 +121,8 @@ pub struct SqueezeBoard {
     /// cannot silently resume background work stopped by failed pings.
     background: Mutex<HashMap<String, BackgroundKey>>,
     background_generation: AtomicU64,
+    /// Zero uses the default until the saved setting is applied.
+    keep_alive_failure_limit: AtomicU32,
 }
 
 /// A pause drawn around `mean`: a normal distribution with that mean, kept
@@ -278,6 +280,20 @@ impl SqueezeBoard {
             .is_some_and(|k| k.rejoinable_stop)
     }
 
+    /// Apply to subsequent ping results without clearing failures or
+    /// resuming keys already stopped.
+    pub fn set_keep_alive_failure_limit(&self, limit: u32) {
+        self.keep_alive_failure_limit
+            .store(limit.max(1), Ordering::Relaxed);
+    }
+
+    pub fn keep_alive_failure_limit(&self) -> u32 {
+        match self.keep_alive_failure_limit.load(Ordering::Relaxed) {
+            0 => DEFAULT_KEEP_ALIVE_FAILURE_LIMIT,
+            limit => limit,
+        }
+    }
+
     pub fn stopped_keys(&self) -> Vec<(String, u32, String)> {
         self.background()
             .iter()
@@ -343,7 +359,7 @@ impl SqueezeBoard {
             }
             Err(err) => {
                 key.failures = key.failures.saturating_add(1);
-                if key.failures >= KEEP_ALIVE_FAILURE_LIMIT || refuses_key(err) {
+                if key.failures >= self.keep_alive_failure_limit() || refuses_key(err) {
                     key.stopped = Some(err.to_string());
                     key.target_met_at_stop = target_met;
                     key.rejoinable_stop = !refuses_key(err);
@@ -1079,11 +1095,12 @@ mod tests {
     }
 
     #[test]
-    fn ten_failed_pings_stop_background_work_without_disabling_foreground_requests() {
+    fn twenty_failed_pings_stop_background_work_without_disabling_foreground_requests() {
         let board = SqueezeBoard::new();
+        assert_eq!(board.keep_alive_failure_limit(), 20);
         board.answered("a");
         let token = board.background_token("a").unwrap();
-        for expected in 1..KEEP_ALIVE_FAILURE_LIMIT {
+        for expected in 1..DEFAULT_KEEP_ALIVE_FAILURE_LIMIT {
             let _ = board.finish_ping("a", token, &Err(server()));
             assert_eq!(board.background_state("a").0, expected);
             assert!(board.is_through("a"));
@@ -1091,16 +1108,19 @@ mod tests {
         board.answered("a");
         assert_eq!(
             board.background_state("a").0,
-            9,
+            DEFAULT_KEEP_ALIVE_FAILURE_LIMIT - 1,
             "foreground success is separate"
         );
         let _ = board.finish_ping("a", token, &Ok(()));
         assert_eq!(board.background_state("a"), (0, false, None));
-        for _ in 0..KEEP_ALIVE_FAILURE_LIMIT {
+        for _ in 0..DEFAULT_KEEP_ALIVE_FAILURE_LIMIT {
             let _ = board.finish_ping("a", token, &Err(server()));
         }
         assert!(board.background_stopped("a"));
-        assert_eq!(board.background_state("a").0, KEEP_ALIVE_FAILURE_LIMIT);
+        assert_eq!(
+            board.background_state("a").0,
+            DEFAULT_KEEP_ALIVE_FAILURE_LIMIT
+        );
         assert!(!board.is_through("a"));
         assert!(board.background_token("a").is_none());
         // A foreground response may still route normally, but cannot
@@ -1111,7 +1131,10 @@ mod tests {
         assert!(!board.has_enough());
         assert!(board.through().is_empty());
         let _ = board.finish_ping("a", token, &Ok(()));
-        assert_eq!(board.background_state("a").0, KEEP_ALIVE_FAILURE_LIMIT);
+        assert_eq!(
+            board.background_state("a").0,
+            DEFAULT_KEEP_ALIVE_FAILURE_LIMIT
+        );
         assert!(!board.finish_try("a", token, &Ok(()), Instant::now()));
         assert!(board.resume_background("a"));
         assert_eq!(board.background_state("a"), (0, false, None));
@@ -1122,6 +1145,55 @@ mod tests {
         let fresh = board.background_token("a").unwrap();
         let _ = board.finish_ping("a", fresh, &Ok(()));
         assert!(board.has_enough());
+    }
+
+    #[test]
+    fn raising_the_limit_keeps_failures_and_does_not_resume_stopped_keys() {
+        let board = SqueezeBoard::new();
+        board.set_keep_alive_failure_limit(10);
+        board.answered("a");
+        let token = board.background_token("a").unwrap();
+        for _ in 0..9 {
+            let _ = board.finish_ping("a", token, &Err(server()));
+        }
+        board.set_keep_alive_failure_limit(30);
+        assert_eq!(board.background_state("a"), (9, false, None));
+        for expected in 10..30 {
+            let _ = board.finish_ping("a", token, &Err(server()));
+            assert_eq!(board.background_state("a"), (expected, false, None));
+        }
+        let _ = board.finish_ping("a", token, &Err(server()));
+        assert!(board.background_stopped("a"));
+        assert_eq!(board.background_state("a").0, 30);
+        board.set_keep_alive_failure_limit(100);
+        assert!(board.background_stopped("a"));
+        assert!(board.background_token("a").is_none());
+        assert!(
+            board.stop_can_rejoin("a"),
+            "the recorded cause stays retryable"
+        );
+    }
+
+    #[test]
+    fn lowering_the_limit_applies_to_the_next_ping_result() {
+        let board = SqueezeBoard::new();
+        board.set_keep_alive_failure_limit(30);
+        let token = board.background_token("a").unwrap();
+        for _ in 0..10 {
+            let _ = board.finish_ping("a", token, &Err(server()));
+        }
+        board.set_keep_alive_failure_limit(5);
+        assert_eq!(board.background_state("a"), (10, false, None));
+        let _ = board.finish_ping("a", token, &Err(server()));
+        assert!(board.background_stopped("a"));
+        assert_eq!(board.background_state("a").0, 11);
+        assert!(board.resume_background("a"));
+        let fresh = board.background_token("a").unwrap();
+        for _ in 0..4 {
+            let _ = board.finish_ping("a", fresh, &Err(server()));
+        }
+        let _ = board.finish_ping("a", fresh, &Ok(()));
+        assert_eq!(board.background_state("a"), (0, false, None));
     }
 
     #[test]
@@ -1139,6 +1211,7 @@ mod tests {
         );
         assert!(board.background_stopped("a"));
         assert!(board.gave_up("a"));
+        assert!(!board.stop_can_rejoin("a"));
         assert_eq!(board.background_state("a").0, 1);
         board.answered("a");
         assert!(board.background_stopped("a"));
@@ -1166,7 +1239,7 @@ mod tests {
     fn unusable_ping_answers_count_as_failures_until_a_real_success() {
         let board = SqueezeBoard::new();
         let token = board.background_token("a").unwrap();
-        for _ in 0..KEEP_ALIVE_FAILURE_LIMIT {
+        for _ in 0..DEFAULT_KEEP_ALIVE_FAILURE_LIMIT {
             let _ = board.finish_ping(
                 "a",
                 token,
@@ -1174,7 +1247,10 @@ mod tests {
             );
         }
         assert!(board.background_stopped("a"));
-        assert_eq!(board.background_state("a").0, KEEP_ALIVE_FAILURE_LIMIT);
+        assert_eq!(
+            board.background_state("a").0,
+            DEFAULT_KEEP_ALIVE_FAILURE_LIMIT
+        );
     }
 
     #[test]

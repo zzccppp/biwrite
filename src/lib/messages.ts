@@ -108,7 +108,11 @@ export const messages = {
   "keys.inKeychain": { en: "{n} in the keychain", zh: "钥匙串中有 {n} 个" },
   "keys.perKey": { en: "Requests per key", zh: "每个密钥的并发" },
   "keys.unlimited": { en: "No limit", zh: "不限" },
-  "keys.retries": { en: "Retries", zh: "失败重试次数" },
+  "keys.retries": { en: "Request retries", zh: "请求失败重试次数" },
+  "keys.retriesHint": {
+    en: "Retries for transient request errors. Keep-alive failures use the separate limit below.",
+    zh: "请求遇到限流、服务端或网络等暂时性错误时的重试次数，不影响下方单独设置的保活连续失败上限。",
+  },
   "keys.retriesDefault": { en: "Default (5)", zh: "默认（5 次）" },
   "keys.colName": { en: "Name", zh: "名称" },
   "keys.colKey": { en: "Key", zh: "密钥" },
@@ -737,13 +741,19 @@ export const messages = {
   "squeeze.keeping": { en: "Keeping {through}/{total} alive", zh: "保活 {through}/{total}" },
   "squeeze.keepAlive": { en: "Keep alive", zh: "持续保活" },
   "squeeze.keepAliveHint": {
-    en: "While the relay turns keys away, or once you squeezed in, each key that got through is sent a short request after the idle time set here. Failed requests are retried at the squeeze interval. After 10 consecutive failures, background requests stop and a notice appears. A rejected key stops immediately. These requests are listed under Requests.",
-    zh: "中转拥挤时，或点过挤一挤之后，已挤进的密钥空闲到这里设定的时长后会收到一条很短的请求。失败时按挤一挤的间隔重试，连续失败 10 次后停止后台请求并提示。密钥被拒绝时立即停止。这些请求列在请求记录里。",
+    en: "While the relay turns keys away, or once you squeezed in, each key that got through is sent a short request after the idle time set here. Failed requests are retried at the squeeze interval. Once consecutive failures reach the selected limit, background requests stop and a notice appears. A rejected key stops immediately. These requests are listed under Requests.",
+    zh: "中转拥挤时，或点过挤一挤之后，已挤进的密钥空闲到这里设定的时长后会收到一条很短的请求。失败时按挤一挤的间隔重试，连续失败达到所选上限后停止后台请求并提示。密钥被拒绝时立即停止。这些请求列在请求记录里。",
+  },
+  "squeeze.failureLimit": { en: "Consecutive keep-alive failure limit", zh: "保活连续失败上限" },
+  "squeeze.failureLimitDefault": { en: "20 (default)", zh: "20（默认）" },
+  "squeeze.failureLimitHint": {
+    en: "Shared by all providers. A key's background requests stop once consecutive failed keep-alives reach this limit. A successful keep-alive resets the count; a rejected key stops immediately. Changes take effect immediately. For keys already stopped, click Rejoin to restore eligibility.",
+    zh: "所有服务商共用。每个密钥的保活连续失败达到此上限后停止后台请求。保活成功会清零连续失败计数，密钥被拒绝时立即停止。修改后立即生效，已停止的密钥需点“重新参与”恢复参与资格。",
   },
   "squeeze.rejoin": { en: "Rejoin after failure", zh: "失败后重新参与" },
   "squeeze.rejoinHint": {
-    en: "After 10 consecutive keep-alive failures, rejoin only if a manual squeeze is still running below its target. Once that squeeze reaches its target or ends, the key stops. Off by default.",
-    zh: "保活连续失败 10 次后，只有当前仍在手动挤一挤且未达到目标个数时才重新入队。达到目标或结束后停止，默认不勾选。",
+    en: "Once consecutive keep-alive failures reach the selected limit, rejoin only if a manual squeeze is still running below its target. Once that squeeze reaches its target or ends, the key stops. Off by default.",
+    zh: "保活连续失败达到所选上限后，只有当前仍在手动挤一挤且未达到目标个数时才重新入队。达到目标或结束后停止，默认不勾选。",
   },
   "squeeze.forever": { en: "Always", zh: "永久保活" },
   "squeeze.keepEvery": { en: "keep alive about", zh: "保活约每" },
@@ -761,8 +771,8 @@ export const messages = {
   "squeeze.enough": { en: "stop at", zh: "挤到" },
   "squeeze.enoughUnit": { en: "keys", zh: "个就停" },
   "squeeze.enoughHint": {
-    en: "A squeeze stops once this many keys got through, and only keeps them alive. A key that fails 10 keep-alives stops without starting another squeeze.",
-    zh: "挤进这么多个密钥后停止挤一挤，只对它们保活。保活连续失败 10 次后停止，不会自动开启新一轮挤一挤。",
+    en: "A squeeze stops once this many keys got through, and only keeps them alive. Once consecutive keep-alive failures reach the selected limit, the key stops without starting another squeeze.",
+    zh: "挤进这么多个密钥后停止挤一挤，只对它们保活。保活连续失败达到所选上限后停止，不会自动开启新一轮挤一挤。",
   },
   "squeeze.seconds": { en: "s", zh: "秒" },
   "squeeze.tryEveryHint": {

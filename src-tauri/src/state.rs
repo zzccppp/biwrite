@@ -127,6 +127,8 @@ impl AppState {
             .parent()
             .map(|d| d.join("materials"))
             .unwrap_or_default();
+        let squeeze = SqueezeState::default();
+        squeeze.set_keep_alive_failure_limit(settings.keep_alive_failure_limit);
         Self {
             engine,
             cache,
@@ -149,7 +151,7 @@ impl AppState {
             skills,
             latex,
             updates: UpdateState::default(),
-            squeeze: SqueezeState::default(),
+            squeeze,
             figures: crate::figures::FigureStore::default(),
             materials: crate::materials::Materials::new(materials),
         }

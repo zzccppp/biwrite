@@ -233,6 +233,8 @@ export interface SettingsView {
   keepAliveForever: boolean;
   /** Retry a stopped key only in a manual squeeze that has not reached its target. */
   keepAliveRejoin: boolean;
+  /** Consecutive failed keep-alives before a key's background requests stop. */
+  keepAliveFailureLimit: number;
   /** API keys in a local file only this account reads (no keychain prompt), else in the keychain. */
   keysInFile: boolean;
   /** Mean minutes between two keep-alives of a key. */

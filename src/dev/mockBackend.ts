@@ -306,13 +306,14 @@ const state = {
     keepAlive: true,
     keepAliveForever: true,
     keepAliveRejoin: false,
+    keepAliveFailureLimit: 20,
     keysInFile: true,
     keepAliveMinutes: 4,
     squeezeSeconds: 3,
     squeezeEnough: SQUEEZE_ENOUGH,
     squeezeEffort: "low",
     assistedApply: true,
-    version: "0.2.28",
+    version: "0.2.29",
   } as SettingsView,
   records: [] as RequestRecord[],
   /** Translations the assistant handed over (for UI tests). */
@@ -558,7 +559,7 @@ function failKeepAlive(index: number, reason = "provider server error (HTTP 500)
   const failures = (state.keepAliveFailures[index] ?? 0) + 1;
   state.keepAliveFailures[index] = failures;
   state.keepRetrying[index] = true;
-  if (failures < 10 && !refused) {
+  if (failures < state.settings.keepAliveFailureLimit && !refused) {
     squeezeEvent({ kind: "kept" });
     return;
   }
@@ -586,7 +587,7 @@ function answerKeepAlive(index: number): void {
 
 /** Compatibility helper for older UI tests: exhaust a key's retry allowance. */
 function dropKey(index: number): void {
-  state.keepAliveFailures[index] = 9;
+  state.keepAliveFailures[index] = state.settings.keepAliveFailureLimit - 1;
   failKeepAlive(index);
 }
 
@@ -1171,6 +1172,10 @@ const handlers: Record<string, (args: Args) => unknown> = {
   },
   set_keep_alive_rejoin: (a) => {
     state.settings.keepAliveRejoin = Boolean(a.on);
+    return clone(state.settings);
+  },
+  set_keep_alive_failure_limit: (a) => {
+    state.settings.keepAliveFailureLimit = Math.min(1000, Math.max(1, Math.round(Number(a.limit))));
     return clone(state.settings);
   },
   set_tray_language: () => null,

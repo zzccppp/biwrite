@@ -447,56 +447,104 @@ async fn a_failed_ping_keeps_the_keys_place_unless_the_key_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_tenth_failed_ping_stops_requests_until_the_user_resumes_it() {
+async fn twenty_consecutive_failed_pings_stop_requests_until_the_user_resumes_it_by_default() {
     let relay = Relay::start().await;
     let board = SqueezeBoard::for_relay();
-    board.answered(&key_fingerprint(A));
-    for _ in 0..10 {
-        assert!(
-            biwrite_providers::ping(
-                &config(&relay.base),
-                A.into(),
-                Arc::clone(&board),
-                Arc::new(DefaultPrompts),
-                Arc::new(NoObserver),
-            )
-            .await
-            .is_err()
-        );
-    }
+    assert_eq!(board.keep_alive_failure_limit(), 20);
     let print = key_fingerprint(A);
-    assert_eq!(board.background_state(&print).0, 10);
-    assert!(board.background_stopped(&print));
-    let sent = relay.requests_with(A);
-    assert_eq!(sent, 10, "count full requests exactly once");
-    relay.rules.lock().unwrap().through.insert(A.into());
-    assert!(
+    board.answered(&print);
+    let config = config(&relay.base);
+    let ping = || {
         biwrite_providers::ping(
-            &config(&relay.base),
+            &config,
             A.into(),
             Arc::clone(&board),
             Arc::new(DefaultPrompts),
             Arc::new(NoObserver),
         )
-        .await
-        .is_err()
+    };
+    for _ in 0..10 {
+        assert!(ping().await.is_err());
+    }
+    assert_eq!(board.background_state(&print).0, 10);
+    assert!(
+        !board.background_stopped(&print),
+        "ten failures still retry"
     );
+    relay.rules.lock().unwrap().through.insert(A.into());
+    ping().await.unwrap();
+    assert_eq!(
+        board.background_state(&print),
+        (0, false, None),
+        "a successful keep-alive clears consecutive failures"
+    );
+    relay.rules.lock().unwrap().through.remove(A);
+    for failures in 1..=20 {
+        assert!(ping().await.is_err());
+        assert_eq!(board.background_state(&print).0, failures);
+        assert_eq!(
+            board.background_stopped(&print),
+            failures == 20,
+            "only twenty consecutive failures stop the key"
+        );
+    }
+    let sent = relay.requests_with(A);
+    assert_eq!(sent, 31, "count full requests exactly once");
+    relay.rules.lock().unwrap().through.insert(A.into());
+    assert!(ping().await.is_err());
     assert_eq!(
         relay.requests_with(A),
         sent,
         "stopped keys issue no background request"
     );
     assert!(board.resume_background(&print));
-    biwrite_providers::ping(
-        &config(&relay.base),
-        A.into(),
-        Arc::clone(&board),
-        Arc::new(DefaultPrompts),
-        Arc::new(NoObserver),
-    )
-    .await
-    .unwrap();
+    ping().await.unwrap();
+    assert_eq!(relay.requests_with(A), sent + 1);
     assert_eq!(board.background_state(&print), (0, false, None));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selected_keep_alive_limits_are_independent_of_ordinary_request_retries() {
+    for (limit, max_retries) in [(10, 30), (30, 1)] {
+        let relay = Relay::start().await;
+        let board = SqueezeBoard::for_relay();
+        board.set_keep_alive_failure_limit(limit);
+        assert_eq!(board.keep_alive_failure_limit(), limit);
+        let print = key_fingerprint(A);
+        board.answered(&print);
+        let mut config = config(&relay.base);
+        config.max_retries = Some(max_retries);
+        let ping = || {
+            biwrite_providers::ping(
+                &config,
+                A.into(),
+                Arc::clone(&board),
+                Arc::new(DefaultPrompts),
+                Arc::new(NoObserver),
+            )
+        };
+        for failures in 1..=limit {
+            assert!(ping().await.is_err());
+            assert_eq!(board.background_state(&print).0, failures);
+            assert_eq!(
+                board.background_stopped(&print),
+                failures == limit,
+                "the selected limit {limit} controls when the key stops"
+            );
+        }
+        assert_eq!(
+            relay.requests_with(A),
+            limit as usize,
+            "ordinary max_retries={max_retries} does not multiply keep-alive requests"
+        );
+        relay.rules.lock().unwrap().through.insert(A.into());
+        assert!(ping().await.is_err());
+        assert_eq!(
+            relay.requests_with(A),
+            limit as usize,
+            "stopped keys issue no background request"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
