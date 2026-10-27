@@ -19,6 +19,7 @@
     /** The swap waits for the remaining translations. */
     swapWaiting: boolean;
     onopen: () => void;
+    onnewwindow: () => void;
     onsave: () => void;
     onsaveas: () => void;
     /** Save As into a new folder with the files the paper builds with. */
@@ -61,6 +62,7 @@
     onclosemirror,
     swapWaiting,
     onopen,
+    onnewwindow,
     onsave,
     onsaveas,
     onsaveproject,
@@ -159,6 +161,10 @@
     <button class="tool" onclick={onopen} title={t("toolbar.openTitle", { key: `${mod}O` })}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z" /></svg>
       <span class="smallcaps">{t("toolbar.open")}</span>
+    </button>
+    <button class="tool secondary" onclick={onnewwindow} title={t("toolbar.newWindowTitle", { key: `${mod}⇧N` })}>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5h8v8h-8zM5.5 5.5v-3h8v8h-3" /></svg>
+      <span class="smallcaps">{t("toolbar.newWindow")}</span>
     </button>
     <button class="tool" onclick={onsave} title={t("toolbar.saveTitle", { save: `${mod}S`, saveAs: `${mod}⇧S` })}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h8l2 2v9H3zM5.5 2.5v3h5v-3M5 13.5v-4h6v4" /></svg>

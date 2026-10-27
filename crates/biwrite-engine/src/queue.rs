@@ -86,6 +86,11 @@ impl Inner {
     /// flight) is reached. With a batch size above one, fresh translations
     /// queued together go out in one request.
     pub(crate) fn pump(self: &Arc<Self>, st: &mut State) {
+        if st.stopped {
+            st.queue.clear();
+            st.held.clear();
+            return;
+        }
         while st.requests_in_flight() < st.settings.concurrency.max(1) {
             let Some(id) = st.queue.pop_front() else {
                 break;

@@ -3,7 +3,8 @@
 // file paths are chosen in native dialogs on the Rust side.
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type {
   Effort,
   TestAnswer,
@@ -45,6 +46,7 @@ import type {
   SegmentState,
   SentencesView,
   SessionUsage,
+  Opened,
   SessionView,
   SettingsView,
   SkillInfo,
@@ -79,6 +81,9 @@ export const ipc = {
   reloadMirror: (text: string, document: number) =>
     invoke<SessionView | null>("reload_mirror", { text, document }),
   openFile: () => invoke<SessionView | null>("open_file"),
+  newWindow: () => invoke<void>("new_window"),
+  /** Tell the other windows the settings changed (they read them again). */
+  announceSettings: () => emit("settings-changed", getCurrentWebviewWindow().label),
   // `document` (Snapshot.document) says which document `text` is for.
   /** `overwrite`: also over a version changed on disk elsewhere (else refused, see `isChangedOnDisk`);
    * `overwriteMirror`: the paired file too (else its write is refused). */
@@ -242,7 +247,7 @@ export const latexIpc = {
   project: () => invoke<ProjectView | null>("latex_project"),
   /** Open another .tex file of the project (relative to its folder). */
   open: (file: string) => invoke<SessionView | null>("latex_open", { file }),
-  openFolder: () => invoke<SessionView | null>("latex_open_folder"),
+  openFolder: () => invoke<Opened | null>("latex_open_folder"),
   compile: (lang: PdfLang, text: string, document: number) =>
     invoke<BuildView>("latex_compile", { lang, text, document }),
   cancel: (lang: PdfLang) => invoke<void>("latex_cancel", { lang }),
@@ -278,7 +283,7 @@ export const latexIpc = {
     invoke<Range16>("latex_locate", { text, line, span, click }),
   goto: (lang: PdfLang, line: number, text: string) => invoke<Range16 | null>("latex_goto", { lang, line, text }),
   templates: () => invoke<TemplateView[]>("latex_templates"),
-  newPaper: (id: string) => invoke<SessionView | null>("latex_new_paper", { id }),
+  newPaper: (id: string) => invoke<Opened | null>("latex_new_paper", { id }),
   importTemplate: (zip: boolean) => invoke<TemplateView | null>("latex_import_template", { zip }),
   exportTemplate: () => invoke<string | null>("latex_export_template"),
   deleteTemplate: (id: string) => invoke<void>("latex_delete_template", { id }),
@@ -319,17 +324,28 @@ export interface EngineEvents {
   onAssist(event: AssistEvent): void;
   onFills(fills: Fill[]): void;
   onSqueeze(event: SqueezeEvent): void;
+  /** Settings changed in another window. */
+  onSettings(): void;
+  /** A file the system opened went into this (empty) window. */
+  onOpened(view: SessionView): void;
 }
 
 export async function subscribe(handlers: EngineEvents): Promise<UnlistenFn> {
+  // Events sent to this window (its document's) and to every window. A
+  // plain `listen` would also hear the documents of the other windows.
+  const win = getCurrentWebviewWindow();
   const unlisten = await Promise.all([
-    listen<SegmentState[]>("segment-states", (e) => handlers.onStates(e.payload)),
-    listen<SessionUsage>("usage", (e) => handlers.onUsage(e.payload)),
-    listen<string>("notice", (e) => handlers.onNotice(e.payload)),
-    listen<RequestRecord>("request-log", (e) => handlers.onRequest(e.payload)),
-    listen<AssistEvent>("assist", (e) => handlers.onAssist(e.payload)),
-    listen<Fill[]>("segment-fills", (e) => handlers.onFills(e.payload)),
-    listen<SqueezeEvent>("squeeze", (e) => handlers.onSqueeze(e.payload)),
+    win.listen<SegmentState[]>("segment-states", (e) => handlers.onStates(e.payload)),
+    win.listen<SessionUsage>("usage", (e) => handlers.onUsage(e.payload)),
+    win.listen<string>("notice", (e) => handlers.onNotice(e.payload)),
+    win.listen<RequestRecord>("request-log", (e) => handlers.onRequest(e.payload)),
+    win.listen<AssistEvent>("assist", (e) => handlers.onAssist(e.payload)),
+    win.listen<Fill[]>("segment-fills", (e) => handlers.onFills(e.payload)),
+    win.listen<SqueezeEvent>("squeeze", (e) => handlers.onSqueeze(e.payload)),
+    win.listen<string>("settings-changed", (e) => {
+      if (e.payload !== win.label) handlers.onSettings();
+    }),
+    win.listen<SessionView>("document-opened", (e) => handlers.onOpened(e.payload)),
   ]);
   return () => unlisten.forEach((fn) => fn());
 }

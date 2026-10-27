@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ChangeSet, type Text } from "@codemirror/state";
   import type { ViewUpdate } from "@codemirror/view";
+  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { onMount } from "svelte";
   import {
     type AssistJob,
@@ -27,7 +28,7 @@
   import Toolbar from "./lib/components/Toolbar.svelte";
   import TranslationPane from "./lib/components/TranslationPane.svelte";
   import { SourceEditor } from "./lib/editor/editor";
-  import { count, language, t } from "./lib/i18n.svelte";
+  import { LANG_KEY, count, language, t } from "./lib/i18n.svelte";
   import {
     assistIpc,
     errorMessage,
@@ -47,7 +48,7 @@
   import { anchorsAgree, type Bounds, placeOf as sentencePlace, samePlace, sentenceAtCursor } from "./lib/sentences";
   import { differingStretches } from "./lib/stretch";
   import { Session } from "./lib/session.svelte";
-  import { applyTheme, loadTheme, nextTheme, type ThemePref } from "./lib/theme";
+  import { THEME_KEY, applyTheme, loadTheme, nextTheme, type ThemePref } from "./lib/theme";
   import type {
     PaperView,
     AssistAction,
@@ -210,7 +211,7 @@
   async function useSqueezed(): Promise<void> {
     if (!squeezeAlert) return;
     try {
-      settings = await settingsIpc.setActive(squeezeAlert.providerId);
+      settingsChanged(await settingsIpc.setActive(squeezeAlert.providerId));
     } catch (err) {
       session.flash(errorMessage(err));
     }
@@ -675,6 +676,25 @@
       if (session.path !== path) return;
     }
     if (session.direction !== direction) await swapLanguages();
+  }
+
+  /** Settings changed in this window: the others read them again. */
+  function settingsChanged(view: SettingsView): void {
+    settings = view;
+    ipc.announceSettings().catch(() => {});
+  }
+
+  /** The interface language or theme chosen in another window. */
+  function onStorage(e: StorageEvent): void {
+    if (e.key === LANG_KEY) language.reload();
+    if (e.key === THEME_KEY) {
+      theme = loadTheme();
+      applyTheme(theme);
+    }
+  }
+
+  function newWindow(): void {
+    ipc.newWindow().catch(fail);
   }
 
   async function refreshSettings(): Promise<void> {
@@ -1403,7 +1423,8 @@
 
   /** At startup, if allowed: is a newer release out? Quiet when offline. */
   async function checkForUpdate(): Promise<void> {
-    if (!settings?.checkUpdates) return;
+    // Once per start, not again in every window opened.
+    if (!settings?.checkUpdates || getCurrentWebviewWindow().label !== "main") return;
     try {
       const view = await updateIpc.list();
       updateAvailable = view.releases.find((r) => r.relation === "newer" && !r.prerelease && r.asset)?.version ?? null;
@@ -1708,6 +1729,9 @@
     } else if (key === "o" && !e.shiftKey) {
       e.preventDefault();
       if (!e.repeat) void open();
+    } else if (key === "n" && e.shiftKey) {
+      e.preventDefault();
+      if (!e.repeat) newWindow();
     } else if (key === "l" && e.shiftKey) {
       e.preventDefault();
       if (!e.repeat) showLog = !showLog;
@@ -2350,10 +2374,15 @@
           },
           onFills: (fills) => applyFills(fills),
           onSqueeze: (event) => onSqueeze(event),
+          onSettings: () => void refreshSettings(),
+          onOpened: (view) => loadView(view),
         });
         if (disposed) off();
         else unlisten = off;
-        loadView(await ipc.getSession());
+        // A file the system opened may have come first (`onOpened`): an
+        // older document does not replace it.
+        const first = await ipc.getSession();
+        if (first.snapshot.document >= session.document) loadView(first);
         requestLog.load(await logIpc.get());
         await latex.loadStatus();
         if (showPdf && compilable && latex.ready && !latex.builds[latex.lang]) void compile();
@@ -2375,7 +2404,7 @@
   });
 </script>
 
-<svelte:window onkeydown={onKeydown} onfocus={() => void checkDisk()} />
+<svelte:window onkeydown={onKeydown} onfocus={() => void checkDisk()} onstorage={onStorage} />
 <svelte:document onvisibilitychange={() => document.visibilityState === "visible" && void checkDisk()} />
 
 <div class="app">
@@ -2391,6 +2420,7 @@
     }}
     onfile={(file) => openProjectFile(file)}
     onopen={open}
+    onnewwindow={newWindow}
     onsave={() => save(false)}
     onsaveas={() => save(true)}
     onsaveproject={() => save("project")}
@@ -2639,9 +2669,7 @@
     {latex}
     dirty={session.dirty}
     focus={settingsFocus}
-    onchange={(view) => {
-      settings = view;
-    }}
+    onchange={(view) => settingsChanged(view)}
     onskill={(next) => {
       skill = next;
     }}

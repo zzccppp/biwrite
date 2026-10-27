@@ -7,14 +7,14 @@ use std::path::{Path, PathBuf};
 
 use biwrite_latex as latex;
 use serde::Serialize;
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, WebviewWindow};
 
 use crate::commands::home_text;
 use crate::error::{CommandError, CommandResult};
 use crate::files;
 use crate::latex_commands::{canonical, project, template_err, translation_tex};
 use crate::pairing;
-use crate::state::{AppState, SavedView};
+use crate::state::{Doc, Document, SavedView};
 
 /// What a copy into a new folder did.
 #[derive(Serialize)]
@@ -80,7 +80,7 @@ fn names(paths: &[PathBuf]) -> Vec<String> {
 pub async fn save_project_as(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
     title: String,
@@ -104,7 +104,7 @@ pub async fn save_project_as(
 }
 
 /// The files the open paper needs, its paired file's included.
-pub(crate) async fn paper_bundle(state: &AppState) -> CommandResult<latex::Bundle> {
+pub(crate) async fn paper_bundle(state: &Document) -> CommandResult<latex::Bundle> {
     let project = project(state)?;
     let mirror = state.file().pair.as_ref().map(|p| canonical(&p.path));
     let mut roots = vec![project.root.clone()];
@@ -115,7 +115,7 @@ pub(crate) async fn paper_bundle(state: &AppState) -> CommandResult<latex::Bundl
 /// [`save_project_as`] into `dest`, the document's own text being `own`.
 /// The caller holds `save_lock`.
 pub(crate) async fn save_into(
-    state: &AppState,
+    state: &Document,
     own: String,
     bundle: &latex::Bundle,
     dest: PathBuf,
@@ -167,7 +167,7 @@ pub(crate) async fn save_into(
 pub async fn latex_export_project(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
     title: String,
@@ -187,7 +187,7 @@ pub async fn latex_export_project(
 /// next to the document, or next to the root for the whole paper
 /// (`whole`).
 pub(crate) async fn export_into(
-    state: &AppState,
+    state: &Document,
     name: &str,
     body: String,
     whole: bool,

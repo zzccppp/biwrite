@@ -26,7 +26,7 @@ use crate::pairing;
 use crate::request_log::{LogSettings, NoSink, RequestLog};
 use crate::secrets::{MemoryStore, SecretStore};
 use crate::settings::{AppSettings, Paths};
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
 #[derive(Default)]
 struct Fills(Mutex<Vec<Fill>>);
@@ -112,7 +112,7 @@ fn templates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/templates")
 }
 
-fn workflow_state(dir: &Path) -> (AppState, Arc<Toy>, Arc<Fills>) {
+fn workflow_state(dir: &Path) -> (Doc, Arc<Toy>, Arc<Fills>) {
     let translator = Arc::new(Toy::default());
     let fills = Arc::new(Fills::default());
     let engine = Engine::new(
@@ -123,7 +123,7 @@ fn workflow_state(dir: &Path) -> (AppState, Arc<Toy>, Arc<Fills>) {
         tokio::runtime::Handle::current(),
     );
     let secrets: Arc<dyn SecretStore> = Arc::new(MemoryStore::default());
-    let state = AppState::new(
+    let state = crate::state::test_doc(
         engine,
         Arc::new(MemoryCache::default()),
         AppSettings::default(),
@@ -140,7 +140,7 @@ fn workflow_state(dir: &Path) -> (AppState, Arc<Toy>, Arc<Fills>) {
     (state, translator, fills)
 }
 
-async fn settle(state: &AppState) {
+async fn settle(state: &Document) {
     crate::pair_tests::settle(state).await;
 }
 
@@ -203,7 +203,7 @@ We assign one cleaning action per row and test it on twelve datasets.\n\n";
 
 /// New paper from `id`, our section written after the title. Returns the
 /// project folder, the main file and the written text.
-async fn new_paper(state: &AppState, dir: &Path, id: &str) -> (PathBuf, PathBuf, String) {
+async fn new_paper(state: &Document, dir: &Path, id: &str) -> (PathBuf, PathBuf, String) {
     let (template, t) = templates::find(&templates_dir(), &dir.join("user-templates"), id).unwrap();
     let project = dir.join(format!("{id}-paper"));
     let main = templates::instantiate(&template, &project).unwrap();
@@ -231,7 +231,7 @@ async fn new_paper(state: &AppState, dir: &Path, id: &str) -> (PathBuf, PathBuf,
 }
 
 /// Both PDFs of the open document, and the links between PDF and source.
-async fn both_pdfs(state: &tauri::State<'_, AppState>, text: &str, sentence: &str, id: &str) {
+async fn both_pdfs(state: &Doc, text: &str, sentence: &str, id: &str) {
     let en = latex_compile(
         state.clone(),
         Lang::En,
@@ -317,7 +317,7 @@ async fn workflow_every_template_writes_and_builds_both_pdfs() {
         let app = tauri::test::mock_app();
         let (state, _, _) = workflow_state(&dir);
         app.manage(state);
-        let state = app.state::<AppState>();
+        let state = app.state::<Doc>().inner().clone();
         let (_, _, text) = new_paper(&state, &dir, id).await;
         both_pdfs(&state, &text, "We assign one cleaning action", id).await;
         std::fs::remove_dir_all(&dir).unwrap();
@@ -331,7 +331,7 @@ async fn workflow_a_paper_from_the_iclr_template_through_every_step() {
     let app = tauri::test::mock_app();
     let (state, translator, fills) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
 
     // 1. New paper, written, translated, saved.
     let (project, main, text) = new_paper(&state, &dir, "iclr2027").await;
@@ -658,7 +658,7 @@ async fn workflow_clicks_in_a_real_paper_land_in_its_sections() {
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let view = open_path(&state, main.clone()).await.unwrap();
     settle(&state).await;
     let built = latex_compile(
@@ -824,7 +824,7 @@ async fn workflow_figures_the_assistant_writes_compile_in_every_template() {
         let app = tauri::test::mock_app();
         let (state, _, _) = workflow_state(&dir);
         app.manage(state);
-        let state = app.state::<AppState>();
+        let state = app.state::<Doc>().inner().clone();
         let (project, main, text) = new_paper(&state, &dir, id).await;
         std::fs::create_dir_all(project.join("figures")).unwrap();
         std::fs::write(project.join("figures/sample.png"), PNG).unwrap();
@@ -909,7 +909,7 @@ async fn workflow_figures_the_assistant_writes_compile_in_every_template() {
 }
 
 /// The app state with the offline provider's translator.
-fn offline_state(dir: &Path, delay: Duration) -> AppState {
+fn offline_state(dir: &Path, delay: Duration) -> Doc {
     let translator = Arc::new(
         biwrite_engine::MockTranslator::with_delay(delay, delay + Duration::from_millis(2))
             .keeping_markup(),
@@ -922,7 +922,7 @@ fn offline_state(dir: &Path, delay: Duration) -> AppState {
         tokio::runtime::Handle::current(),
     );
     let secrets: Arc<dyn SecretStore> = Arc::new(MemoryStore::default());
-    AppState::new(
+    crate::state::test_doc(
         engine,
         Arc::new(MemoryCache::default()),
         AppSettings::default(),
@@ -949,7 +949,7 @@ async fn offline_chinese_errors(id: &str, translated: bool) -> Vec<String> {
     };
     let app = tauri::test::mock_app();
     app.manage(offline_state(&dir, delay));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let (template, _) = templates::find(&templates_dir(), &dir.join("user-templates"), id).unwrap();
     let main = templates::instantiate(&template, &dir.join("paper")).unwrap();
     open_path(&state, main).await.unwrap();
@@ -1108,10 +1108,7 @@ async fn swapping_back_home_now_fills_in_the_paragraph_on_its_way() {
 }
 
 /// A paired paper with its Chinese file next to it, opened and translated.
-async fn paired(
-    name: &str,
-    english: &str,
-) -> (PathBuf, AppState, Arc<Fills>, PathBuf, PathBuf, String) {
+async fn paired(name: &str, english: &str) -> (PathBuf, Doc, Arc<Fills>, PathBuf, PathBuf, String) {
     let dir = temp(name);
     let (state, _translator, fills) = workflow_state(&dir);
     let main = dir.join("paper.tex");
@@ -1494,7 +1491,7 @@ async fn fills_of_headings_items_and_captions_keep_their_ids() {
     state.engine.update(zh.clone());
     let back = swap(&state, zh, true).unwrap();
     assert_eq!(back.other_language, 6);
-    let ids = |state: &AppState| -> Vec<_> {
+    let ids = |state: &Document| -> Vec<_> {
         state
             .engine
             .snapshot()
@@ -1629,7 +1626,7 @@ fn line_with(text: &str, needle: &str) -> u32 {
 }
 
 /// Where `line` of `input` is in the Chinese PDF.
-async fn box_of(state: &AppState, input: &Path, line: u32) -> biwrite_latex::synctex::PdfBox {
+async fn box_of(state: &Document, input: &Path, line: u32) -> biwrite_latex::synctex::PdfBox {
     let tc = crate::latex_commands::require_toolchain(state)
         .await
         .unwrap();
@@ -1645,7 +1642,7 @@ async fn box_of(state: &AppState, input: &Path, line: u32) -> biwrite_latex::syn
 /// A click in the middle of `b` of the Chinese PDF, on the words `span`
 /// (as the PDF's text layer gives them).
 async fn click(
-    state: &tauri::State<'_, AppState>,
+    state: &Doc,
     b: &biwrite_latex::synctex::PdfBox,
     span: &str,
     text: &str,
@@ -1673,7 +1670,7 @@ async fn workflow_sections_not_open_are_built_in_chinese_from_their_translations
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     // Each section translated once, as when the author read it.
     for part in ["sections/method.tex", "sections/intro.tex"] {
         open_path(&state, dir.join(part)).await.unwrap();
@@ -1793,7 +1790,7 @@ async fn workflow_a_section_paired_by_import_is_built_from_its_chinese_file() {
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let method = dir.join("sections/method.tex");
     let view = open_path(&state, method.clone()).await.unwrap();
     pairing::pair_with(
@@ -1871,7 +1868,7 @@ async fn workflow_a_chinese_main_file_paired_by_import_is_built_from_any_section
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let main = dir.join("main.tex");
     let view = open_path(&state, main.clone()).await.unwrap();
     pairing::pair_with(
@@ -1956,7 +1953,7 @@ async fn workflow_a_main_zh_file_is_the_chinese_pdf_of_every_section() {
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     // The method, which the Chinese main file reads as it is: that file
     // makes the Chinese PDF. The introduction, whose Chinese the main file
     // has under a name nothing pairs with it: its translation does.
@@ -1987,7 +1984,7 @@ async fn the_whole_paper_for_the_assistant_puts_each_part_in_its_place() {
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open_path(&state, dir.join("sections/method.tex"))
         .await
         .unwrap();
@@ -2037,7 +2034,7 @@ async fn a_document_of_one_file_has_no_whole_paper_of_its_own() {
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let view = open_path(&state, dir.join("main.tex")).await.unwrap();
     assert!(crate::latex_commands::whole_paper(&state, &view.text, 0).is_none());
     std::fs::remove_dir_all(&dir).unwrap();
@@ -2058,7 +2055,7 @@ async fn the_paper_as_one_file_has_every_section_in_place() {
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open_path(&state, dir.join("sections/intro.tex"))
         .await
         .unwrap();
@@ -2138,7 +2135,7 @@ async fn workflow_a_real_paper_of_sections_works_from_its_sections() {
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
 
     for name in ["01_intro.tex", "04_method.tex"] {
         let section = root.join("sections_en").join(name);
@@ -2320,7 +2317,7 @@ async fn the_paper_view_puts_every_part_around_the_open_one() {
     let app = tauri::test::mock_app();
     let (state, _, _) = workflow_state(&dir);
     app.manage(state);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     // The introduction translated once, the main file too.
     for part in ["sections/intro.tex", "main.tex"] {
         open_path(&state, dir.join(part)).await.unwrap();

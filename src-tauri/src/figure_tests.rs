@@ -114,7 +114,7 @@ async fn tiny_pdf(dir: &Path, name: &str) {
 
 /// Make the figure of job `id` from `reply`, as the job would.
 async fn make(
-    state: &AppState,
+    state: &Document,
     id: u64,
     format: FigureFormat,
     model: &dyn ChatModel,
@@ -159,7 +159,7 @@ async fn a_powerpoint_figure_builds_unsaved_and_is_saved_beside_the_others() {
     std::fs::write(&main, PAPER).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&top.join("cfg")));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     crate::pairing::open(
         &state,
         main.clone(),
@@ -254,7 +254,7 @@ async fn a_picture_that_does_not_compile_is_repaired_into_a_pdf() {
     std::fs::write(&main, &plain).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&top.join("cfg")));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     crate::pairing::open(
         &state,
         main.clone(),

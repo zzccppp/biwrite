@@ -3,11 +3,10 @@
 use biwrite_core::Direction;
 use biwrite_engine::CacheStats;
 use serde::Serialize;
-use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::settings::{AppSettings, MOCK_ID};
-use crate::state::AppState;
+use crate::state::{AppState, Doc};
 
 /// Cache contents for the settings drawer.
 #[derive(Serialize)]
@@ -87,7 +86,7 @@ async fn with_cache<T: Send + 'static>(
 }
 
 #[tauri::command]
-pub async fn get_cache(state: State<'_, AppState>) -> CommandResult<CacheView> {
+pub async fn get_cache(state: Doc) -> CommandResult<CacheView> {
     let stats = with_cache(&state, |c| c.stats()).await?;
     Ok(view(stats, &state))
 }
@@ -103,7 +102,7 @@ pub struct ClearedView {
 /// Delete every cached translation. Translations on screen stay; anything
 /// else is translated again when needed.
 #[tauri::command]
-pub async fn clear_cache(state: State<'_, AppState>) -> CommandResult<ClearedView> {
+pub async fn clear_cache(state: Doc) -> CommandResult<ClearedView> {
     let removed = with_cache(&state, |c| c.clear()).await?;
     log::info!("cleared the translation cache ({removed} entries)");
     let stats = with_cache(&state, |c| c.stats()).await?;
@@ -115,7 +114,7 @@ pub async fn clear_cache(state: State<'_, AppState>) -> CommandResult<ClearedVie
 
 /// Show the log folder in Finder / Explorer.
 #[tauri::command]
-pub async fn reveal_logs(state: State<'_, AppState>) -> CommandResult<()> {
+pub async fn reveal_logs(state: Doc) -> CommandResult<()> {
     let dir = state
         .paths
         .logs

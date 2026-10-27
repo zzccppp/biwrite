@@ -9,7 +9,7 @@ use biwrite_core::TextFile;
 use crate::pair_tests::{app_state, settle};
 use crate::pairing;
 use crate::project_copy::{export_into, paper_bundle, save_into};
-use crate::state::AppState;
+use crate::state::Document;
 
 const EN: &str = "\\documentclass{ieeecolor}\n\\newcommand{\\figdir}{../figures/}\n\\begin{document}\n\\section{Method}\nOur method prepares tables in three steps.\n\n\\includegraphics{\\figdir fig_a.pdf}\n\\bibliographystyle{IEEEtran}\n\\bibliography{../refs}\n\\end{document}\n";
 
@@ -69,7 +69,7 @@ fn read(path: &Path) -> TextFile {
     TextFile::decode(std::fs::read(path).unwrap()).unwrap()
 }
 
-fn open(state: &AppState, path: &Path, mirror: Option<&Path>) {
+fn open(state: &Document, path: &Path, mirror: Option<&Path>) {
     pairing::open(
         state,
         path.to_path_buf(),

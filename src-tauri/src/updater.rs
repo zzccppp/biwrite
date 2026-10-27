@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::error::{CommandError, CommandResult};
-use crate::state::AppState;
+use crate::state::{AppState, Doc};
 
 const RELEASES: &str = "https://api.github.com/repos/zzccppp/biwrite/releases?per_page=40";
 /// Where BiWrite's release files are downloaded from (on github.com).
@@ -276,7 +276,7 @@ fn client() -> CommandResult<reqwest::Client> {
 
 /// Every published release, newest first.
 #[tauri::command]
-pub async fn list_releases(state: State<'_, AppState>) -> CommandResult<UpdatesView> {
+pub async fn list_releases(state: Doc) -> CommandResult<UpdatesView> {
     let body = client()?
         .get(RELEASES)
         .header("Accept", "application/vnd.github+json")
@@ -313,7 +313,7 @@ pub async fn list_releases(state: State<'_, AppState>) -> CommandResult<UpdatesV
 #[tauri::command]
 pub async fn install_release(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: Doc,
     tag: String,
 ) -> CommandResult<InstalledView> {
     let (release, asset) = state
@@ -343,9 +343,9 @@ pub async fn install_release(
 
 /// Start the version installed by `install_release` (macOS).
 #[tauri::command]
-pub async fn relaunch(app: AppHandle, state: State<'_, AppState>) -> CommandResult<()> {
-    if state.is_dirty() {
-        return Err(fail("Save or discard the changes first."));
+pub async fn relaunch(app: AppHandle, state: Doc) -> CommandResult<()> {
+    if state.any_unsaved() {
+        return Err(fail("Save or discard the changes in every window first."));
     }
     let bundle = state
         .updates
@@ -575,9 +575,9 @@ async fn install(
     file: &Path,
     version: String,
 ) -> CommandResult<InstalledView> {
-    if state.is_dirty() {
+    if state.any_unsaved() {
         return Err(fail(
-            "Save or discard the changes first: BiWrite quits to install.",
+            "Save or discard the changes in every window first: BiWrite quits to install.",
         ));
     }
     std::process::Command::new(file)

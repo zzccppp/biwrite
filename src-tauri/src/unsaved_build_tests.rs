@@ -12,7 +12,7 @@ use tauri::Manager;
 use crate::latex_commands::{Lang, latex_compile, latex_forward, latex_inverse, pdf_of};
 use crate::pair_tests::{app_state, settle};
 use crate::pairing;
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
 const MAIN: &str = "\\documentclass{article}\n\
 \\begin{document}\n\
@@ -67,7 +67,7 @@ fn project_files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     out
 }
 
-fn open(state: &AppState, path: &Path) {
+fn open(state: &Document, path: &Path) {
     let file = TextFile::decode(std::fs::read(path).unwrap()).unwrap();
     let mirror = pairing::counterpart(path).map(|m| {
         (
@@ -93,7 +93,7 @@ async fn an_unsaved_document_is_built_from_a_copy_and_its_file_stays_as_saved() 
     std::fs::write(&path, MAIN).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let before = project_files(&dir);
@@ -181,7 +181,7 @@ async fn an_unsaved_part_is_built_through_a_copy_of_its_root() {
     std::fs::write(&path, INTRO).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let before = project_files(&dir);
@@ -229,7 +229,7 @@ async fn a_part_its_root_does_not_include_directly_is_built_as_saved() {
     std::fs::write(&path, INTRO).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let before = project_files(&dir);
@@ -257,7 +257,7 @@ async fn a_pairs_unsaved_translation_is_built_from_a_copy_and_clicks_find_it() {
     std::fs::write(&zh, ZH).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &en);
     assert!(state.file().pair.is_some());
     settle(&state).await;
@@ -339,7 +339,7 @@ async fn a_bibliography_beside_the_project_folder_is_found_by_an_unsaved_build()
     std::fs::write(&path, &paper).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&top.join("cfg")));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let before = project_files(&top);
@@ -382,7 +382,7 @@ async fn a_file_changed_elsewhere_is_built_as_the_editor_shows_it() {
     std::fs::write(&path, MAIN).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let theirs = MAIN.replace("twelve datasets", "ELSEWHERE datasets");
@@ -424,7 +424,7 @@ async fn a_pairs_paragraph_not_translated_yet_is_counted_in_its_build() {
     std::fs::write(&zh, ZH).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &en);
     settle(&state).await;
     state.engine.set_auto_translate(false);

@@ -8,7 +8,7 @@ import { messages } from "./messages";
 export type Lang = "en" | "zh";
 export type MessageKey = keyof typeof messages;
 
-const LANG_KEY = "biwrite.lang";
+export const LANG_KEY = "biwrite.lang";
 
 function loadLang(): Lang {
   try {
@@ -20,6 +20,12 @@ function loadLang(): Lang {
 
 class Language {
   current = $state<Lang>(loadLang());
+
+  /** The language another window chose (it is stored for all). */
+  reload(): void {
+    const lang = loadLang();
+    if (lang !== this.current) this.set(lang);
+  }
 
   set(lang: Lang): void {
     this.current = lang;

@@ -6,18 +6,18 @@ use std::path::Path;
 use biwrite_core::GlossaryEntry;
 use biwrite_core::glossary::{self, GlossaryError};
 use serde::Serialize;
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, WebviewWindow};
 
 use crate::error::{CommandError, CommandResult};
 use crate::files;
-use crate::state::{AppState, display_name};
+use crate::state::{Doc, display_name};
 
 /// Glossary CSVs are small (at most `MAX_ENTRIES` rows); refuse anything
 /// this large.
 const MAX_CSV_BYTES: u64 = 2_000_000;
 
 #[tauri::command]
-pub async fn get_glossary(state: State<'_, AppState>) -> CommandResult<Vec<GlossaryEntry>> {
+pub async fn get_glossary(state: Doc) -> CommandResult<Vec<GlossaryEntry>> {
     Ok(state.settings().glossary.clone())
 }
 
@@ -25,20 +25,20 @@ pub async fn get_glossary(state: State<'_, AppState>) -> CommandResult<Vec<Gloss
 /// merged). Paragraphs whose terms changed are retranslated.
 #[tauri::command]
 pub async fn save_glossary(
-    state: State<'_, AppState>,
+    state: Doc,
     entries: Vec<GlossaryEntry>,
 ) -> CommandResult<Vec<GlossaryEntry>> {
     let entries = glossary::normalized(entries);
     glossary::check_size(&entries).map_err(|e| CommandError::Settings(e.to_string()))?;
-    // Persist first, then commit to memory and the engine under one guard, so
-    // a failed write or two overlapping saves can't leave settings and engine
-    // disagreeing. (The engine never takes the settings lock.)
+    // Persist first, then commit to memory and the engines under one guard,
+    // so a failed write or two overlapping saves can't leave settings and
+    // engines disagreeing. (The engines never take the settings lock.)
     let mut settings = state.settings();
     let mut next = settings.clone();
     next.glossary = entries.clone();
     state.persist(&next)?;
     *settings = next;
-    state.engine.set_glossary(entries.clone());
+    state.each_engine(|engine| engine.set_glossary(entries.clone()));
     log::info!("glossary saved ({} terms)", entries.len());
     Ok(entries)
 }
@@ -74,7 +74,7 @@ pub async fn import_glossary(
 pub async fn export_glossary(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
 ) -> CommandResult<Option<String>> {
     let csv = glossary::to_csv(&state.settings().glossary);
     let Some(path) =
@@ -101,7 +101,7 @@ pub struct ExportView {
 pub async fn export_bilingual(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
 ) -> CommandResult<Option<ExportView>> {
@@ -117,6 +117,7 @@ pub async fn export_bilingual(
     else {
         return Ok(None);
     };
+    crate::commands::not_open_elsewhere(&state, [&path])?;
     // Built after the dialog, so translations that finished meanwhile count.
     let export = state.engine.bilingual_markdown();
     files::write_file_atomic(path.clone(), export.text.into_bytes()).await?;

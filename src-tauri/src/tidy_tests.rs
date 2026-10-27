@@ -75,7 +75,7 @@ async fn opened(name: &str, text: &str) -> (tauri::App<tauri::test::MockRuntime>
     std::fs::write(&main, text).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&top.join("cfg")));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     crate::pairing::open(
         &state,
         main,
@@ -147,7 +147,7 @@ fn no_project() -> tauri::App<tauri::test::MockRuntime> {
 #[tokio::test]
 async fn the_model_decides_and_a_model_that_cannot_answer_keeps_every_line() {
     let app = no_project();
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let added = "\\usepackage{tikz}\n\\usetikzlibrary{arrows.meta}\n\\definecolor{figBlue}{RGB}{31,78,121}\n";
     let text = format!("{HEAD}{added}\\begin{{document}}\nText.\n\\end{{document}}\n");
     // No build can be done here: the model's choice stands.
@@ -193,7 +193,7 @@ const PIFONT: &str = "\\usepackage{pifont}\n\\definecolor{figRed}{RGB}{192,0,0}\
 async fn what_the_model_picks_goes_once_a_build_without_it_passes() {
     let text = ding_paper();
     let (app, top) = opened("model", &text).await;
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let t = tidy(&state, &Scripted::says("1 keep\n2 remove"), &text, PIFONT)
         .await
         .unwrap();
@@ -212,7 +212,7 @@ async fn what_the_model_picks_goes_once_a_build_without_it_passes() {
 async fn a_choice_that_breaks_the_build_keeps_every_line() {
     let text = ding_paper();
     let (app, top) = opened("wrong", &text).await;
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     // Wrong: \ding needs pifont.
     let t = tidy(&state, &Scripted::says("1 remove\n2 remove"), &text, PIFONT)
         .await

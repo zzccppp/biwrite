@@ -50,6 +50,11 @@
     },
     "resources": [
       "resources/**/*"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/open-with.nsh"
+      }
+    }
   }
 }

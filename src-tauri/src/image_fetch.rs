@@ -8,11 +8,10 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::latex_commands::project;
-use crate::state::AppState;
+use crate::state::Doc;
 
 /// Extensions of the pictures looked for.
 const EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "pdf", "eps", "svg", "gif", "webp"];
@@ -218,10 +217,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// The pictures the open document `text` names but nobody downloaded yet,
 /// with their web addresses (see the module).
 #[tauri::command]
-pub async fn latex_missing_images(
-    state: State<'_, AppState>,
-    text: String,
-) -> CommandResult<Vec<MissingImage>> {
+pub async fn latex_missing_images(state: Doc, text: String) -> CommandResult<Vec<MissingImage>> {
     let Ok(p) = project(&state) else {
         return Ok(Vec::new());
     };
@@ -231,10 +227,7 @@ pub async fn latex_missing_images(
 /// Download the pictures [`latex_missing_images`] finds into the folder
 /// TeX runs in.
 #[tauri::command]
-pub async fn latex_download_images(
-    state: State<'_, AppState>,
-    text: String,
-) -> CommandResult<Vec<Downloaded>> {
+pub async fn latex_download_images(state: Doc, text: String) -> CommandResult<Vec<Downloaded>> {
     let p = project(&state)?;
     let wanted = missing(&p.dir, &p.root_text, &text);
     let client = reqwest::Client::builder()

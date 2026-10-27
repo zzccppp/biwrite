@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "fileAssociations": [
+      {
+        "ext": ["tex"],
+        "name": "LaTeX document",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["md", "markdown"],
+        "name": "Markdown document",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["txt"],
+        "name": "Plain text document",
+        "role": "Editor",
+        "rank": "Alternate"
+      }
+    ]
+  }
+}

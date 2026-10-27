@@ -11,7 +11,7 @@ use crate::commands::{home_text, retarget};
 use crate::latex_commands::{Lang, latex_compile, latex_forward};
 use crate::pair_tests::{app_state, settle};
 use crate::pairing;
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
 const ZH_PAPER: &str = "\\documentclass{article}\n\
 \\usepackage[UTF8]{ctex}\n\
@@ -36,7 +36,7 @@ fn temp(name: &str) -> PathBuf {
     dir
 }
 
-fn open(state: &AppState, path: &Path, text: &str) {
+fn open(state: &Document, path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
     let file = TextFile::decode(std::fs::read(path).unwrap()).unwrap();
     let mirror = pairing::counterpart(path).map(|m| {
@@ -204,7 +204,7 @@ async fn build_both(paper: &str, name: &str) {
         use tauri::Manager;
         app.manage(app_state(&dir));
     }
-    let state = tauri::Manager::state::<AppState>(&app);
+    let state = tauri::Manager::state::<Doc>(&app).inner().clone();
     let path = dir.join("main.tex");
     open(&state, &path, paper);
     settle(&state).await;

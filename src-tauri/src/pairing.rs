@@ -17,7 +17,7 @@ use tauri::{AppHandle, WebviewWindow};
 use crate::commands::home_text;
 use crate::error::{CommandError, CommandResult};
 use crate::files;
-use crate::state::{AppState, SessionView, display_name};
+use crate::state::{Doc, Document, SessionView, display_name};
 
 /// Least share of paragraphs that must pair up for two files to count as
 /// translations of each other.
@@ -176,7 +176,7 @@ pub fn counterpart(path: &Path) -> Option<PathBuf> {
 
 /// The file paired with `path`: the one the author paired it with (while
 /// it is there), else its counterpart by name ([`counterpart`]).
-pub fn mirror_path(state: &AppState, path: &Path) -> Option<PathBuf> {
+pub fn mirror_path(state: &Document, path: &Path) -> Option<PathBuf> {
     let key = pair_key(path);
     let remembered = {
         let s = state.settings();
@@ -196,7 +196,7 @@ pub fn mirror_path(state: &AppState, path: &Path) -> Option<PathBuf> {
 
 /// Remember (or, with `None`, forget) the file the author paired `path`
 /// with. A failed write leaves the pair for this session only.
-fn remember_pair(state: &AppState, path: &Path, mirror: Option<&Path>) {
+fn remember_pair(state: &Document, path: &Path, mirror: Option<&Path>) {
     let key = pair_key(path);
     let mut s = state.settings();
     let changed = match mirror {
@@ -216,7 +216,7 @@ fn remember_pair(state: &AppState, path: &Path, mirror: Option<&Path>) {
 
 /// The pairs the author made among files under `from`, made again for
 /// their copies under `to` (a paper saved into a new folder).
-pub(crate) fn remember_copies(state: &AppState, from: &Path, to: &Path) {
+pub(crate) fn remember_copies(state: &Document, from: &Path, to: &Path) {
     let from = std::fs::canonicalize(from).unwrap_or_else(|_| from.to_owned());
     let mut s = state.settings();
     let copies: Vec<(String, String)> = s
@@ -296,7 +296,7 @@ fn in_other_folder(path: &Path) -> Option<PathBuf> {
 /// just started with `cp paper.tex paper_zh.tex`) is never written into as
 /// the translation.
 pub fn load_paired(
-    state: &AppState,
+    state: &Document,
     path: &Path,
     text: &str,
     mode: Mode,
@@ -319,7 +319,7 @@ pub fn load_paired(
 /// they are translated afresh and go into the mirror (see
 /// [`behind_paragraphs`]). The engine is loaded only if they pair up.
 pub fn load_paired_except(
-    state: &AppState,
+    state: &Document,
     path: &Path,
     text: &str,
     mode: Mode,
@@ -404,7 +404,7 @@ pub fn load_paired_except(
 /// Make `file` (at `path`) the open document, paired with `mirror` (its
 /// counterpart by name, read by the caller) when the two pair up.
 pub fn open(
-    state: &AppState,
+    state: &Document,
     path: PathBuf,
     file: TextFile,
     mirror: Option<(PathBuf, TextFile)>,
@@ -416,7 +416,7 @@ pub fn open(
     let mode = Mode::from_path(&path);
     let mut pair = None;
     // A Chinese file is the Chinese side: translated into English.
-    let alone = |state: &AppState, text: &str| {
+    let alone = |state: &Document, text: &str| {
         let home = written_in(text, mode).unwrap_or_default();
         state
             .engine
@@ -469,7 +469,7 @@ pub fn view(pair: &PairState, units_total: usize) -> PairView {
 /// their translation on its way. Paired again with the mirror as changed
 /// elsewhere, they are translated afresh instead of taking its text, so a
 /// saved edit the mirror was refused still reaches it.
-pub fn behind_paragraphs(state: &AppState, pair: &PairState) -> HashSet<String> {
+pub fn behind_paragraphs(state: &Document, pair: &PairState) -> HashSet<String> {
     let mode = state.engine.mode();
     let (text, current) = state.engine.text_and_translations();
     let ua = units(&text, mode);
@@ -523,7 +523,7 @@ enum Wait {
 /// are left out (`left_out`), to be added by hand. With `keep`, a
 /// paragraph whose translation is not there yet goes into the mirror as it
 /// is (`kept`) instead of making the plan wait.
-fn plan(state: &AppState, pair: &PairState, saved: Option<&str>, keep: bool) -> Result<Plan, Wait> {
+fn plan(state: &Document, pair: &PairState, saved: Option<&str>, keep: bool) -> Result<Plan, Wait> {
     let mode = state.engine.mode();
     let (text, current) = state.engine.text_and_translations();
     if saved.is_some_and(|saved| saved != text) {
@@ -676,7 +676,7 @@ pub enum Patched {
 /// The mirror patched with the document's translations; with `saved`, only
 /// while the document's text is that. With `keep`, paragraphs whose
 /// translation is on its way go in as they are (see [`plan`]).
-pub fn patched(state: &AppState, pair: &PairState, saved: Option<&str>, keep: bool) -> Patched {
+pub fn patched(state: &Document, pair: &PairState, saved: Option<&str>, keep: bool) -> Patched {
     let plan = match plan(state, pair, saved, keep) {
         Ok(plan) => plan,
         Err(Wait::Pending(pending)) => return Patched::Pending(pending),
@@ -718,7 +718,7 @@ pub fn patched(state: &AppState, pair: &PairState, saved: Option<&str>, keep: bo
 }
 
 /// Set whether the mirror at `path` lags behind (if it is still the pair's).
-fn set_behind(state: &AppState, path: &Path, behind: bool) {
+fn set_behind(state: &Document, path: &Path, behind: bool) {
     if let Some(pair) = state.file().pair.as_mut().filter(|p| p.path == path) {
         pair.behind = behind;
     }
@@ -726,7 +726,7 @@ fn set_behind(state: &AppState, path: &Path, behind: bool) {
 
 /// A save writes the mirror, so the paragraphs waiting out the translation
 /// delay are sent for translation now instead of after the delay.
-fn translate_held_for_mirror(state: &AppState) {
+fn translate_held_for_mirror(state: &Document) {
     let paired = state.file().pair.is_some();
     if paired {
         state.engine.translate_held();
@@ -736,14 +736,14 @@ fn translate_held_for_mirror(state: &AppState) {
 /// Write the mirror if its translations are ready and it is as it was read
 /// (changes made to it elsewhere are never overwritten).
 #[cfg(test)]
-pub async fn save_mirror(state: &AppState) -> CommandResult<Option<MirrorSaved>> {
+pub async fn save_mirror(state: &Document) -> CommandResult<Option<MirrorSaved>> {
     save_mirror_with(state, false).await
 }
 
 /// [`save_mirror`], over changes made to it elsewhere if `overwrite` (the
 /// author chose to).
 pub async fn save_mirror_with(
-    state: &AppState,
+    state: &Document,
     overwrite: bool,
 ) -> CommandResult<Option<MirrorSaved>> {
     translate_held_for_mirror(state);
@@ -890,7 +890,7 @@ pub fn mirror_path_for(old_source: &Path, new_source: &Path, old_mirror: &Path) 
 
 /// Write the mirror to `dest` (a Save As of the document): the pair moves
 /// there, and the old mirror stays as it was.
-pub async fn save_mirror_as(state: &AppState, dest: PathBuf) -> CommandResult<Option<MirrorSaved>> {
+pub async fn save_mirror_as(state: &Document, dest: PathBuf) -> CommandResult<Option<MirrorSaved>> {
     translate_held_for_mirror(state);
     let (text, links, bytes, mut saved, behind) = {
         let fs = state.file();
@@ -963,7 +963,7 @@ pub async fn save_mirror_as(state: &AppState, dest: PathBuf) -> CommandResult<Op
 pub async fn import_mirror(
     app: AppHandle,
     window: WebviewWindow,
-    state: tauri::State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
 ) -> CommandResult<Option<SessionView>> {
@@ -988,7 +988,7 @@ pub async fn import_mirror(
 
 /// Pair the open document at `path` with the file at `mirror_path`.
 pub(crate) async fn pair_with(
-    state: &AppState,
+    state: &Document,
     text: String,
     document: u64,
     path: PathBuf,
@@ -999,6 +999,7 @@ pub(crate) async fn pair_with(
             "Choose the other language's file, not the document itself.",
         ));
     }
+    crate::commands::not_open_elsewhere(state, [&mirror_path])?;
     let mirror = files::read_text_file(mirror_path.clone()).await?;
     let _no_save_meanwhile = state.save_lock.lock().await;
     state.sync_text(document, &text)?;
@@ -1029,7 +1030,7 @@ pub(crate) async fn pair_with(
 
 /// Stop writing to the mirror. Its paragraphs stay as the translations.
 #[tauri::command]
-pub async fn close_mirror(state: tauri::State<'_, AppState>) -> CommandResult<()> {
+pub async fn close_mirror(state: Doc) -> CommandResult<()> {
     let mut fs = state.file();
     // After a swap, edits of the other file may live only here. (Machine
     // translations it waits for are let go.)
@@ -1057,10 +1058,7 @@ pub async fn close_mirror(state: tauri::State<'_, AppState>) -> CommandResult<()
 /// Over changes made to it elsewhere only if `overwrite` (the author chose
 /// to after a write was refused).
 #[tauri::command]
-pub async fn write_mirror(
-    state: tauri::State<'_, AppState>,
-    overwrite: bool,
-) -> CommandResult<Option<MirrorSaved>> {
+pub async fn write_mirror(state: Doc, overwrite: bool) -> CommandResult<Option<MirrorSaved>> {
     let _one_at_a_time = state.save_lock.lock().await;
     save_mirror_with(&state, overwrite).await
 }
@@ -1074,7 +1072,7 @@ pub async fn write_mirror(
 /// counterpart, which is translated afresh and the mirror waits for it.
 ///
 /// The engine holds `text` already ([`AppState::sync_text`]).
-pub fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<SessionView> {
+pub fn swap(state: &Document, text: String, keep: bool) -> CommandResult<SessionView> {
     let mode = state.engine.mode();
     // The mirror becomes the edited document and is saved as such: not
     // over changes made to it elsewhere.

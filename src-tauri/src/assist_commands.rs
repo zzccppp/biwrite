@@ -24,14 +24,14 @@ use biwrite_core::{Mode, Protector};
 use biwrite_engine::{PartialFn, TokenUsage, TranslateError};
 use biwrite_providers::{ChatModel, ChatOutput, ChatRequest, ImageInput};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 
 use crate::error::{CommandError, CommandResult};
 use crate::skills::SkillInfo;
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
 pub const EVENT_ASSIST: &str = "assist";
 
@@ -208,8 +208,9 @@ pub enum AssistEvent {
     },
 }
 
-pub(crate) fn emit(app: &AppHandle, event: &AssistEvent) {
-    if let Err(e) = app.emit(EVENT_ASSIST, event) {
+/// Send `event` to window `label`, whose document the job is for.
+pub(crate) fn emit(app: &AppHandle, label: &str, event: &AssistEvent) {
+    if let Err(e) = app.emit_to(label, EVENT_ASSIST, event) {
         log::warn!("failed to emit {EVENT_ASSIST}: {e}");
     }
 }
@@ -306,7 +307,7 @@ fn document_window(text: &str, at: usize) -> String {
 #[tauri::command]
 pub async fn assist_start(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: Doc,
     request: AssistStart,
 ) -> CommandResult<AssistStarted> {
     let mode = state.engine.mode();
@@ -437,6 +438,7 @@ pub async fn assist_start(
     };
     let job = Job {
         app: app.clone(),
+        doc: state.clone(),
         id,
         action: request.action,
         original: target.text,
@@ -459,6 +461,8 @@ pub async fn assist_start(
 
 struct Job {
     app: AppHandle,
+    /// The document the job is for (its window gets the events).
+    doc: Doc,
     id: u64,
     action: Action,
     original: String,
@@ -495,6 +499,7 @@ async fn run(job: Job) {
         if due {
             emit(
                 &job.app,
+                &job.doc.label,
                 &AssistEvent::Partial {
                     id: job.id,
                     text: assist::streaming_preview(text),
@@ -509,6 +514,7 @@ async fn run(job: Job) {
         );
         emit(
             &job.app,
+            &job.doc.label,
             &AssistEvent::Retrying {
                 id: job.id,
                 attempt,
@@ -608,10 +614,8 @@ async fn run(job: Job) {
     if let AssistEvent::Failed { message, .. } = &event {
         log::warn!("assistant {} failed: {message}", job.action.purpose());
     }
-    if let Some(state) = tauri::Manager::try_state::<AppState>(&job.app) {
-        state.assist.jobs().remove(&job.id);
-    }
-    emit(&job.app, &event);
+    job.doc.assist.jobs().remove(&job.id);
+    emit(&job.app, &job.doc.label, &event);
 }
 
 /// A figure that is a file, made from the model's `reply`: the PowerPoint
@@ -620,10 +624,9 @@ async fn run(job: Job) {
 /// files wait for the document's save; the answer is the figure
 /// environment that includes them.
 async fn figure_file(job: &Job, reply: &str, usage: TokenUsage) -> Result<AssistResult, String> {
-    let state = tauri::Manager::try_state::<AppState>(&job.app).ok_or("the app is closing")?;
     let place = job.place.clone().ok_or("not a figure file")?;
     make_figure(
-        &state,
+        &job.doc,
         job.model.as_ref(),
         job.id,
         job.figure,
@@ -639,7 +642,7 @@ async fn figure_file(job: &Job, reply: &str, usage: TokenUsage) -> Result<Assist
 /// document includes figures as `place` says.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn make_figure(
-    state: &AppState,
+    state: &Document,
     model: &dyn ChatModel,
     id: u64,
     format: FigureFormat,
@@ -650,7 +653,12 @@ pub(crate) async fn make_figure(
 ) -> Result<AssistResult, String> {
     use crate::figures::{self, FigureView, Made, Waiting};
     let answer = assist::parse_figure(format, reply).map_err(|e| e.to_string())?;
-    let work = std::env::temp_dir().join(format!("biwrite-figure-{}-{id}", std::process::id()));
+    // Job ids are the window's own: the window's label tells them apart.
+    let work = std::env::temp_dir().join(format!(
+        "biwrite-figure-{}-{}-{id}",
+        std::process::id(),
+        state.label
+    ));
     let stem = figures::free_stem(&state.figures, &place, root_dir.as_deref(), &answer, "pdf");
     let label = stem
         .strip_prefix(&place.stem_prefix)
@@ -783,10 +791,7 @@ pub(crate) async fn make_figure(
 
 /// The PDF a figure job made, for its preview.
 #[tauri::command]
-pub async fn figure_pdf(
-    state: State<'_, AppState>,
-    id: u64,
-) -> CommandResult<tauri::ipc::Response> {
+pub async fn figure_pdf(state: Doc, id: u64) -> CommandResult<tauri::ipc::Response> {
     let pdf = state
         .figures
         .made()
@@ -802,7 +807,7 @@ pub async fn figure_pdf(
 pub async fn figure_save(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     id: u64,
     kind: String,
     png: Option<Vec<u8>>,
@@ -884,15 +889,12 @@ pub(crate) async fn complete_with_retries(
 
 /// Stop a running job.
 #[tauri::command]
-pub async fn assist_cancel(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: u64,
-) -> CommandResult<()> {
+pub async fn assist_cancel(app: AppHandle, state: Doc, id: u64) -> CommandResult<()> {
     if let Some(handle) = state.assist.jobs().remove(&id) {
         handle.abort();
         emit(
             &app,
+            &state.label,
             &AssistEvent::Failed {
                 id,
                 message: "cancelled".into(),
@@ -905,11 +907,7 @@ pub async fn assist_cancel(
 /// Give the engine the approved translation of a paragraph about to become
 /// `source`, so it shows without a new request.
 #[tauri::command]
-pub async fn assist_offer(
-    state: State<'_, AppState>,
-    source: String,
-    translation: String,
-) -> CommandResult<()> {
+pub async fn assist_offer(state: Doc, source: String, translation: String) -> CommandResult<()> {
     state.engine.offer_translation(&source, &translation);
     Ok(())
 }
@@ -1049,7 +1047,7 @@ fn media_type(path: &std::path::Path) -> Option<&'static str> {
 pub async fn attach_image(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
 ) -> CommandResult<Option<AttachmentView>> {
     let Some(path) = crate::files::pick_open_kind(
         &app,
@@ -1073,7 +1071,7 @@ pub async fn attach_image(
 }
 
 /// Keep `bytes` (of type `media`) as a reference image named `name`.
-pub(crate) fn attach(state: &AppState, name: String, media: &str, bytes: &[u8]) -> AttachmentView {
+pub(crate) fn attach(state: &Document, name: String, media: &str, bytes: &[u8]) -> AttachmentView {
     let image = ImageInput {
         media_type: media.to_owned(),
         data: base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -1088,20 +1086,20 @@ pub(crate) fn attach(state: &AppState, name: String, media: &str, bytes: &[u8]) 
 }
 
 #[tauri::command]
-pub async fn drop_attachment(state: State<'_, AppState>, id: u64) -> CommandResult<()> {
+pub async fn drop_attachment(state: Doc, id: u64) -> CommandResult<()> {
     state.assist.images().remove(&id);
     Ok(())
 }
 
 /// The skill the assistant follows.
 #[tauri::command]
-pub async fn get_skill(state: State<'_, AppState>) -> CommandResult<SkillInfo> {
+pub async fn get_skill(state: Doc) -> CommandResult<SkillInfo> {
     Ok(state.skill()?.1)
 }
 
 /// Download the latest skill from GitHub.
 #[tauri::command]
-pub async fn update_skill(state: State<'_, AppState>) -> CommandResult<SkillInfo> {
+pub async fn update_skill(state: Doc) -> CommandResult<SkillInfo> {
     let client = reqwest::Client::builder()
         .user_agent(concat!("BiWrite/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15))
@@ -1121,7 +1119,7 @@ pub async fn update_skill(state: State<'_, AppState>) -> CommandResult<SkillInfo
 pub async fn choose_skill_folder(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
 ) -> CommandResult<Option<SkillInfo>> {
     let (tx, rx) = oneshot::channel();
     app.dialog()
@@ -1150,7 +1148,7 @@ pub async fn choose_skill_folder(
 
 /// Go back to the bundled or downloaded skill.
 #[tauri::command]
-pub async fn reset_skill_folder(state: State<'_, AppState>) -> CommandResult<SkillInfo> {
+pub async fn reset_skill_folder(state: Doc) -> CommandResult<SkillInfo> {
     {
         let mut s = state.settings();
         s.skill_folder = None;
@@ -1162,7 +1160,7 @@ pub async fn reset_skill_folder(state: State<'_, AppState>) -> CommandResult<Ski
 
 /// Show the skill's folder (the chosen or downloaded one) or open nothing.
 #[tauri::command]
-pub async fn reveal_skill(state: State<'_, AppState>) -> CommandResult<()> {
+pub async fn reveal_skill(state: Doc) -> CommandResult<()> {
     let folder = state
         .settings()
         .skill_folder

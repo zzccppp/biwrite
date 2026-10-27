@@ -193,11 +193,20 @@ pub async fn read_small_file(path: PathBuf, max_bytes: u64) -> CommandResult<Vec
 pub fn ask_discard<R: Runtime>(
     app: &AppHandle<R>,
     parent: Option<&Window<R>>,
+    names: &[String],
     on_answer: impl FnOnce(bool) + Send + 'static,
 ) {
+    let message = match names {
+        [] | [_] => "Your document has unsaved changes. Discard them?".to_owned(),
+        _ => format!(
+            "{} documents have unsaved changes: {}. Discard them?",
+            names.len(),
+            names.join(", ")
+        ),
+    };
     let mut dialog = app
         .dialog()
-        .message("Your document has unsaved changes. Discard them?")
+        .message(message)
         .title("Unsaved changes")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
@@ -212,7 +221,7 @@ pub fn ask_discard<R: Runtime>(
 
 pub async fn confirm_discard<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) -> bool {
     let (tx, rx) = oneshot::channel();
-    ask_discard(app, Some(&window.as_ref().window()), move |ok| {
+    ask_discard(app, Some(&window.as_ref().window()), &[], move |ok| {
         let _ = tx.send(ok);
     });
     rx.await.unwrap_or(false)

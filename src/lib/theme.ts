@@ -2,11 +2,11 @@
 
 export type ThemePref = "system" | "light" | "dark";
 
-const KEY = "biwrite.theme";
+export const THEME_KEY = "biwrite.theme";
 
 export function loadTheme(): ThemePref {
   try {
-    const v = localStorage.getItem(KEY);
+    const v = localStorage.getItem(THEME_KEY);
     return v === "light" || v === "dark" ? v : "system";
   } catch {
     return "system";
@@ -18,7 +18,7 @@ export function applyTheme(pref: ThemePref): void {
   if (pref === "system") root.removeAttribute("data-theme");
   else root.setAttribute("data-theme", pref);
   try {
-    localStorage.setItem(KEY, pref);
+    localStorage.setItem(THEME_KEY, pref);
   } catch {
     // Storage unavailable: the choice just won't persist.
   }

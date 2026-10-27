@@ -10,8 +10,8 @@
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use biwrite_core::assist::{paragraph_at, sentence_at};
@@ -24,7 +24,7 @@ use biwrite_latex::{
     Severity, Template, Toolchain, templates,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, WebviewWindow};
 use tokio::task::AbortHandle;
 
 use crate::commands;
@@ -32,7 +32,7 @@ use crate::error::{CommandError, CommandResult};
 use crate::files;
 use crate::latex_sync::{Basis, Place, line_of, line_start, map_line};
 use crate::settings;
-use crate::state::{AppState, SessionView};
+use crate::state::{Doc, Document, SessionView};
 
 /// Longest build before it is stopped.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(300);
@@ -49,6 +49,9 @@ pub enum Lang {
 /// A finished build.
 struct Build {
     pdf: Option<PathBuf>,
+    /// When the PDF was written. Built again since (by another window, of
+    /// the same root in place), it maps no more.
+    written: Option<std::time::SystemTime>,
     /// The project folder TeX ran in (canonical).
     dir: PathBuf,
     /// The file TeX read for the open document (canonical).
@@ -128,8 +131,10 @@ struct TexCache {
     found: Option<Toolchain>,
 }
 
+/// A window's builds, with what all windows share: the TeX toolchain found
+/// and the template folders.
 pub struct LatexState {
-    tex: tokio::sync::Mutex<TexCache>,
+    tex: Arc<tokio::sync::Mutex<TexCache>>,
     builds: Mutex<HashMap<Lang, Build>>,
     running: Mutex<HashMap<Lang, (u64, AbortHandle)>>,
     next: AtomicU64,
@@ -140,19 +145,156 @@ pub struct LatexState {
     builtin: PathBuf,
     /// Templates the user imported.
     user: PathBuf,
+    /// Builds into one folder run one at a time, whichever window starts
+    /// them (shared by all windows).
+    folders: Arc<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>>,
+    /// Added to the names of the folders this window builds in inside
+    /// `.biwrite` (`.biwrite/zh-doc-2`), so each window's PDFs are its own;
+    /// none for the main window.
+    suffix: String,
+    /// The build of each language started last: one waiting for its folder
+    /// meanwhile gives up.
+    latest: Mutex<HashMap<Lang, u64>>,
+    /// The window is gone: builds waiting give up.
+    stopped: AtomicBool,
+    /// Wakes builds waiting for their turn when one is replaced or
+    /// cancelled, or the window closes.
+    changed: tokio::sync::Notify,
 }
 
 impl LatexState {
     pub fn new(builtin: PathBuf, user: PathBuf) -> Self {
         Self {
-            tex: tokio::sync::Mutex::new(TexCache::default()),
+            tex: Arc::new(tokio::sync::Mutex::new(TexCache::default())),
             builds: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             last_root: Mutex::new(None),
             builtin,
             user,
+            folders: Arc::default(),
+            suffix: String::new(),
+            latest: Mutex::new(HashMap::new()),
+            stopped: AtomicBool::new(false),
+            changed: tokio::sync::Notify::new(),
         }
+    }
+
+    /// The state of window `label`: no builds, the same toolchain,
+    /// templates and build locks.
+    pub fn for_window(&self, label: &str) -> Self {
+        Self {
+            tex: Arc::clone(&self.tex),
+            folders: Arc::clone(&self.folders),
+            suffix: if label == crate::MAIN_WINDOW {
+                String::new()
+            } else {
+                format!("-{label}")
+            },
+            ..Self::new(self.builtin.clone(), self.user.clone())
+        }
+    }
+
+    /// This window's own folder for `base` (`.biwrite/zh` →
+    /// `.biwrite/zh-doc-2`), as deep in the project.
+    pub(crate) fn folder(&self, base: &str) -> String {
+        format!("{base}{}", self.suffix)
+    }
+
+    /// A build of `lang` starts: its id, and the one to finish.
+    fn begin(&self, lang: Lang) -> u64 {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        self.latest
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(lang, id);
+        self.changed.notify_waiters();
+        id
+    }
+
+    /// Build `id` of `lang` was cancelled, replaced by a newer one or its
+    /// window closed while it waited.
+    fn superseded(&self, lang: Lang, id: u64) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+            || self
+                .latest
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&lang)
+                != Some(&id)
+    }
+
+    /// A window opened from the one with `other`: its project for a part
+    /// no main file reaches is that window's.
+    pub fn follow(&self, other: &LatexState) {
+        let root = other
+            .last_root
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        *self
+            .last_root
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = root;
+    }
+
+    /// Stop the builds running and waiting (the window is gone).
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        self.changed.notify_waiters();
+        for (_, (_, task)) in self.running().drain() {
+            task.abort();
+        }
+    }
+
+    /// Wait until no other build writes to `within` the project in `dir`
+    /// (a folder of `.biwrite`, or the root TeX writes next to): held while
+    /// this one stages its files and runs. Another window's build of the
+    /// same root in place is waited for this way.
+    pub(crate) async fn build_alone(
+        &self,
+        dir: &Path,
+        within: &Path,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.lock_for(dir, within).lock_owned().await
+    }
+
+    /// [`Self::build_alone`] for build `id` of `lang`, given up (`None`) as
+    /// soon as it is replaced or cancelled or its window closes, so it never
+    /// holds this window's folder while it waits for nothing.
+    pub(crate) async fn turn(
+        &self,
+        dir: &Path,
+        within: &Path,
+        lang: Lang,
+        id: u64,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        let lock = self.lock_for(dir, within);
+        loop {
+            // Listening before the check: a change in between still wakes.
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.superseded(lang, id) {
+                return None;
+            }
+            tokio::select! {
+                guard = Arc::clone(&lock).lock_owned() => {
+                    return (!self.superseded(lang, id)).then_some(guard);
+                }
+                () = &mut changed => {}
+            }
+        }
+    }
+
+    fn lock_for(&self, dir: &Path, within: &Path) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(
+            self.folders
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(canonical(dir).join(within))
+                .or_default(),
+        )
     }
 
     fn builds(&self) -> MutexGuard<'_, HashMap<Lang, Build>> {
@@ -169,7 +311,7 @@ fn fail(message: impl Into<String>) -> CommandError {
 }
 
 /// The toolchain, detected once (again when `refresh`).
-async fn toolchain(state: &AppState, refresh: bool) -> Option<Toolchain> {
+async fn toolchain(state: &Document, refresh: bool) -> Option<Toolchain> {
     let mut cache = state.latex.tex.lock().await;
     if refresh || !cache.checked {
         let preferred = state.settings().latex.tex_bin.clone().map(PathBuf::from);
@@ -190,7 +332,7 @@ async fn toolchain(state: &AppState, refresh: bool) -> Option<Toolchain> {
     cache.found.clone()
 }
 
-pub(crate) async fn require_toolchain(state: &AppState) -> CommandResult<Toolchain> {
+pub(crate) async fn require_toolchain(state: &Document) -> CommandResult<Toolchain> {
     toolchain(state, false).await.ok_or_else(|| {
         fail("No TeX distribution was found. Install TeX Live or MiKTeX (MacTeX on macOS), or choose its folder in Settings.")
     })
@@ -212,7 +354,7 @@ pub struct TexStatus {
     pub compile_on_save: bool,
 }
 
-async fn status(state: &AppState, refresh: bool) -> TexStatus {
+async fn status(state: &Document, refresh: bool) -> TexStatus {
     let tc = toolchain(state, refresh).await;
     let s = state.settings().latex.clone();
     TexStatus {
@@ -234,12 +376,12 @@ async fn status(state: &AppState, refresh: bool) -> TexStatus {
 }
 
 #[tauri::command]
-pub async fn latex_status(state: State<'_, AppState>, refresh: bool) -> CommandResult<TexStatus> {
+pub async fn latex_status(state: Doc, refresh: bool) -> CommandResult<TexStatus> {
     Ok(status(&state, refresh).await)
 }
 
 fn save_latex_settings(
-    state: &AppState,
+    state: &Document,
     edit: impl FnOnce(&mut settings::LatexSettings),
 ) -> CommandResult<()> {
     let mut s = state.settings();
@@ -248,7 +390,7 @@ fn save_latex_settings(
 }
 
 #[tauri::command]
-pub async fn latex_set_compile_on_save(state: State<'_, AppState>, on: bool) -> CommandResult<()> {
+pub async fn latex_set_compile_on_save(state: Doc, on: bool) -> CommandResult<()> {
     save_latex_settings(&state, |l| l.compile_on_save = on)
 }
 
@@ -257,7 +399,7 @@ pub async fn latex_set_compile_on_save(state: State<'_, AppState>, on: bool) -> 
 pub async fn latex_choose_bin(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
 ) -> CommandResult<TexStatus> {
     if let Some(dir) = files::pick_folder(&app, &window, "Folder with pdflatex").await {
         let found = latex::find_bin(Some(&dir));
@@ -273,7 +415,7 @@ pub async fn latex_choose_bin(
 }
 
 #[tauri::command]
-pub async fn latex_reset_bin(state: State<'_, AppState>) -> CommandResult<TexStatus> {
+pub async fn latex_reset_bin(state: Doc) -> CommandResult<TexStatus> {
     save_latex_settings(&state, |l| l.tex_bin = None)?;
     Ok(status(&state, true).await)
 }
@@ -323,7 +465,7 @@ pub(crate) fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| latex::clean(path))
 }
 
-pub(crate) fn project(state: &AppState) -> CommandResult<Project> {
+pub(crate) fn project(state: &Document) -> CommandResult<Project> {
     let (path, saved) = {
         let fs = state.file();
         (fs.path.clone(), fs.file.text().to_owned())
@@ -343,7 +485,7 @@ pub(crate) fn project(state: &AppState) -> CommandResult<Project> {
 }
 
 /// The project of the `.tex` file at `path` whose text on disk is `saved`.
-fn project_of(state: &AppState, path: &Path, saved: String) -> CommandResult<Project> {
+fn project_of(state: &Document, path: &Path, saved: String) -> CommandResult<Project> {
     let path = canonical(path);
     let last = state
         .latex
@@ -388,7 +530,7 @@ pub struct ProjectView {
 }
 
 #[tauri::command]
-pub async fn latex_project(state: State<'_, AppState>) -> CommandResult<Option<ProjectView>> {
+pub async fn latex_project(state: Doc) -> CommandResult<Option<ProjectView>> {
     let Ok(p) = project(&state) else {
         return Ok(None);
     };
@@ -417,7 +559,7 @@ pub async fn latex_project(state: State<'_, AppState>) -> CommandResult<Option<P
 pub async fn latex_open(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     file: String,
 ) -> CommandResult<Option<SessionView>> {
     let p = project(&state)?;
@@ -426,22 +568,32 @@ pub async fn latex_open(
         .map(|f| canonical(&f))
         .find(|f| relative(f, &p.dir).as_deref() == Some(file.as_str()))
         .ok_or_else(|| fail(format!("{file} is not a .tex file of this project")))?;
+    // Open in another window: shown there. The project's files are gone
+    // through in this window otherwise, as before.
+    if crate::windows::shown_elsewhere(&app, &state, &wanted) {
+        return Ok(None);
+    }
     if state.is_dirty() && !files::confirm_discard(&app, &window).await {
+        return Ok(None);
+    }
+    // Opened elsewhere while the author was asked.
+    let Some(_opening) = state.start_opening(&wanted) else {
+        return Ok(None);
+    };
+    if crate::windows::shown_elsewhere(&app, &state, &wanted) {
         return Ok(None);
     }
     commands::load(&window, &state, wanted).await.map(Some)
 }
 
-/// Open a LaTeX project folder: its main file.
+/// Open a LaTeX project folder: its main file (see
+/// [`crate::windows::open_from`]).
 #[tauri::command]
 pub async fn latex_open_folder(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
-) -> CommandResult<Option<SessionView>> {
-    if state.is_dirty() && !files::confirm_discard(&app, &window).await {
-        return Ok(None);
-    }
+    state: Doc,
+) -> CommandResult<Option<crate::windows::Opened>> {
     let Some(dir) = files::pick_folder(&app, &window, "Open a LaTeX project folder").await else {
         return Ok(None);
     };
@@ -451,7 +603,9 @@ pub async fn latex_open_folder(
             dir.display()
         ))
     })?;
-    commands::load(&window, &state, main).await.map(Some)
+    crate::windows::open_from(&app, &window, &state, main)
+        .await
+        .map(Some)
 }
 
 // ── Building ─────────────────────────────────────────────────────────
@@ -500,8 +654,16 @@ fn original(name: &str) -> String {
     let name = name.trim_start_matches("./");
     [MIRROR_DIR, EN_MIRROR_DIR, CHECK_DIR]
         .iter()
-        .find_map(|dir| name.strip_prefix(dir))
-        .map(|rest| rest.trim_start_matches('/'))
+        .find_map(|dir| {
+            let rest = name.strip_prefix(dir)?;
+            // `.biwrite/zh/…`, or another window's `.biwrite/zh-doc-2/…`
+            // (`\` on Windows).
+            let slash = |c: char| c == '/' || c == '\\';
+            match rest.strip_prefix('-') {
+                Some(own) => own.split_once(slash).map(|(_, rest)| rest),
+                None => rest.strip_prefix(slash),
+            }
+        })
         .unwrap_or(name)
         .to_owned()
 }
@@ -563,7 +725,7 @@ fn copies_dir(lang: Lang) -> &'static str {
 /// the copy of the document; `None` when the root does not `\input` or
 /// `\include` the document directly.
 fn stage(
-    state: &AppState,
+    state: &Document,
     p: &Project,
     folder: &str,
     text: &str,
@@ -645,7 +807,7 @@ struct Now {
 /// structure; else, without a pair, the document composed from the
 /// translations. With the number of paragraphs in it still in the other
 /// language (their translations not there yet).
-fn text_now(state: &AppState, lang: Lang, direction: Direction, text: &str) -> Option<Now> {
+fn text_now(state: &Document, lang: Lang, direction: Direction, text: &str) -> Option<Now> {
     if lang == source_lang(direction) {
         return Some(Now {
             text: text.to_owned(),
@@ -688,7 +850,7 @@ fn text_now(state: &AppState, lang: Lang, direction: Direction, text: &str) -> O
 /// language replaces a running one.
 #[tauri::command]
 pub async fn latex_compile(
-    state: State<'_, AppState>,
+    state: Doc,
     lang: Lang,
     text: String,
     document: u64,
@@ -733,6 +895,17 @@ pub async fn latex_compile(
     let mut unsaved_built = false;
     let mut mirror_copy = None;
     let mut parts = Vec::new();
+    // A newer build of this language replaces this window's older one at
+    // once; one still waiting for its folder gives up when it gets it.
+    let id = state.latex.begin(lang);
+    if let Some((_, previous)) = state.latex.running().remove(&lang) {
+        previous.abort();
+    }
+    let folder = state.latex.folder(copies_dir(lang));
+    let folder = folder.as_str();
+    let Some(_alone) = state.latex.turn(&p.dir, Path::new(folder), lang, id).await else {
+        return Err(CommandError::Cancelled);
+    };
     let (job, doc_file, basis, source) = match lang {
         _ if paired || lang == file_lang => {
             let now = text_now(&state, lang, direction, &text);
@@ -741,9 +914,7 @@ pub async fn latex_compile(
             let disk = as_on_disk(&p.path, &p.saved);
             let unsaved = now.as_ref().is_none_or(|now| now.text != disk);
             let staged = match &now {
-                Some(now) if unsaved => {
-                    stage(&state, &p, copies_dir(lang), &now.text, str::to_owned, &[])?
-                }
+                Some(now) if unsaved => stage(&state, &p, folder, &now.text, str::to_owned, &[])?,
                 _ => None,
             };
             unsaved_left_out = unsaved && staged.is_none();
@@ -772,7 +943,7 @@ pub async fn latex_compile(
                             dir: p.dir.clone(),
                             root,
                             engine,
-                            out_dir: Some(PathBuf::from(copies_dir(lang))),
+                            out_dir: Some(PathBuf::from(folder)),
                             timeout: BUILD_TIMEOUT,
                         },
                         copy,
@@ -841,7 +1012,6 @@ pub async fn latex_compile(
                 Lang::Zh => latex::with_chinese,
                 Lang::En => str::to_owned,
             };
-            let folder = copies_dir(lang);
             // The project's other parts in this language too, where they
             // have it.
             let toward = match lang {
@@ -916,7 +1086,18 @@ pub async fn latex_compile(
     };
     let engine = job.engine;
 
-    let id = state.latex.next.fetch_add(1, Ordering::Relaxed);
+    // Built in place, TeX writes next to the root, as another window's
+    // build of the same root does.
+    let _in_place = match job.out_dir {
+        None => Some(
+            state
+                .latex
+                .turn(&p.dir, &job.root, lang, id)
+                .await
+                .ok_or(CommandError::Cancelled)?,
+        ),
+        Some(_) => None,
+    };
     let task = tauri::async_runtime::spawn(async move { latex::compile(&tc, &job).await });
     if let Some((_, previous)) = state
         .latex
@@ -972,6 +1153,7 @@ pub async fn latex_compile(
     state.latex.builds().insert(
         lang,
         Build {
+            written: built.pdf.as_deref().and_then(modified),
             pdf: built.pdf,
             dir: p.dir,
             doc_file,
@@ -1027,7 +1209,7 @@ impl Checked {
 /// the editor's language, built as the file is when that is the file's own
 /// and as the translated PDF is otherwise.
 pub(crate) async fn check_build(
-    state: &AppState,
+    state: &Document,
     text: &str,
     folder: &str,
 ) -> CommandResult<Checked> {
@@ -1038,7 +1220,7 @@ pub(crate) async fn check_build(
 /// root's copy when the open document is a part (what an answer of it
 /// needs there).
 pub(crate) async fn check_build_with(
-    state: &AppState,
+    state: &Document,
     text: &str,
     folder: &str,
     root_lines: &str,
@@ -1050,6 +1232,9 @@ pub(crate) async fn check_build_with(
         fs.pair.is_some() || lang == source_lang(fs.home)
     };
     let p = project(state)?;
+    let folder = state.latex.folder(folder);
+    let folder = folder.as_str();
+    let _alone = state.latex.build_alone(&p.dir, Path::new(folder)).await;
     let doc_rel = relative(&p.path, &p.dir)
         .ok_or_else(|| fail("The document is outside its project folder."))?;
     let root_rel = relative(&p.root, &p.dir).unwrap_or_default();
@@ -1184,7 +1369,7 @@ pub(crate) fn tex_errors(
 }
 
 /// What a build of `lang` is made from now (as [`latex_compile`] decides).
-fn source_now(state: &AppState, lang: Lang) -> Source {
+fn source_now(state: &Document, lang: Lang) -> Source {
     let own = {
         let fs = state.file();
         fs.pair.is_some() || lang == source_lang(fs.home)
@@ -1202,7 +1387,7 @@ fn source_now(state: &AppState, lang: Lang) -> Source {
 /// part's own file in that language: that root, as saved, makes the PDF
 /// of `lang`. Otherwise (the root itself open, a part the other root
 /// lacks) the PDF is built from the translations.
-fn root_in(state: &AppState, lang: Lang) -> Option<PathBuf> {
+fn root_in(state: &Document, lang: Lang) -> Option<PathBuf> {
     let p = project(state).ok()?;
     if p.path == p.root {
         return None;
@@ -1270,7 +1455,7 @@ fn part_lines(source: &str, mirror: &biwrite_engine::Mirror) -> Vec<(usize, usiz
 /// (`(part, file to read)`, relative to the project folder, without `.tex`)
 /// and the copies written, which point their own includes the same way.
 fn stage_parts(
-    state: &AppState,
+    state: &Document,
     p: &Project,
     folder: &str,
     lang: Lang,
@@ -1341,7 +1526,7 @@ const WHOLE_PAPER_BYTES: usize = 4 << 20;
 /// that language. Also where byte `target` of `text` is in it. `None`
 /// outside a LaTeX project of several files, or when the root does not
 /// include the document where it can be found.
-pub(crate) fn whole_paper(state: &AppState, text: &str, target: usize) -> Option<(String, usize)> {
+pub(crate) fn whole_paper(state: &Document, text: &str, target: usize) -> Option<(String, usize)> {
     let toward = (!state.editing_own_language()).then(|| state.file().home);
     let (paper, at) = put_together(state, text, target, toward, true)?;
     Some((paper, at?))
@@ -1354,7 +1539,7 @@ pub(crate) fn whole_paper(state: &AppState, text: &str, target: usize) -> Option
 /// their own file in it (a pair), else the translations the cache has.
 /// `None` outside a LaTeX project of several files.
 pub(crate) fn flat_paper(
-    state: &AppState,
+    state: &Document,
     text: &str,
     toward: Option<Direction>,
 ) -> Option<String> {
@@ -1365,7 +1550,7 @@ pub(crate) fn flat_paper(
 /// [`whole_paper`] for `marked`, [`flat_paper`] otherwise), and where byte
 /// `target` of `text` is in it.
 fn put_together(
-    state: &AppState,
+    state: &Document,
     text: &str,
     target: usize,
     toward: Option<Direction>,
@@ -1398,7 +1583,7 @@ fn put_together(
 
 /// The state of [`whole_paper`] as it puts files in.
 struct Paper<'a> {
-    state: &'a AppState,
+    state: &'a Document,
     dir: PathBuf,
     open: PathBuf,
     editor: &'a str,
@@ -1552,7 +1737,7 @@ impl Paper<'_> {
 /// once the document is saved outside the project it was built for (Save
 /// As into another folder), when its lines would lead to the old files.
 /// Such a PDF is built again before clicks or the cursor map through it.
-fn build_is_current(state: &AppState, lang: Lang) -> bool {
+fn build_is_current(state: &Document, lang: Lang) -> bool {
     let builds = state.latex.builds();
     let Some(build) = builds.get(&lang) else {
         return true;
@@ -1572,9 +1757,20 @@ fn build_is_current(state: &AppState, lang: Lang) -> bool {
     };
     let same_project = of_build(&here) || pair.as_deref().is_some_and(of_build);
     let paired = state.file().pair.is_some();
+    // The PDF is still the one this window built.
+    let its_own = build
+        .pdf
+        .as_deref()
+        .is_none_or(|pdf| modified(pdf) == build.written);
     same_project
+        && its_own
         && build.source == source_now(state, lang)
         && (paired || build.direction == state.engine.direction())
+}
+
+/// When the file at `path` was last written.
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// `paper_zh` → `paper`: the name of a Chinese file without its language tag.
@@ -1603,7 +1799,7 @@ fn source_lang(direction: Direction) -> Lang {
 /// its text and its links (segment of the open document → unit of the
 /// text). A copy with translations not saved yet, or the file as saved.
 fn paired_source(
-    state: &AppState,
+    state: &Document,
     lang: Lang,
     file: &Path,
 ) -> Option<(String, HashMap<SegmentId, usize>)> {
@@ -1624,7 +1820,7 @@ fn paired_source(
 /// range of the linked paragraph in the editor's `text`. `None` unless
 /// `file` is the mirror.
 fn mirror_hit(
-    state: &AppState,
+    state: &Document,
     lang: Lang,
     file: &Path,
     line: usize,
@@ -1653,7 +1849,7 @@ fn mirror_hit(
 /// The mirror's file and line (as the build of `lang` read it) for the
 /// paragraph at `offset` (UTF-16) of the editor's `text`.
 fn mirror_line(
-    state: &AppState,
+    state: &Document,
     lang: Lang,
     offset: usize,
     text: &str,
@@ -1690,14 +1886,16 @@ fn mirror_line(
 }
 
 #[tauri::command]
-pub async fn latex_cancel(state: State<'_, AppState>, lang: Lang) -> CommandResult<()> {
+pub async fn latex_cancel(state: Doc, lang: Lang) -> CommandResult<()> {
+    // A build still waiting for its folder gives up too.
+    state.latex.begin(lang);
     if let Some((_, task)) = state.latex.running().remove(&lang) {
         task.abort();
     }
     Ok(())
 }
 
-pub(crate) fn pdf_of(state: &AppState, lang: Lang) -> CommandResult<PathBuf> {
+pub(crate) fn pdf_of(state: &Document, lang: Lang) -> CommandResult<PathBuf> {
     state
         .latex
         .builds()
@@ -1708,17 +1906,14 @@ pub(crate) fn pdf_of(state: &AppState, lang: Lang) -> CommandResult<PathBuf> {
 
 /// The PDF's bytes, for the viewer.
 #[tauri::command]
-pub async fn latex_pdf(
-    state: State<'_, AppState>,
-    lang: Lang,
-) -> CommandResult<tauri::ipc::Response> {
+pub async fn latex_pdf(state: Doc, lang: Lang) -> CommandResult<tauri::ipc::Response> {
     let pdf = pdf_of(&state, lang)?;
     let bytes = files::read_small_file(pdf, MAX_PDF_BYTES).await?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
-pub async fn latex_reveal_pdf(state: State<'_, AppState>, lang: Lang) -> CommandResult<()> {
+pub async fn latex_reveal_pdf(state: Doc, lang: Lang) -> CommandResult<()> {
     files::reveal_file(&pdf_of(&state, lang)?)
 }
 
@@ -1727,7 +1922,7 @@ pub async fn latex_reveal_pdf(state: State<'_, AppState>, lang: Lang) -> Command
 pub async fn latex_save_pdf(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     lang: Lang,
 ) -> CommandResult<Option<String>> {
     let pdf = pdf_of(&state, lang)?;
@@ -1766,7 +1961,7 @@ pub async fn latex_save_pdf(
 pub async fn latex_export_tex(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
 ) -> CommandResult<Option<String>> {
@@ -1784,6 +1979,7 @@ pub async fn latex_export_tex(
     else {
         return Ok(None);
     };
+    commands::not_open_elsewhere(&state, [&dest])?;
     files::write_file_atomic(dest.clone(), body.into_bytes()).await?;
     Ok(Some(dest.display().to_string()))
 }
@@ -1796,7 +1992,7 @@ pub async fn latex_export_tex(
 pub async fn latex_save_flat(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
 ) -> CommandResult<Option<String>> {
@@ -1821,6 +2017,7 @@ pub async fn latex_save_flat(
     else {
         return Ok(None);
     };
+    commands::not_open_elsewhere(&state, [&dest])?;
     // Never over a file of the paper.
     if latex::tex_files(&p.dir)
         .iter()
@@ -1841,7 +2038,7 @@ pub async fn latex_save_flat(
 /// [`flat_paper`]), named after the root and meant for the root's folder,
 /// which comes third.
 pub(crate) fn translation_tex(
-    state: &AppState,
+    state: &Document,
     text: String,
     document: u64,
 ) -> CommandResult<(String, String, Option<PathBuf>)> {
@@ -1949,7 +2146,7 @@ pub struct SyncHit {
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn latex_inverse(
-    state: State<'_, AppState>,
+    state: Doc,
     lang: Lang,
     page: u32,
     x: f64,
@@ -2072,7 +2269,7 @@ pub async fn latex_inverse(
 /// file holds the preamble (then missing ones can be added to it). `None`
 /// outside LaTeX, or for a part of a project whose main file is unknown.
 pub(crate) fn document_packages(
-    state: &AppState,
+    state: &Document,
     editor_text: &str,
 ) -> Option<(std::collections::BTreeSet<String>, bool)> {
     if state.engine.mode() != Mode::Latex {
@@ -2097,7 +2294,7 @@ pub(crate) fn document_packages(
 /// clicked words are not near the line it names, they are looked up in the
 /// document as compiled and then in the project's other files.
 fn checked_point(
-    state: &AppState,
+    state: &Document,
     lang: Lang,
     point: latex::synctex::SourcePoint,
     span: &str,
@@ -2157,7 +2354,7 @@ fn checked_point(
 /// The project file to open for a hit in `file`: the file itself, or, for
 /// a file in the other language, its counterpart in the edited language
 /// (which opens paired with it). Relative to the open document's project.
-fn file_to_open(state: &AppState, file: &Path) -> Option<String> {
+fn file_to_open(state: &Document, file: &Path) -> Option<String> {
     let dir = project(state).ok()?.dir;
     let editing_zh = state.engine.direction() == Direction::ZhEn;
     let text = std::fs::read_to_string(file).unwrap_or_default();
@@ -2172,7 +2369,7 @@ fn file_to_open(state: &AppState, file: &Path) -> Option<String> {
 /// Where the editor's position `offset` (UTF-16) is in the PDF.
 #[tauri::command]
 pub async fn latex_forward(
-    state: State<'_, AppState>,
+    state: Doc,
     lang: Lang,
     offset: usize,
     text: String,
@@ -2243,7 +2440,7 @@ pub fn latex_locate(text: String, line: u32, span: String, click: usize) -> Rang
 /// A compiled line (an issue in the log) as a range of the editor's text.
 #[tauri::command]
 pub async fn latex_goto(
-    state: State<'_, AppState>,
+    state: Doc,
     lang: Lang,
     line: u32,
     text: String,
@@ -2278,7 +2475,7 @@ pub(crate) fn template_err(e: latex::TemplateError) -> CommandError {
 }
 
 #[tauri::command]
-pub async fn latex_templates(state: State<'_, AppState>) -> CommandResult<Vec<Template>> {
+pub async fn latex_templates(state: Doc) -> CommandResult<Vec<Template>> {
     let (builtin, user) = (state.latex.builtin.clone(), state.latex.user.clone());
     tokio::task::spawn_blocking(move || templates::list(&builtin, &user))
         .await
@@ -2286,19 +2483,16 @@ pub async fn latex_templates(state: State<'_, AppState>) -> CommandResult<Vec<Te
 }
 
 /// A new paper from template `id`, in a folder the user names; opens its
-/// main file.
+/// main file (here if this window holds nothing yet, else in a new one).
 #[tauri::command]
 pub async fn latex_new_paper(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     id: String,
-) -> CommandResult<Option<SessionView>> {
+) -> CommandResult<Option<crate::windows::Opened>> {
     let (dir, t) =
         templates::find(&state.latex.builtin, &state.latex.user, &id).map_err(template_err)?;
-    if state.is_dirty() && !files::confirm_discard(&app, &window).await {
-        return Ok(None);
-    }
     let suggested = format!("{}-paper", t.id);
     let Some(dest) = files::pick_new_folder(&app, &window, "New paper folder", &suggested).await
     else {
@@ -2309,7 +2503,9 @@ pub async fn latex_new_paper(
         .map_err(|e| CommandError::Task(e.to_string()))?
         .map_err(template_err)?;
     log::info!("new paper from template {id}");
-    commands::load(&window, &state, main).await.map(Some)
+    crate::windows::open_from(&app, &window, &state, main)
+        .await
+        .map(Some)
 }
 
 /// Import a template from a project folder or a `.zip`.
@@ -2317,7 +2513,7 @@ pub async fn latex_new_paper(
 pub async fn latex_import_template(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     zip: bool,
 ) -> CommandResult<Option<Template>> {
     let picked = if zip {
@@ -2348,7 +2544,7 @@ pub async fn latex_import_template(
 pub async fn latex_export_template(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
 ) -> CommandResult<Option<String>> {
     let p = project(&state)?;
     let name = format!(
@@ -2381,12 +2577,12 @@ pub async fn latex_export_template(
 }
 
 #[tauri::command]
-pub async fn latex_delete_template(state: State<'_, AppState>, id: String) -> CommandResult<()> {
+pub async fn latex_delete_template(state: Doc, id: String) -> CommandResult<()> {
     templates::delete(&state.latex.builtin, &state.latex.user, &id).map_err(template_err)
 }
 
 #[tauri::command]
-pub async fn latex_reveal_templates(state: State<'_, AppState>) -> CommandResult<()> {
+pub async fn latex_reveal_templates(state: Doc) -> CommandResult<()> {
     files::reveal(&state.latex.user)
 }
 
@@ -2397,6 +2593,7 @@ mod tests {
     fn build_of(source: Source, direction: Direction) -> Build {
         Build {
             pdf: None,
+            written: None,
             dir: PathBuf::new(),
             doc_file: PathBuf::new(),
             doc_path: PathBuf::from("/papers/x/paper.tex"),
@@ -2477,6 +2674,35 @@ mod tests {
         assert!(current(Lang::En) && current(Lang::Zh));
     }
 
+    /// A PDF written again after this window built it (another window built
+    /// the same root in place) maps no more: its SyncTeX is the other build's.
+    #[tokio::test]
+    async fn a_pdf_built_again_elsewhere_is_stale() {
+        let dir = std::env::temp_dir().join(format!("biwrite-stale-again-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = crate::pair_tests::app_state(&dir);
+        let (paper, pdf) = (dir.join("paper.tex"), dir.join("paper.pdf"));
+        std::fs::write(&paper, "x").unwrap();
+        std::fs::write(&pdf, "%PDF this window's").unwrap();
+        state.file().path = Some(paper.clone());
+        let mut build = build_of(Source::Files, Direction::EnZh);
+        build.doc_path = canonical(&paper);
+        build.written = modified(&pdf);
+        build.pdf = Some(pdf.clone());
+        state.latex.builds().insert(Lang::En, build);
+        assert!(build_is_current(&state, Lang::En));
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&pdf)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert!(!build_is_current(&state, Lang::En), "built again");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Saved under another path (Save As), the document's PDF is no longer
     /// its own, and clicks would lead to the old file. Another file of the
     /// project built, and either file of a pair, still count.
@@ -2550,6 +2776,67 @@ mod tests {
             "sections/intro.tex"
         );
         assert_eq!(original("sections/intro.tex"), "sections/intro.tex");
+        assert_eq!(
+            original(".biwrite/zh-doc-2/sections/intro.tex"),
+            "sections/intro.tex"
+        );
+        assert_eq!(original(".biwrite/english/a.tex"), ".biwrite/english/a.tex");
+        assert_eq!(original(".biwrite/zh-doc-2\\main.tex"), "main.tex");
+    }
+
+    /// A build waiting for another window's build of the same root gives
+    /// up at once when it is cancelled or its window closes, and gets its
+    /// turn otherwise.
+    #[tokio::test]
+    async fn a_build_waiting_for_its_turn_gives_up_at_once() {
+        let dir = std::env::temp_dir().join("biwrite-turns");
+        let root = Path::new("main.tex");
+        let base = LatexState::new(PathBuf::new(), PathBuf::new());
+        let (one, other) = (base.for_window("main"), base.for_window("doc-2"));
+        let held = one.build_alone(&dir, root).await;
+        let soon = |f| tokio::time::timeout(std::time::Duration::from_secs(5), f);
+        // Cancelled (`latex_cancel` starts no build but replaces the id).
+        let id = other.begin(Lang::Zh);
+        let cancel = async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            other.begin(Lang::Zh);
+        };
+        let (waited, ()) = tokio::join!(soon(other.turn(&dir, root, Lang::Zh, id)), cancel);
+        assert!(waited.expect("woken at once").is_none());
+        // Its window closed.
+        let id = other.begin(Lang::En);
+        let close = async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            other.stop();
+        };
+        let (waited, ()) = tokio::join!(soon(other.turn(&dir, root, Lang::En, id)), close);
+        assert!(waited.expect("woken at once").is_none());
+        // Neither: it gets its turn once the other build is done.
+        let third = base.for_window("doc-3");
+        let id = third.begin(Lang::Zh);
+        let free = async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(held);
+        };
+        let (waited, ()) = tokio::join!(soon(third.turn(&dir, root, Lang::Zh, id)), free);
+        assert!(waited.expect("its turn").is_some());
+    }
+
+    /// A build waiting for its folder gives up when a newer one of its
+    /// language starts, it is cancelled, or its window closes.
+    #[test]
+    fn a_waiting_build_gives_up_when_replaced_cancelled_or_closed() {
+        let state = LatexState::new(PathBuf::new(), PathBuf::new());
+        let first = state.begin(Lang::Zh);
+        let en = state.begin(Lang::En);
+        assert!(!state.superseded(Lang::Zh, first));
+        let second = state.begin(Lang::Zh);
+        assert!(state.superseded(Lang::Zh, first));
+        assert!(!state.superseded(Lang::Zh, second));
+        assert!(!state.superseded(Lang::En, en));
+        state.stop();
+        assert!(state.superseded(Lang::Zh, second));
+        assert!(state.superseded(Lang::En, en));
     }
 
     #[test]

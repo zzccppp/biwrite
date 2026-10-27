@@ -13,11 +13,10 @@ use biwrite_core::repair::TexError;
 use biwrite_latex::tidy::{place_of, statements};
 use biwrite_providers::{ChatModel, ChatRequest};
 use serde::{Deserialize, Serialize};
-use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::latex_commands::check_build;
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
 /// Where the copies are built, apart from the checks of Accept.
 const TIDY_FOLDER: &str = ".biwrite/tidy";
@@ -129,7 +128,7 @@ fn parse(reply: &str, count: usize) -> Option<Vec<usize>> {
 /// Which of `lines` can go from `text` (see the module). An error means the
 /// model could not decide, and the caller keeps every line.
 pub(crate) async fn tidy(
-    state: &AppState,
+    state: &Document,
     model: &dyn ChatModel,
     text: &str,
     lines: &str,
@@ -205,10 +204,7 @@ pub(crate) async fn tidy(
 /// Which lines an inserted figure added before `\begin{document}` can go
 /// with it (see the module).
 #[tauri::command]
-pub async fn assist_tidy(
-    state: State<'_, AppState>,
-    request: TidyRequest,
-) -> CommandResult<Tidied> {
+pub async fn assist_tidy(state: Doc, request: TidyRequest) -> CommandResult<Tidied> {
     if state.engine.mode() != Mode::Latex {
         return Err(CommandError::Settings(
             "only a LaTeX document can be compiled".into(),

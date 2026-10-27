@@ -929,7 +929,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     state.failed.clear();
     return session();
   },
-  latex_open_folder: () => session(),
+  latex_open_folder: () => ({ view: session(), opened: true }),
   latex_compile: async (a): Promise<BuildView> => {
     const lang = a.lang === "zh" ? "zh" : "en";
     state.compiled.push(String(a.text));
@@ -1235,7 +1235,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return { from, to: from + lines[n].length };
   },
   latex_templates: () => TEMPLATES,
-  latex_new_paper: () => session(),
+  latex_new_paper: () => ({ view: session(), opened: true }),
   latex_import_template: () => TEMPLATES[3],
   latex_export_template: () => "/Users/me/papers/gnn-icl.zip",
   latex_delete_template: () => null,
@@ -1706,6 +1706,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return handlers.get_request_log(a);
   },
   reveal_request_log: () => null,
+  new_window: () => null,
   get_glossary: () => [
     { term: "in-context learning", translation: "上下文学习" },
     { term: "prompt graph", translation: "提示图" },

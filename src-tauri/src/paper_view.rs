@@ -12,11 +12,10 @@ use biwrite_core::utf16::byte_to_utf16;
 use biwrite_core::{Direction, Mode};
 use biwrite_latex as latex;
 use serde::Serialize;
-use tauri::State;
 
 use crate::error::CommandResult;
 use crate::latex_commands::{canonical, project, relative};
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
 /// Most bytes of the files read for the view.
 const BUDGET: usize = 4 << 20;
@@ -69,7 +68,7 @@ enum Item {
 }
 
 struct Walk<'a> {
-    state: &'a AppState,
+    state: &'a Document,
     dir: PathBuf,
     open: PathBuf,
     editor: &'a str,
@@ -273,7 +272,7 @@ fn parts_of(items: Vec<Item>) -> Vec<PaperPart> {
 
 /// The whole paper around the open document `text` (see the module), or
 /// `None` outside a LaTeX project of several files.
-pub(crate) fn paper_view(state: &AppState, text: &str) -> Option<PaperView> {
+pub(crate) fn paper_view(state: &Document, text: &str) -> Option<PaperView> {
     if state.engine.mode() != Mode::Latex {
         return None;
     }
@@ -313,10 +312,7 @@ pub(crate) fn paper_view(state: &AppState, text: &str) -> Option<PaperView> {
 /// The whole paper of the open document's project for the translation
 /// pane (see the module).
 #[tauri::command]
-pub async fn latex_paper(
-    state: State<'_, AppState>,
-    text: String,
-) -> CommandResult<Option<PaperView>> {
+pub async fn latex_paper(state: Doc, text: String) -> CommandResult<Option<PaperView>> {
     Ok(paper_view(&state, &text))
 }
 

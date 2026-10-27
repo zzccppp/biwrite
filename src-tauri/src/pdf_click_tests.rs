@@ -16,7 +16,7 @@ use crate::latex_commands::{
 };
 use crate::pair_tests::{app_state, settle};
 use crate::pairing;
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
 const EN: &str = "\\documentclass{article}\n\
 \\begin{document}\n\
@@ -44,8 +44,6 @@ const ZH_PARAGRAPH: &str = "我们的方法为表格的每一行分配一个动�
 const EN_SPAN: &str = "Our method assigns one action";
 const ZH_SPAN: &str = "我们的方法为表格的每一行";
 
-type AppStateRef<'a> = tauri::State<'a, AppState>;
-
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("biwrite-click-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -55,7 +53,7 @@ fn temp(name: &str) -> PathBuf {
 }
 
 /// The UTF-16 offset of `needle` in the editor's text.
-fn offset_of(state: &AppState, needle: &str) -> usize {
+fn offset_of(state: &Document, needle: &str) -> usize {
     let text = state.engine.text();
     let at = text
         .find(needle)
@@ -64,11 +62,7 @@ fn offset_of(state: &AppState, needle: &str) -> usize {
 }
 
 /// The first box of the editor's `offset` in the PDF of `lang`.
-async fn box_at(
-    state: &AppStateRef<'_>,
-    lang: Lang,
-    offset: usize,
-) -> Result<PdfBox, CommandError> {
+async fn box_at(state: &Doc, lang: Lang, offset: usize) -> Result<PdfBox, CommandError> {
     let boxes = latex_forward(
         state.clone(),
         lang,
@@ -85,7 +79,7 @@ async fn box_at(
 
 /// Click the middle of `b` in the PDF of `lang`, `span` under the click.
 async fn click_box(
-    state: &AppStateRef<'_>,
+    state: &Doc,
     lang: Lang,
     b: &PdfBox,
     span: &str,
@@ -105,7 +99,7 @@ async fn click_box(
 }
 
 /// The text a hit selects in the editor.
-fn selected(state: &AppState, hit: Option<SyncHit>) -> String {
+fn selected(state: &Document, hit: Option<SyncHit>) -> String {
     let hit = hit.expect("a hit");
     assert!(hit.here, "{hit:?}");
     let r = hit.range.expect("a range");
@@ -115,14 +109,14 @@ fn selected(state: &AppState, hit: Option<SyncHit>) -> String {
 
 /// Click the paragraph `needle` of the editor in the PDF of `lang` and
 /// return what the click selects.
-async fn round_trip(state: &AppStateRef<'_>, lang: Lang, needle: &str, span: &str) -> String {
+async fn round_trip(state: &Doc, lang: Lang, needle: &str, span: &str) -> String {
     let b = box_at(state, lang, offset_of(state, needle)).await.unwrap();
     selected(state, click_box(state, lang, &b, span).await.unwrap())
 }
 
 /// Build the PDF of `lang`, which must be a complete PDF (written to its
 /// `%%EOF`).
-async fn build(state: &AppStateRef<'_>, lang: Lang) -> BuildView {
+async fn build(state: &Doc, lang: Lang) -> BuildView {
     let view = latex_compile(
         state.clone(),
         lang,
@@ -177,7 +171,7 @@ async fn clicks_in_both_pdfs_of_a_pair_land_on_the_clicked_paragraph() {
     std::fs::write(&zh_path, ZH).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
 
     // The English paper alone: no counterpart by name. Its Chinese PDF is
     // built from the machine translation.
@@ -358,7 +352,7 @@ async fn a_chinese_paper_built_without_synctex_still_maps_clicks() {
 
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let file = TextFile::decode(std::fs::read(&en_path).unwrap()).unwrap();
     pairing::open(&state, en_path.clone(), file, None);
     settle(&state).await;
@@ -389,7 +383,7 @@ async fn a_chinese_paper_built_without_synctex_still_maps_clicks() {
 }
 
 /// The boxes of the editor's `offset` in the PDF of `lang`.
-async fn boxes_at(state: &AppStateRef<'_>, lang: Lang, offset: usize) -> Vec<PdfBox> {
+async fn boxes_at(state: &Doc, lang: Lang, offset: usize) -> Vec<PdfBox> {
     latex_forward(
         state.clone(),
         lang,
@@ -436,7 +430,7 @@ fn opens(text: &str) -> bool {
 
 /// Each paired body paragraph of the editor that the cursor finds in a PDF
 /// is selected again by a click there, in both PDFs.
-async fn check_round_trips(state: &AppStateRef<'_>, editor: &str) {
+async fn check_round_trips(state: &Doc, editor: &str) {
     let text = state.engine.text();
     let units: Vec<u16> = text.encode_utf16().collect();
     let linked: Vec<_> = state
@@ -523,7 +517,7 @@ async fn a_real_paper_paired_by_hand_maps_clicks_both_ways() {
     let scratch = temp("real-pair");
     let app = tauri::test::mock_app();
     app.manage(app_state(&scratch));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let file = TextFile::decode(en_before.clone()).unwrap();
     pairing::open(&state, en_path.clone(), file, None);
     settle(&state).await;
@@ -566,7 +560,7 @@ async fn a_real_paper_paired_by_hand_maps_clicks_both_ways() {
     let other = app_state(&temp("real-pair-zh"));
     let app_zh = tauri::test::mock_app();
     app_zh.manage(other);
-    let zh_state = app_zh.state::<AppState>();
+    let zh_state = app_zh.state::<Doc>().inner().clone();
     let file = TextFile::decode(zh_before.clone()).unwrap();
     pairing::open(&zh_state, zh_path.clone(), file, None);
     settle(&zh_state).await;

@@ -13,13 +13,13 @@ use crate::pairing;
 use crate::request_log::{LogSettings, NoSink, RequestLog};
 use crate::secrets::{MemoryStore, SecretStore};
 use crate::settings::{AppSettings, Paths};
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
-pub(crate) fn app_state(dir: &Path) -> AppState {
+pub(crate) fn app_state(dir: &Path) -> Doc {
     app_state_with(dir, EngineSettings::default())
 }
 
-pub(crate) fn app_state_with(dir: &Path, settings: EngineSettings) -> AppState {
+pub(crate) fn app_state_with(dir: &Path, settings: EngineSettings) -> Doc {
     let engine = Engine::new(
         Arc::new(MockTranslator::with_delay(
             Duration::from_millis(1),
@@ -31,7 +31,7 @@ pub(crate) fn app_state_with(dir: &Path, settings: EngineSettings) -> AppState {
         tokio::runtime::Handle::current(),
     );
     let secrets: Arc<dyn SecretStore> = Arc::new(MemoryStore::default());
-    AppState::new(
+    crate::state::test_doc(
         engine,
         Arc::new(MemoryCache::default()),
         AppSettings::default(),
@@ -47,7 +47,7 @@ pub(crate) fn app_state_with(dir: &Path, settings: EngineSettings) -> AppState {
     )
 }
 
-pub(crate) async fn settle(state: &AppState) {
+pub(crate) async fn settle(state: &Document) {
     for _ in 0..2000 {
         if state.engine.pending() == 0 {
             return;
@@ -74,13 +74,13 @@ fn changed_units(a: &str, b: &str) -> Vec<usize> {
         .collect()
 }
 
-const EN: &str = "\\section{Method}\\label{sec:method}\n\
+pub(crate) const EN: &str = "\\section{Method}\\label{sec:method}\n\
 Our method prepares tables for TabPFN \\cite{hollmann2025} in three steps.\n\n\
 First, it profiles each column and records $k=5$ statistics per value.\n\n\
 \\begin{equation}\n  s(v) = \\sum_i w_i f_i(v)\n\\end{equation}\n\n\
 Second, it decides one action per record (Table~\\ref{tab:actions}).\n";
 
-const ZH: &str = "\\section{方法}\\label{sec:method}\n\
+pub(crate) const ZH: &str = "\\section{方法}\\label{sec:method}\n\
 我们的方法分三步为 TabPFN \\cite{hollmann2025} 准备表格。\n\n\
 第一步，逐列画像，并为每个取值记录 $k=5$ 个统计量。\n\n\
 \\begin{equation}\n  s(v) = \\sum_i w_i f_i(v)\n\\end{equation}\n\n\
@@ -411,7 +411,7 @@ fn app(dir: &Path) -> tauri::App<tauri::test::MockRuntime> {
     app
 }
 
-fn open_pair(state: &AppState, en_path: &Path, zh_path: &Path) {
+fn open_pair(state: &Document, en_path: &Path, zh_path: &Path) {
     pairing::open(
         state,
         en_path.to_path_buf(),
@@ -452,7 +452,7 @@ async fn the_paired_file_is_not_overwritten_after_changes_on_disk() {
 async fn a_waiting_paired_file_follows_the_saved_text() {
     let (dir, en_path, zh_path) = project("waiting", EN, ZH);
     let app = app(&dir);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open_pair(&state, &en_path, &zh_path);
     settle(&state).await;
     // Save while the edited paragraph's translation is still to come.
@@ -558,7 +558,7 @@ async fn new_headings_are_left_out_of_the_paired_file() {
 async fn a_pair_keeps_its_mode_and_its_own_translations() {
     let (dir, en_path, zh_path) = project("guards", EN, ZH);
     let app = app(&dir);
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open_pair(&state, &en_path, &zh_path);
     settle(&state).await;
     let document = state.engine.document();

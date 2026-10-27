@@ -25,7 +25,7 @@ use biwrite_core::utf16::utf16_to_byte;
 use biwrite_engine::{TokenUsage, TranslateError};
 use biwrite_providers::{ChatModel, ChatOutput, ChatRequest};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::AppHandle;
 
 use crate::assist_commands::{
     AssistEvent, AssistResult, AssistStarted, AssistTarget, PARTIAL_EVERY, complete_with_retries,
@@ -33,7 +33,7 @@ use crate::assist_commands::{
 };
 use crate::error::{CommandError, CommandResult};
 use crate::latex_commands::{check_build, check_build_with};
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
 /// Most rounds of repairs by the model.
 const MAX_ROUNDS: u32 = 3;
@@ -117,14 +117,14 @@ type OnStage<'a> = &'a (dyn Fn(bool, u32) + Send + Sync);
 /// The model's answer to `chat`, retried after passing failures. With an
 /// app, its text as it arrives and the retries go to the card of job `id`.
 pub(crate) async fn ask(
-    app: Option<&AppHandle>,
+    stream: Option<(&AppHandle, &str)>,
     id: u64,
     model: &dyn ChatModel,
     chat: &ChatRequest,
 ) -> Result<ChatOutput, TranslateError> {
     let last = Mutex::new(None::<Instant>);
     let on_partial = |text: &str| {
-        let Some(app) = app else { return };
+        let Some((app, label)) = stream else { return };
         let due = {
             let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
             let now = Instant::now();
@@ -137,6 +137,7 @@ pub(crate) async fn ask(
         if due {
             emit(
                 app,
+                label,
                 &AssistEvent::Partial {
                     id,
                     text: assist::streaming_preview(text),
@@ -146,9 +147,10 @@ pub(crate) async fn ask(
     };
     let on_retry = |attempt: u32, of: u32, err: &TranslateError| {
         log::info!("assistant {}: {err}; retry {attempt} of {of}", chat.purpose);
-        if let Some(app) = app {
+        if let Some((app, label)) = stream {
             emit(
                 app,
+                label,
                 &AssistEvent::Retrying {
                     id,
                     attempt,
@@ -172,7 +174,7 @@ pub(crate) struct Fixed {
 /// Build `start`, and while TeX reports errors, have the model repair them
 /// and build again, at most [`MAX_ROUNDS`] times.
 pub(crate) async fn fix_loop(
-    state: &AppState,
+    state: &Document,
     model: &dyn ChatModel,
     start: &str,
     instruction: &str,
@@ -206,9 +208,14 @@ pub(crate) async fn fix_loop(
             user,
             images: Vec::new(),
         };
-        let out = ask(stream.map(|s| s.0), stream.map_or(0, |s| s.1), model, &chat)
-            .await
-            .map_err(|e| CommandError::Settings(e.to_string()))?;
+        let out = ask(
+            stream.map(|(app, _)| (app, state.label.as_str())),
+            stream.map_or(0, |s| s.1),
+            model,
+            &chat,
+        )
+        .await
+        .map_err(|e| CommandError::Settings(e.to_string()))?;
         add_usage(&mut usage, out.usage);
         notes.add(
             assist::note_lines(&out.text, "changes_zh"),
@@ -252,7 +259,7 @@ pub struct FixStart {
 #[tauri::command]
 pub async fn assist_fix(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: Doc,
     request: FixStart,
 ) -> CommandResult<AssistStarted> {
     if state.engine.mode() != Mode::Latex {
@@ -276,7 +283,7 @@ pub async fn assist_fix(
         model: model.label(),
         skill: String::new(),
     };
-    let handle = tauri::async_runtime::spawn(run_fix(app, id, request, model));
+    let handle = tauri::async_runtime::spawn(run_fix(app, state.clone(), id, request, model));
     state
         .assist
         .jobs()
@@ -284,55 +291,62 @@ pub async fn assist_fix(
     Ok(started)
 }
 
-async fn run_fix(app: AppHandle, id: u64, request: FixStart, model: Arc<dyn ChatModel>) {
+async fn run_fix(
+    app: AppHandle,
+    state: Doc,
+    id: u64,
+    request: FixStart,
+    model: Arc<dyn ChatModel>,
+) {
     let started = Instant::now();
-    let event = match tauri::Manager::try_state::<AppState>(&app) {
-        None => return,
-        Some(state) => {
-            let on_stage = |fixing: bool, round: u32| {
-                emit(&app, &AssistEvent::Stage { id, fixing, round });
-            };
-            let fixed = fix_loop(
-                &state,
-                model.as_ref(),
-                &request.text,
-                &request.instruction,
-                Some((&app, id)),
-                &on_stage,
-            )
-            .await;
-            state.assist.jobs().remove(&id);
-            match fixed {
-                Err(e) => AssistEvent::Failed {
-                    id,
-                    message: e.to_string(),
-                },
-                Ok(fixed) => AssistEvent::Done {
-                    id,
-                    result: Box::new(AssistResult {
-                        answer: Answer {
-                            changes_zh: fixed.notes.zh,
-                            changes_en: fixed.notes.en,
-                            ..Answer::default()
-                        },
-                        diff: Vec::new(),
-                        usage: fixed.usage,
-                        duration_ms: started.elapsed().as_millis() as u64,
-                        missing_packages: Vec::new(),
-                        libraries: Vec::new(),
-                        preamble_here: false,
-                        hunks: repair::hunks(&request.text, &fixed.text),
-                        fix: Some(fixed.report),
-                        figure: None,
-                    }),
-                },
-            }
+    let event = {
+        let on_stage = |fixing: bool, round: u32| {
+            emit(
+                &app,
+                &state.label,
+                &AssistEvent::Stage { id, fixing, round },
+            );
+        };
+        let fixed = fix_loop(
+            &state,
+            model.as_ref(),
+            &request.text,
+            &request.instruction,
+            Some((&app, id)),
+            &on_stage,
+        )
+        .await;
+        state.assist.jobs().remove(&id);
+        match fixed {
+            Err(e) => AssistEvent::Failed {
+                id,
+                message: e.to_string(),
+            },
+            Ok(fixed) => AssistEvent::Done {
+                id,
+                result: Box::new(AssistResult {
+                    answer: Answer {
+                        changes_zh: fixed.notes.zh,
+                        changes_en: fixed.notes.en,
+                        ..Answer::default()
+                    },
+                    diff: Vec::new(),
+                    usage: fixed.usage,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    missing_packages: Vec::new(),
+                    libraries: Vec::new(),
+                    preamble_here: false,
+                    hunks: repair::hunks(&request.text, &fixed.text),
+                    fix: Some(fixed.report),
+                    figure: None,
+                }),
+            },
         }
     };
     if let AssistEvent::Failed { message, .. } = &event {
         log::warn!("the fix failed: {message}");
     }
-    emit(&app, &event);
+    emit(&app, &state.label, &event);
 }
 
 /// An answer about to be applied, as the editor would put it in.
@@ -446,7 +460,7 @@ fn new_errors(
 /// answer and its preamble lines and build again, at most [`MAX_ROUNDS`]
 /// times.
 pub(crate) async fn check_loop(
-    state: &AppState,
+    state: &Document,
     model: &dyn ChatModel,
     start: &CheckStart,
     on_stage: OnStage<'_>,
@@ -567,11 +581,7 @@ pub(crate) async fn check_loop(
 /// Check the answer of job `request.id` before it is applied. The result
 /// comes as a `checked` event (or `check_failed`).
 #[tauri::command]
-pub async fn assist_check(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    request: CheckStart,
-) -> CommandResult<()> {
+pub async fn assist_check(app: AppHandle, state: Doc, request: CheckStart) -> CommandResult<()> {
     if state.engine.mode() != Mode::Latex {
         return Err(CommandError::Settings(
             "only a LaTeX document can be compiled".into(),
@@ -580,14 +590,15 @@ pub async fn assist_check(
     crate::latex_commands::project(&state)?;
     let model: Arc<dyn ChatModel> = state.assistant_model()?;
     let id = request.id;
-    let task_app = app.clone();
+    let (app, task_state) = (app.clone(), state.clone());
     let handle = tauri::async_runtime::spawn(async move {
-        let app = task_app;
-        let Some(state) = tauri::Manager::try_state::<AppState>(&app) else {
-            return;
-        };
+        let state = task_state;
         let on_stage = |fixing: bool, round: u32| {
-            emit(&app, &AssistEvent::Stage { id, fixing, round });
+            emit(
+                &app,
+                &state.label,
+                &AssistEvent::Stage { id, fixing, round },
+            );
         };
         let checked = check_loop(&state, model.as_ref(), &request, &on_stage).await;
         state.assist.checks().remove(&id);
@@ -604,7 +615,7 @@ pub async fn assist_check(
                 }
             }
         };
-        emit(&app, &event);
+        emit(&app, &state.label, &event);
     });
     if let Some(previous) = state
         .assist
@@ -618,15 +629,12 @@ pub async fn assist_check(
 
 /// Stop the check of job `id`'s answer.
 #[tauri::command]
-pub async fn assist_check_cancel(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: u64,
-) -> CommandResult<()> {
+pub async fn assist_check_cancel(app: AppHandle, state: Doc, id: u64) -> CommandResult<()> {
     if let Some(handle) = state.assist.checks().remove(&id) {
         handle.abort();
         emit(
             &app,
+            &state.label,
             &AssistEvent::CheckFailed {
                 id,
                 message: "cancelled".into(),

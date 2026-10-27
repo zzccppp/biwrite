@@ -228,6 +228,8 @@ pub(crate) struct State {
     /// other language): the same text back, also under a new ID, is a
     /// stand-in again.
     pub standin_texts: HashSet<ContentHash>,
+    /// Stopped for good ([`crate::Engine::stop`]): nothing is sent any more.
+    pub stopped: bool,
 }
 
 impl State {
@@ -252,6 +254,7 @@ impl State {
             fills: Vec::new(),
             filled: Vec::new(),
             standin_texts: HashSet::new(),
+            stopped: false,
         }
     }
 

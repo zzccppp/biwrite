@@ -24,19 +24,20 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
+use biwrite_engine::Engine;
 use biwrite_providers::{
     CROWDED_AFTER, ChangeFn, DEFAULT_KEEP_ALIVE_FAILURE_LIMIT, HttpProvider, KEEP_ALIVE_AFTER,
     KEEP_ALIVE_FOR, KeyProgress, Squeeze, SqueezeBoard, SqueezeChange, jitter, key_fingerprint,
     ping_checked,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State, UserAttentionType};
+use tauri::{AppHandle, Emitter, Manager, UserAttentionType};
 
 use crate::error::{CommandError, CommandResult};
 use crate::secrets;
 use crate::settings::ProviderEntry;
 use crate::settings_commands::{blocking, not_found};
-use crate::state::AppState;
+use crate::state::{AppState, Doc};
 
 pub const EVENT_SQUEEZE: &str = "squeeze";
 
@@ -886,18 +887,14 @@ fn view(state: &SqueezeState, id: &str) -> SqueezeView {
 /// How provider `id` is getting through: its keys that got through, and
 /// the latest squeeze's tries.
 #[tauri::command]
-pub async fn squeeze_status(state: State<'_, AppState>, id: String) -> CommandResult<SqueezeView> {
+pub async fn squeeze_status(state: Doc, id: String) -> CommandResult<SqueezeView> {
     Ok(view(&state.squeeze, &id))
 }
 
 /// Try the keys of provider `id` that have not got through until all have,
 /// in the background.
 #[tauri::command]
-pub async fn squeeze_start(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: String,
-) -> CommandResult<SqueezeView> {
+pub async fn squeeze_start(app: AppHandle, state: Doc, id: String) -> CommandResult<SqueezeView> {
     // Keys and providers do not change while it starts.
     let _keys = state.keys_lock.lock().await;
     let entry = state
@@ -953,7 +950,7 @@ fn start_run(
     keys: &[String],
     only: Option<&[String]>,
 ) -> CommandResult<()> {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
     let id = entry.config.id.clone();
     let total = keys.len();
     // Tries paced around the mean the author chose.
@@ -995,7 +992,7 @@ fn start_run(
         let board = Arc::clone(&board);
         let lines = Arc::clone(&lines);
         Arc::new(move |change: SqueezeChange| {
-            let state = app.state::<AppState>();
+            let state = app.state::<Arc<AppState>>();
             let running = !matches!(change, SqueezeChange::Ended { .. });
             let change = match change {
                 SqueezeChange::Through { number } => SqueezeChange::Through {
@@ -1006,9 +1003,9 @@ fn start_run(
             if let SqueezeChange::Through { .. } = change {
                 // Paragraphs that failed while nothing got through go again.
                 if state.settings().active_provider == id {
-                    state.engine.retry_failed();
+                    state.each_engine(Engine::retry_failed);
                 }
-                if !auto && let Some(window) = app.get_webview_window("main") {
+                if !auto && let Some(window) = crate::windows::current_window(&app) {
                     // A window hidden to the tray has no taskbar button to
                     // flash (the Dock icon of macOS stays).
                     #[cfg(not(target_os = "macos"))]
@@ -1071,7 +1068,7 @@ fn start_run(
 /// Stop the squeeze of provider `id`. The keys that got through stay, and
 /// keys that lost their place are not squeezed back in.
 #[tauri::command]
-pub async fn squeeze_stop(state: State<'_, AppState>, id: String) -> CommandResult<SqueezeView> {
+pub async fn squeeze_stop(state: Doc, id: String) -> CommandResult<SqueezeView> {
     let _keys = state.keys_lock.lock().await;
     if let Some(run) = state.squeeze.runs().get(&id) {
         run.stop();
@@ -1085,7 +1082,7 @@ pub async fn squeeze_stop(state: State<'_, AppState>, id: String) -> CommandResu
 /// may take it back; otherwise it waits for the next manual squeeze.
 #[tauri::command]
 pub async fn squeeze_resume_key(
-    state: State<'_, AppState>,
+    state: Doc,
     id: String,
     fingerprint: String,
 ) -> CommandResult<SqueezeView> {
@@ -1244,13 +1241,13 @@ fn numbered(numbers: &[usize]) -> String {
 /// the setting is on, and note when each key got through.
 pub fn spawn_keeper(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        restore_kept(&app.state::<AppState>());
+        restore_kept(&app.state::<Arc<AppState>>());
         let mut wait = FIRST_ROUND_AFTER;
         let mut round: u32 = 0;
         loop {
             tokio::time::sleep(wait).await;
             wait = KEEP_ALIVE_TICK;
-            record_through(&app.state::<AppState>());
+            record_through(&app.state::<Arc<AppState>>());
             keep_alive(&app, round % ANNOUNCE_EVERY == 0).await;
             round = round.wrapping_add(1);
         }
@@ -1418,7 +1415,7 @@ async fn keys_of(state: &AppState, entry: &ProviderEntry) -> Option<Vec<String>>
 /// request of its own, and the frontend hears how many keys are kept (when
 /// `announce`, and after each ping).
 async fn keep_alive(app: &AppHandle, announce: bool) {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
     let entries = {
         let s = state.settings();
         if !s.keep_alive {
@@ -1493,7 +1490,7 @@ async fn keep_alive(app: &AppHandle, announce: bool) {
             let entries = entries.clone();
             tauri::async_runtime::spawn(async move {
                 ping_one(&app, &entry, index, key, &print, board).await;
-                let state = app.state::<AppState>();
+                let state = app.state::<Arc<AppState>>();
                 state.squeeze.pinging().remove(&at);
                 announce_kept(&app, &entries, true);
             });
@@ -1514,7 +1511,7 @@ fn keeps(squeeze: &SqueezeState, board: &SqueezeBoard) -> bool {
 /// Tell the frontend how many keys of each relay that turned keys away are
 /// kept alive (`on`), or that none are any more.
 fn announce_kept(app: &AppHandle, entries: &[ProviderEntry], on: bool) {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
     for entry in entries.iter().filter(|e| e.squeezable()) {
         let id = &entry.config.id;
         let Some(board) = state.squeeze.board_of(entry) else {
@@ -1540,7 +1537,7 @@ fn announce_kept(app: &AppHandle, entries: &[ProviderEntry], on: bool) {
 
 /// Keeping alive was turned on or off.
 pub fn keep_alive_changed(app: &AppHandle, on: bool) {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
     if !on {
         state.squeeze.keep_alive_off();
     }
@@ -1558,7 +1555,7 @@ async fn ping_one(
     print: &str,
     board: Arc<SqueezeBoard>,
 ) {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
     let id = &entry.config.id;
     let unchanged = {
         let s = state.settings();

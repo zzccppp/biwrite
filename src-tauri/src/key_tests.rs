@@ -13,6 +13,7 @@ use tokio::net::TcpListener;
 use crate::pair_tests::app_state;
 use crate::secrets;
 use crate::settings::ProviderEntry;
+use crate::state::{Doc, Document};
 
 const KEY_A: &str = "sk-keytest-aaaaaaaaaaaaaaaaaaaa";
 const KEY_B: &str = "sk-keytest-bbbbbbbbbbbbbbbbbbbb";
@@ -221,7 +222,7 @@ async fn an_assistant_provider_built_across_a_key_change_is_not_kept() {
         });
         s.assistant_provider = "p-1".into();
     }
-    let built = |state: &crate::state::AppState| {
+    let built = |state: &Document| {
         biwrite_providers::build_http(
             &config,
             std::sync::Arc::new(|| Ok(vec![KEY_A.to_owned()])),
@@ -255,7 +256,7 @@ fn pool_state(dir: &std::path::Path, keys: &[&str]) -> tauri::App<tauri::test::M
     use tauri::Manager;
     let app = tauri::test::mock_app();
     app.manage(app_state(dir));
-    let state = app.state::<crate::state::AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let keys: Vec<String> = keys.iter().map(|k| (*k).to_owned()).collect();
     let parts = secrets::set_keys(state.secrets.as_ref(), "p-1", &keys, None).unwrap();
     let mut s = state.settings();
@@ -298,7 +299,7 @@ async fn a_key_is_replaced_in_its_place_with_its_name() {
     let dir = std::env::temp_dir().join(format!("biwrite-replace-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let app = pool_state(&dir, &[KEY_A, KEY_B]);
-    let state = app.state::<crate::state::AppState>();
+    let state = app.state::<Doc>().inner().clone();
     {
         let mut s = state.settings();
         let entry = s.provider_mut("p-1").unwrap();
@@ -408,7 +409,7 @@ async fn keys_kept_alive_are_noted_for_a_restart() {
     let dir = std::env::temp_dir().join(format!("biwrite-kept-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let app = pool_state(&dir, &[KEY_A, KEY_B]);
-    let state = app.state::<crate::state::AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let entry = state.settings().provider("p-1").cloned().unwrap();
     let board = state.squeeze.board_for(&entry).unwrap();
     board.allow_crowding();
@@ -451,7 +452,7 @@ async fn keys_that_got_through_are_noted() {
     let dir = std::env::temp_dir().join(format!("biwrite-noted-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let app = pool_state(&dir, &[KEY_A, KEY_B]);
-    let state = app.state::<crate::state::AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let entry = state.settings().provider("p-1").cloned().unwrap();
     let board = state
         .squeeze

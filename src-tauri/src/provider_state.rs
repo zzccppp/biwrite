@@ -1,5 +1,5 @@
 //! Provider- and settings-related parts of [`AppState`]: building the active
-//! translator, key access, document notes, persistence.
+//! translator, key access, persistence; and of [`Document`]: its note.
 
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -17,7 +17,7 @@ use crate::skills::SkillInfo;
 use crate::error::{CommandError, CommandResult};
 use crate::secrets::{self, SecretStore};
 use crate::settings::{self, AppSettings, ProviderEntry, SettingsView, same_destination};
-use crate::state::AppState;
+use crate::state::{AppState, Document};
 
 /// Key source for provider `entry`, reading the OS credential store lazily.
 pub fn key_fn(store: &Arc<dyn SecretStore>, entry: &ProviderEntry) -> KeyFn {
@@ -93,9 +93,15 @@ impl AppState {
         if let Some(http) = &built.http {
             self.squeeze.join(settings.active(), http);
         }
-        self.engine.set_translator(built.translator);
-        self.engine
-            .set_concurrency(settings.effective_concurrency());
+        *self
+            .translator
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::clone(&built.translator);
+        let concurrency = settings.effective_concurrency();
+        self.each_engine(|engine| {
+            engine.set_translator(Arc::clone(&built.translator));
+            engine.set_concurrency(concurrency);
+        });
         self.set_translation_http(settings.active().config.id.clone(), built.http);
         log::info!("provider: {}", settings::label(&settings.active().config));
         Ok(())
@@ -146,8 +152,10 @@ impl AppState {
             Some(http) => {
                 self.squeeze.join(entry, &http);
                 http.reload_keys(keys);
-                self.engine.set_concurrency(concurrency);
-                self.engine.retry_failed();
+                self.each_engine(|engine| {
+                    engine.set_concurrency(concurrency);
+                    engine.retry_failed();
+                });
                 Ok(())
             }
             None => self.apply_provider_of(&s),
@@ -288,7 +296,9 @@ impl AppState {
             .filter(|(owner, _)| owner == id)
             .find_map(|(_, http)| http.key_status())
     }
+}
 
+impl Document {
     fn doc_key(&self) -> Option<String> {
         self.file().path.as_ref().map(|p| p.display().to_string())
     }

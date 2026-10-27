@@ -33,6 +33,7 @@ mod storage_commands;
 mod tidy_commands;
 mod tray;
 mod updater;
+mod windows;
 
 #[cfg(test)]
 mod disk_tests;
@@ -53,16 +54,16 @@ mod unsaved_build_tests;
 #[cfg(test)]
 mod upgrade_tests;
 #[cfg(test)]
+mod window_tests;
+#[cfg(test)]
 mod workflow_tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use biwrite_engine::{
-    Engine, EngineSettings, MemoryCache, MockTranslator, SqliteCache, TranslationCache,
-};
+use biwrite_engine::{MemoryCache, MockTranslator, SqliteCache, TranslationCache};
 use biwrite_providers::{PromptFiles, RequestObserver};
-use tauri::{App, AppHandle, Manager, RunEvent, Window, WindowEvent};
+use tauri::{App, AppHandle, Manager, RunEvent, Runtime, Window, WindowEvent};
 
 use crate::provider_state::Built;
 use crate::request_log::RequestLog;
@@ -71,14 +72,28 @@ use crate::settings::Paths;
 use crate::sink::TauriSink;
 use crate::state::AppState;
 
+/// The label of the window BiWrite opens with.
+pub(crate) const MAIN_WINDOW: &str = "main";
+
 pub fn run() {
     // First, so even failures before setup (e.g. no WebView2) are reported.
     logging::init();
-    let builder = tauri::Builder::default();
-    // First, so a second launch goes no further than handing over.
+    // Files the system sends before setup wait here.
+    let builder = tauri::Builder::default().manage(windows::Pending::default());
+    // First, so a second launch goes no further than handing over: its
+    // files (Explorer's Open with) open in windows, else the running BiWrite
+    // is shown.
     #[cfg(not(target_os = "macos"))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        tray::show_window(app);
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        let files = windows::file_args(
+            args.into_iter().skip(1).map(std::ffi::OsString::from),
+            std::path::Path::new(&cwd),
+        );
+        if files.is_empty() {
+            tray::show_window(app);
+        } else {
+            windows::open_all(app, files);
+        }
     }));
     let app = builder
         .plugin(tauri_plugin_dialog::init())
@@ -105,29 +120,15 @@ pub fn run() {
                 Arc::new(Keychain),
                 settings.keys_in_file,
             ));
-            let sink = Arc::new(TauriSink::new(app.handle().clone()));
             let request_log = Arc::new(RequestLog::new(
                 settings.request_log,
                 request_log_file(app),
-                sink.clone(),
+                Arc::new(TauriSink::new(app.handle().clone())),
             ));
             let built = initial_translator(&settings, &secrets, &paths, request_log.clone());
             log::info!("provider: {}", settings::label(&settings.active().config));
             let (cache, cache_path) = open_cache(app);
             paths.cache = cache_path;
-            let engine = Engine::new(
-                built.translator,
-                cache.clone(),
-                sink,
-                EngineSettings {
-                    concurrency: settings.effective_concurrency(),
-                    batch_size: settings.batch_size,
-                    edit_delay: std::time::Duration::from_secs(settings.translate_delay),
-                    ..EngineSettings::default()
-                },
-                tauri::async_runtime::handle().inner().clone(),
-            );
-            engine.set_glossary(settings.glossary.clone());
             let active_id = settings.active().config.id.clone();
             let skills = skills::SkillStore::new(
                 app.path()
@@ -149,8 +150,8 @@ pub fn run() {
                     .map(|d| d.join("templates"))
                     .unwrap_or_default(),
             );
-            let state = AppState::new(
-                engine,
+            let state = Arc::new(AppState::new(
+                Arc::clone(&built.translator),
                 cache,
                 settings,
                 paths,
@@ -158,7 +159,8 @@ pub fn run() {
                 request_log,
                 skills,
                 latex,
-            );
+            ));
+            let main = state.open_document(app.handle(), MAIN_WINDOW);
             let close_to_tray = state.settings().close_to_tray;
             match tray::Tray::build(app, close_to_tray) {
                 Ok(tray) => {
@@ -170,18 +172,24 @@ pub fn run() {
                 state.squeeze.join(state.settings().active(), http);
             }
             state.set_translation_http(active_id, built.http);
-            if let Some(path) = std::env::args_os().nth(1).map(std::path::PathBuf::from) {
-                // `biwrite paper.tex`: open a file from the command line.
-                match state.load_path_blocking(path) {
+            // `biwrite paper.tex notes.md` (and Explorer's Open with): the
+            // first file in this window, the others in windows of their own.
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let mut files = windows::file_args(std::env::args_os().skip(1), &cwd).into_iter();
+            if let Some(path) = files.next() {
+                match main.load_path_blocking(path) {
                     Ok(()) => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            window.set_title(&state.file().window_title())?;
+                        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                            window.set_title(&main.file().window_title())?;
                         }
                     }
                     Err(e) => log::error!("{e}"),
                 }
             }
             app.manage(state);
+            let mut later: Vec<PathBuf> = files.collect();
+            later.extend(app.state::<windows::Pending>().take());
+            windows::open_all(app.handle(), later);
             squeeze_commands::spawn_keeper(app.handle().clone());
             Ok(())
         })
@@ -189,6 +197,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_session,
             commands::open_file,
+            windows::new_window,
             commands::save_file,
             commands::save_file_as,
             project_copy::save_project_as,
@@ -390,27 +399,51 @@ fn open_cache(app: &App) -> (Arc<dyn TranslationCache>, Option<PathBuf>) {
     }
 }
 
-/// Closing the window hides it in the tray (the setting), or asks first
-/// about unsaved changes and quits.
-fn on_window_event(window: &Window, event: &WindowEvent) {
-    let WindowEvent::CloseRequested { api, .. } = event else {
+/// Closing the last window shown hides it in the tray (the setting);
+/// closing a window asks first about its unsaved changes. A window gone
+/// takes its document along, its work stopped.
+fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
+    let Some(state) = window.try_state::<Arc<AppState>>() else {
         return;
     };
-    let to_tray = window.state::<AppState>().settings().close_to_tray
+    let api = match event {
+        WindowEvent::CloseRequested { api, .. } => api,
+        WindowEvent::Focused(true) => {
+            state.set_focused(window.label());
+            return;
+        }
+        WindowEvent::Destroyed => {
+            if let Some(doc) = state.forget(window.label()) {
+                doc.shut_down();
+            }
+            return;
+        }
+        _ => return,
+    };
+    // Minimized, a window is still there (in the Dock or the taskbar).
+    let others_shown = windows::document_windows(window.app_handle())
+        .iter()
+        .filter(|w| w.label() != window.label())
+        .any(|w| w.is_visible().unwrap_or(false) || w.is_minimized().unwrap_or(false));
+    let to_tray = !others_shown
+        && state.settings().close_to_tray
         && window.try_state::<tray::Tray>().is_some();
     if to_tray {
         api.prevent_close();
         tray::hide_window(window);
         return;
     }
-    if !window.state::<AppState>().needs_close_confirmation() {
+    let Some(doc) = state.document(window.label()) else {
+        return;
+    };
+    if !doc.needs_close_confirmation() {
         return;
     }
     api.prevent_close();
     let target = window.clone();
-    files::ask_discard(window.app_handle(), Some(window), move |discard| {
+    files::ask_discard(window.app_handle(), Some(window), &[], move |discard| {
         if discard {
-            target.state::<AppState>().confirm_discard_on_close();
+            doc.confirm_discard_on_close();
             if let Err(e) = target.destroy() {
                 log::error!("failed to close window: {e}");
             }
@@ -425,11 +458,24 @@ fn on_run_event(app: &AppHandle, event: RunEvent) {
     match event {
         RunEvent::ExitRequested { api, .. } => {
             if app
-                .try_state::<AppState>()
-                .is_some_and(|s| s.needs_close_confirmation())
+                .try_state::<Arc<AppState>>()
+                .is_some_and(|s| s.needs_quit_confirmation())
             {
                 api.prevent_exit();
                 tray::quit_app(app);
+            }
+        }
+        // Finder's Open With, a file dropped on the Dock icon, `open -a`.
+        #[cfg(target_os = "macos")]
+        RunEvent::Opened { urls } => {
+            let files = urls
+                .into_iter()
+                .filter_map(|url| url.to_file_path().ok())
+                .collect();
+            if app.try_state::<Arc<AppState>>().is_some() {
+                windows::open_all(app, files);
+            } else {
+                app.state::<windows::Pending>().add(files);
             }
         }
         #[cfg(target_os = "macos")]

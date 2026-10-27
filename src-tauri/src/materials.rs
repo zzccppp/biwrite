@@ -22,12 +22,11 @@ use std::time::SystemTime;
 use base64::Engine as _;
 use biwrite_core::assist::{Skill, SkillIcon};
 use serde::Serialize;
-use tauri::State;
 
 use crate::assist_commands::{AttachmentView, ReferenceView};
 use crate::error::{CommandError, CommandResult};
 use crate::skills::SkillInfo;
-use crate::state::AppState;
+use crate::state::{AppState, Doc};
 
 /// The folders, as the skill names them.
 pub const CATEGORIES: [&str; 6] = [
@@ -863,7 +862,7 @@ fn fail(e: String) -> CommandError {
 
 /// The materials folder and what it holds.
 #[tauri::command]
-pub async fn materials_get(state: State<'_, AppState>) -> CommandResult<MaterialsView> {
+pub async fn materials_get(state: Doc) -> CommandResult<MaterialsView> {
     let in_skill = skill_dir(&state).is_some();
     if !in_skill && let Err(e) = state.materials.ensure_own() {
         log::warn!("could not make the materials folder: {e}");
@@ -877,7 +876,7 @@ pub async fn materials_get(state: State<'_, AppState>) -> CommandResult<Material
 
 /// Show the materials folder (made first when it is the app's own).
 #[tauri::command]
-pub async fn materials_reveal(state: State<'_, AppState>) -> CommandResult<()> {
+pub async fn materials_reveal(state: Doc) -> CommandResult<()> {
     if skill_dir(&state).is_none() {
         state
             .materials
@@ -889,27 +888,21 @@ pub async fn materials_reveal(state: State<'_, AppState>) -> CommandResult<()> {
 
 /// The papers and figures the assistant can take as references.
 #[tauri::command]
-pub async fn materials_list(state: State<'_, AppState>) -> CommandResult<Vec<MaterialEntry>> {
+pub async fn materials_list(state: Doc) -> CommandResult<Vec<MaterialEntry>> {
     let root = root(&state);
     Ok(tokio::task::block_in_place(|| Materials::list(&root)))
 }
 
 /// A paper or text of the materials as a reference to imitate.
 #[tauri::command]
-pub async fn materials_text(
-    state: State<'_, AppState>,
-    path: String,
-) -> CommandResult<ReferenceView> {
+pub async fn materials_text(state: Doc, path: String) -> CommandResult<ReferenceView> {
     let root = root(&state);
     tokio::task::block_in_place(|| Materials::reference(&root, &path)).map_err(fail)
 }
 
 /// A figure of the materials as a reference image.
 #[tauri::command]
-pub async fn materials_image(
-    state: State<'_, AppState>,
-    path: String,
-) -> CommandResult<AttachmentView> {
+pub async fn materials_image(state: Doc, path: String) -> CommandResult<AttachmentView> {
     let root = root(&state);
     let (name, media, bytes) =
         tokio::task::block_in_place(|| Materials::image(&root, &path)).map_err(fail)?;
@@ -918,10 +911,7 @@ pub async fn materials_image(
 
 /// A PDF figure of the materials, for the webview to draw.
 #[tauri::command]
-pub async fn materials_pdf(
-    state: State<'_, AppState>,
-    path: String,
-) -> CommandResult<tauri::ipc::Response> {
+pub async fn materials_pdf(state: Doc, path: String) -> CommandResult<tauri::ipc::Response> {
     let root = root(&state);
     let file = Materials::file(&root, &path)
         .filter(|p| kind(p) == "pdf")
@@ -933,10 +923,7 @@ pub async fn materials_pdf(
 /// A PowerPoint figure of the materials as a PDF (by LibreOffice), for the
 /// webview to draw.
 #[tauri::command]
-pub async fn materials_pptx(
-    state: State<'_, AppState>,
-    path: String,
-) -> CommandResult<tauri::ipc::Response> {
+pub async fn materials_pptx(state: Doc, path: String) -> CommandResult<tauri::ipc::Response> {
     let root = root(&state);
     let file = Materials::file(&root, &path)
         .filter(|p| kind(p) == "pptx")
@@ -945,8 +932,9 @@ pub async fn materials_pptx(
         .ok_or_else(|| fail("reading a PowerPoint figure needs LibreOffice".into()))?;
     let bytes = crate::files::read_small_file(file, MAX_PPTX_BYTES).await?;
     let work = std::env::temp_dir().join(format!(
-        "biwrite-material-{}-{}",
+        "biwrite-material-{}-{}-{}",
         std::process::id(),
+        state.label,
         state
             .assist
             .next_job
@@ -961,7 +949,7 @@ pub async fn materials_pptx(
 /// in base64.
 #[tauri::command]
 pub async fn attach_image_data(
-    state: State<'_, AppState>,
+    state: Doc,
     name: String,
     png: String,
 ) -> CommandResult<AttachmentView> {

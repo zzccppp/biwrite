@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { t } from "../i18n.svelte";
   import { errorMessage, latexIpc } from "../ipc";
-  import type { SessionView, TemplateView } from "../types";
+  import type { Opened, SessionView, TemplateView } from "../types";
 
   interface Props {
     /** The open document is a LaTeX project that can be exported. */
@@ -56,17 +56,21 @@
     templates = await latexIpc.templates();
   }
 
+  /** Loaded here, or opened in another window: the panel's work is done. */
+  function shown(result: Opened | null): void {
+    if (result?.view) onopened(result.view);
+    else if (result?.opened) onclose();
+  }
+
   function create(id: string): Promise<void> {
     return run(async () => {
-      const view = await latexIpc.newPaper(id);
-      if (view) onopened(view);
+      shown(await latexIpc.newPaper(id));
     });
   }
 
   function openFolder(): Promise<void> {
     return run(async () => {
-      const view = await latexIpc.openFolder();
-      if (view) onopened(view);
+      shown(await latexIpc.openFolder());
     });
   }
 

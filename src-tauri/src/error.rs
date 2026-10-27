@@ -39,6 +39,8 @@ pub enum CommandError {
     /// Provider errors are already redacted at the source.
     #[error(transparent)]
     Provider(#[from] TranslateError),
+    #[error("could not open a window: {0}")]
+    Window(String),
 }
 
 impl CommandError {

@@ -19,7 +19,7 @@ use crate::error::{CommandError, CommandResult};
 use crate::provider_state::translator_for;
 use crate::secrets::{self, MAX_KEYS, NamedKey, Vouched};
 use crate::settings::{MOCK_ID, ProviderEntry, SettingsView, keeps_keys};
-use crate::state::AppState;
+use crate::state::{AppState, Doc, Document};
 
 /// A test's question and the model's answer, shown as they are.
 #[derive(Debug, Serialize)]
@@ -73,16 +73,13 @@ fn new_provider_id() -> String {
 }
 
 #[tauri::command]
-pub async fn get_settings(state: State<'_, AppState>) -> CommandResult<SettingsView> {
+pub async fn get_settings(state: Doc) -> CommandResult<SettingsView> {
     Ok(state.settings_view())
 }
 
 /// Add (empty `id`) or update a provider.
 #[tauri::command]
-pub async fn save_provider(
-    state: State<'_, AppState>,
-    provider: ProviderConfig,
-) -> CommandResult<SettingsView> {
+pub async fn save_provider(state: Doc, provider: ProviderConfig) -> CommandResult<SettingsView> {
     let mut config = provider
         .clone()
         .validated()
@@ -151,10 +148,7 @@ pub async fn save_provider(
 }
 
 #[tauri::command]
-pub async fn delete_provider(
-    state: State<'_, AppState>,
-    id: String,
-) -> CommandResult<SettingsView> {
+pub async fn delete_provider(state: Doc, id: String) -> CommandResult<SettingsView> {
     if id == MOCK_ID {
         return Err(CommandError::Settings(
             "the mock provider can't be removed".into(),
@@ -209,11 +203,7 @@ fn remember_names(state: &AppState, id: &str, keys: &[NamedKey]) {
 /// optionally named (`name` on the line before the key, or `name: key`).
 /// Keys go to the OS keychain. Write-only: no command returns keys.
 #[tauri::command]
-pub async fn set_api_key(
-    state: State<'_, AppState>,
-    id: String,
-    key: String,
-) -> CommandResult<SettingsView> {
+pub async fn set_api_key(state: Doc, id: String, key: String) -> CommandResult<SettingsView> {
     let named = parse_named(&key)?;
     let _keys = state.keys_lock.lock().await;
     if state.settings().provider(&id).is_none() {
@@ -239,11 +229,7 @@ pub async fn set_api_key(
 /// Add the pasted keys (optionally named) to the provider's pool;
 /// duplicates are skipped.
 #[tauri::command]
-pub async fn add_api_keys(
-    state: State<'_, AppState>,
-    id: String,
-    keys: String,
-) -> CommandResult<SettingsView> {
+pub async fn add_api_keys(state: Doc, id: String, keys: String) -> CommandResult<SettingsView> {
     let named = parse_named(&keys)?;
     let _keys = state.keys_lock.lock().await;
     let vouched = state
@@ -318,7 +304,7 @@ fn pool_text(provider: &ProviderEntry, keys: &[String]) -> String {
 pub async fn export_api_keys(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     id: String,
 ) -> CommandResult<Option<String>> {
     let provider = state
@@ -347,6 +333,8 @@ pub async fn export_api_keys(
     else {
         return Ok(None);
     };
+    // Keys never go into a document another window has open.
+    crate::commands::not_open_elsewhere(&state, [&dest])?;
     let text = pool_text(&provider, &keys);
     crate::files::write_private_atomic(dest.clone(), text.into_bytes()).await?;
     log::info!("exported {} keys of {}", keys.len(), provider.config.name);
@@ -359,7 +347,7 @@ pub async fn export_api_keys(
 pub async fn import_api_keys(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     id: String,
 ) -> CommandResult<Option<SettingsView>> {
     let Some(path) =
@@ -395,10 +383,7 @@ pub struct KeyEntryView {
 /// The keys of provider `id` with their names and live state. Reads the
 /// keychain, so it is only called when the key manager opens.
 #[tauri::command]
-pub async fn list_api_keys(
-    state: State<'_, AppState>,
-    id: String,
-) -> CommandResult<Vec<KeyEntryView>> {
+pub async fn list_api_keys(state: Doc, id: String) -> CommandResult<Vec<KeyEntryView>> {
     let (names, through, pool, ignored) = {
         let s = state.settings();
         let entry = s.provider(&id).ok_or_else(|| not_found(&id))?;
@@ -439,7 +424,7 @@ pub async fn list_api_keys(
 /// it has not got through yet.
 #[tauri::command]
 pub async fn replace_api_key(
-    state: State<'_, AppState>,
+    state: Doc,
     id: String,
     number: usize,
     tail: String,
@@ -499,7 +484,7 @@ pub async fn replace_api_key(
 /// Name (or rename) the key with this fingerprint. An empty name removes it.
 #[tauri::command]
 pub async fn rename_api_key(
-    state: State<'_, AppState>,
+    state: Doc,
     id: String,
     fingerprint: String,
     name: String,
@@ -521,7 +506,7 @@ pub async fn rename_api_key(
 /// Translate the test sentence with one key of the pool only.
 #[tauri::command]
 pub async fn test_api_key(
-    state: State<'_, AppState>,
+    state: Doc,
     id: String,
     fingerprint: String,
 ) -> CommandResult<TestAnswer> {
@@ -553,11 +538,7 @@ pub async fn test_api_key(
 /// Put the key `fingerprint` of provider `id` on the clipboard. The key
 /// does not go through the window, so no browser clipboard permission is asked.
 #[tauri::command]
-pub async fn copy_api_key(
-    state: State<'_, AppState>,
-    id: String,
-    fingerprint: String,
-) -> CommandResult<()> {
+pub async fn copy_api_key(state: Doc, id: String, fingerprint: String) -> CommandResult<()> {
     let key = key_of(&state, &id, &fingerprint).await?;
     tokio::task::spawn_blocking(move || crate::clipboard::copy(&key))
         .await
@@ -586,56 +567,49 @@ async fn key_of(state: &AppState, id: &str, fingerprint: &str) -> CommandResult<
 
 /// Paragraphs per translation request (1: one per request).
 #[tauri::command]
-pub async fn set_batch_size(
-    state: State<'_, AppState>,
-    size: usize,
-) -> CommandResult<SettingsView> {
+pub async fn set_batch_size(state: Doc, size: usize) -> CommandResult<SettingsView> {
     let size = size.clamp(1, biwrite_engine::MAX_BATCH);
     {
         let mut s = state.settings();
         s.batch_size = size;
         state.persist(&s)?;
+        // Under the settings lock, as a new window's engine is made.
+        state.each_engine(|engine| engine.set_batch_size(size));
     }
-    state.engine.set_batch_size(size);
     Ok(state.settings_view())
 }
 
 /// Seconds an edited paragraph stays unchanged before it is translated
 /// (0 translates at once).
 #[tauri::command]
-pub async fn set_translate_delay(
-    state: State<'_, AppState>,
-    seconds: u64,
-) -> CommandResult<SettingsView> {
+pub async fn set_translate_delay(state: Doc, seconds: u64) -> CommandResult<SettingsView> {
     let seconds = seconds.min(crate::settings::MAX_TRANSLATE_DELAY);
     {
         let mut s = state.settings();
         s.translate_delay = seconds;
         state.persist(&s)?;
+        state.each_engine(|engine| engine.set_edit_delay(Duration::from_secs(seconds)));
     }
-    state.engine.set_edit_delay(Duration::from_secs(seconds));
     Ok(state.settings_view())
 }
 
 /// Let parallel requests follow the key pool (keys × per-key limit).
 #[tauri::command]
-pub async fn set_match_pool(state: State<'_, AppState>, on: bool) -> CommandResult<SettingsView> {
-    let effective = {
+pub async fn set_match_pool(state: Doc, on: bool) -> CommandResult<SettingsView> {
+    {
         let mut s = state.settings();
         s.match_pool = on;
         state.persist(&s)?;
-        s.effective_concurrency()
-    };
-    state.engine.set_concurrency(effective);
+        let effective = s.effective_concurrency();
+        // Under the settings lock: a provider switch sets it too.
+        state.each_engine(|engine| engine.set_concurrency(effective));
+    }
     Ok(state.settings_view())
 }
 
 /// Look for a newer release at startup, or not.
 #[tauri::command]
-pub async fn set_check_updates(
-    state: State<'_, AppState>,
-    on: bool,
-) -> CommandResult<SettingsView> {
+pub async fn set_check_updates(state: Doc, on: bool) -> CommandResult<SettingsView> {
     {
         let mut s = state.settings();
         s.check_updates = on;
@@ -648,7 +622,7 @@ pub async fn set_check_updates(
 /// back: a key set aside takes no request, squeeze or keep-alive.
 #[tauri::command]
 pub async fn set_key_ignored(
-    state: State<'_, AppState>,
+    state: Doc,
     id: String,
     fingerprint: String,
     ignored: bool,
@@ -687,7 +661,7 @@ pub async fn set_key_ignored(
 /// two tries of a key in a squeeze.
 #[tauri::command]
 pub async fn set_pacing(
-    state: State<'_, AppState>,
+    state: Doc,
     keep_alive_minutes: f64,
     squeeze_seconds: f64,
     squeeze_enough: usize,
@@ -712,7 +686,7 @@ pub async fn set_pacing(
 /// The reasoning effort of the tries of a squeeze and of keep-alives.
 #[tauri::command]
 pub async fn set_squeeze_effort(
-    state: State<'_, AppState>,
+    state: Doc,
     effort: biwrite_providers::Effort,
 ) -> CommandResult<SettingsView> {
     {
@@ -728,7 +702,7 @@ pub async fn set_squeeze_effort(
 #[tauri::command]
 pub async fn set_keep_alive(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    state: Doc,
     on: bool,
 ) -> CommandResult<SettingsView> {
     let _keys = state.keys_lock.lock().await;
@@ -744,7 +718,7 @@ pub async fn set_keep_alive(
 /// Keep the API keys in the local key file or in the keychain, moving them
 /// there (the keychain may ask for its password while they move).
 #[tauri::command]
-pub async fn set_keys_in_file(state: State<'_, AppState>, on: bool) -> CommandResult<SettingsView> {
+pub async fn set_keys_in_file(state: Doc, on: bool) -> CommandResult<SettingsView> {
     let _keys = state.keys_lock.lock().await;
     let accounts: Vec<String> = state
         .settings()
@@ -767,7 +741,7 @@ pub async fn set_keys_in_file(state: State<'_, AppState>, on: bool) -> CommandRe
 #[tauri::command]
 pub async fn set_keep_alive_forever(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    state: Doc,
     on: bool,
 ) -> CommandResult<SettingsView> {
     let keeping = {
@@ -793,10 +767,7 @@ fn update_keep_alive_rejoin(state: &AppState, on: bool) -> CommandResult<()> {
 
 /// Failed keep-alives may be queued again, including after a completed run.
 #[tauri::command]
-pub async fn set_keep_alive_rejoin(
-    state: State<'_, AppState>,
-    on: bool,
-) -> CommandResult<SettingsView> {
+pub async fn set_keep_alive_rejoin(state: Doc, on: bool) -> CommandResult<SettingsView> {
     let _keys = state.keys_lock.lock().await;
     update_keep_alive_rejoin(&state, on)?;
     Ok(state.settings_view())
@@ -816,10 +787,7 @@ fn update_keep_alive_failure_limit(state: &AppState, limit: u32) -> CommandResul
 
 /// Change the consecutive failure limit without restarting background work.
 #[tauri::command]
-pub async fn set_keep_alive_failure_limit(
-    state: State<'_, AppState>,
-    limit: u32,
-) -> CommandResult<SettingsView> {
+pub async fn set_keep_alive_failure_limit(state: Doc, limit: u32) -> CommandResult<SettingsView> {
     update_keep_alive_failure_limit(&state, limit)?;
     Ok(state.settings_view())
 }
@@ -827,7 +795,7 @@ pub async fn set_keep_alive_failure_limit(
 /// Close to the tray (hide the window) or quit when the window is closed.
 #[tauri::command]
 pub async fn set_close_to_tray(
-    state: State<'_, AppState>,
+    state: Doc,
     tray: State<'_, crate::tray::Tray>,
     on: bool,
 ) -> CommandResult<SettingsView> {
@@ -849,7 +817,7 @@ pub fn set_tray_language(tray: State<'_, crate::tray::Tray>, lang: String) {
 /// Remove key `number` (1-based) of the pool, if it still ends in `tail`.
 #[tauri::command]
 pub async fn remove_api_key(
-    state: State<'_, AppState>,
+    state: Doc,
     id: String,
     number: usize,
     tail: String,
@@ -883,7 +851,7 @@ pub async fn remove_api_key(
 }
 
 #[tauri::command]
-pub async fn clear_api_key(state: State<'_, AppState>, id: String) -> CommandResult<SettingsView> {
+pub async fn clear_api_key(state: Doc, id: String) -> CommandResult<SettingsView> {
     let _keys = state.keys_lock.lock().await;
     state.settings_writable()?;
     let store = state.secrets.clone();
@@ -895,15 +863,12 @@ pub async fn clear_api_key(state: State<'_, AppState>, id: String) -> CommandRes
 /// State of each key of provider `id` (ready, cooling down, rejected), once
 /// a provider in use has read them. `None` before the first request.
 #[tauri::command]
-pub async fn key_status(
-    state: State<'_, AppState>,
-    id: String,
-) -> CommandResult<Option<Vec<KeyStatus>>> {
+pub async fn key_status(state: Doc, id: String) -> CommandResult<Option<Vec<KeyStatus>>> {
     Ok(state.key_status(&id))
 }
 
 fn update_key_count(
-    state: &AppState,
+    state: &Document,
     id: &str,
     count: usize,
     parts: usize,
@@ -929,10 +894,7 @@ fn update_key_count(
 
 /// Accept and Revert with the model's help and a build, or as they are.
 #[tauri::command]
-pub async fn set_assisted_apply(
-    state: State<'_, AppState>,
-    on: bool,
-) -> CommandResult<SettingsView> {
+pub async fn set_assisted_apply(state: Doc, on: bool) -> CommandResult<SettingsView> {
     {
         let mut s = state.settings();
         s.assisted_apply = on;
@@ -943,10 +905,7 @@ pub async fn set_assisted_apply(
 
 /// Choose the assistant's provider (empty: use the translation provider).
 #[tauri::command]
-pub async fn set_assistant_provider(
-    state: State<'_, AppState>,
-    id: String,
-) -> CommandResult<SettingsView> {
+pub async fn set_assistant_provider(state: Doc, id: String) -> CommandResult<SettingsView> {
     {
         let mut s = state.settings();
         if !id.is_empty() {
@@ -965,10 +924,7 @@ pub async fn set_assistant_provider(
 }
 
 #[tauri::command]
-pub async fn set_active_provider(
-    state: State<'_, AppState>,
-    id: String,
-) -> CommandResult<SettingsView> {
+pub async fn set_active_provider(state: Doc, id: String) -> CommandResult<SettingsView> {
     {
         let mut s = state.settings();
         if s.provider(&id).is_none() {
@@ -983,7 +939,7 @@ pub async fn set_active_provider(
 
 /// Translate one sentence with provider `id` (not necessarily active).
 #[tauri::command]
-pub async fn test_provider(state: State<'_, AppState>, id: String) -> CommandResult<TestAnswer> {
+pub async fn test_provider(state: Doc, id: String) -> CommandResult<TestAnswer> {
     let entry = state
         .settings()
         .provider(&id)
@@ -1017,10 +973,7 @@ pub async fn test_provider(state: State<'_, AppState>, id: String) -> CommandRes
 }
 
 #[tauri::command]
-pub async fn list_provider_models(
-    state: State<'_, AppState>,
-    id: String,
-) -> CommandResult<Vec<String>> {
+pub async fn list_provider_models(state: Doc, id: String) -> CommandResult<Vec<String>> {
     let entry = state
         .settings()
         .provider(&id)
@@ -1041,23 +994,20 @@ pub async fn list_provider_models(
 }
 
 #[tauri::command]
-pub async fn set_concurrency(
-    state: State<'_, AppState>,
-    concurrency: usize,
-) -> CommandResult<SettingsView> {
+pub async fn set_concurrency(state: Doc, concurrency: usize) -> CommandResult<SettingsView> {
     let n = concurrency.clamp(1, crate::settings::MAX_CONCURRENCY);
-    let effective = {
+    {
         let mut s = state.settings();
         s.concurrency = n;
         state.persist(&s)?;
-        s.effective_concurrency()
-    };
-    state.engine.set_concurrency(effective);
+        let effective = s.effective_concurrency();
+        state.each_engine(|engine| engine.set_concurrency(effective));
+    }
     Ok(state.settings_view())
 }
 
 #[tauri::command]
-pub async fn set_doc_note(state: State<'_, AppState>, note: String) -> CommandResult<()> {
+pub async fn set_doc_note(state: Doc, note: String) -> CommandResult<()> {
     state.set_doc_note(note)
 }
 
@@ -1080,17 +1030,14 @@ fn prompt_view(state: &AppState, direction: Direction) -> PromptView {
 }
 
 #[tauri::command]
-pub async fn get_prompt(
-    state: State<'_, AppState>,
-    direction: Direction,
-) -> CommandResult<PromptView> {
+pub async fn get_prompt(state: Doc, direction: Direction) -> CommandResult<PromptView> {
     Ok(prompt_view(&state, direction))
 }
 
 /// Save the system prompt file (empty text restores the default).
 #[tauri::command]
 pub async fn save_prompt(
-    state: State<'_, AppState>,
+    state: Doc,
     direction: Direction,
     text: String,
 ) -> CommandResult<PromptView> {
@@ -1109,7 +1056,7 @@ pub async fn save_prompt(
 
 /// Show the prompt files in Finder / Explorer.
 #[tauri::command]
-pub async fn reveal_prompts(state: State<'_, AppState>) -> CommandResult<()> {
+pub async fn reveal_prompts(state: Doc) -> CommandResult<()> {
     crate::files::reveal(&state.paths.prompts)
 }
 

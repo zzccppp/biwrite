@@ -10,7 +10,6 @@ use biwrite_providers::{Effort, ProviderConfig, ProviderKind, WireApi};
 use crate::request_log::{LogSettings, NoSink, RequestLog};
 use crate::secrets::{MemoryStore, SecretStore};
 use crate::settings::{AppSettings, Paths, ProviderEntry};
-use crate::state::AppState;
 
 const KEY: &str = "sk-leaktest-0123456789abcdefghij";
 
@@ -60,7 +59,7 @@ async fn key_never_appears_in_views_or_settings_file() {
         Some(dir.join("requests.jsonl")),
         Arc::new(NoSink),
     ));
-    let state = AppState::new(
+    let state = crate::state::test_doc(
         engine,
         cache,
         settings,

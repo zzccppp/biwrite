@@ -5,7 +5,7 @@
 
 use biwrite_engine::{EventSink, Fill, SegmentState, SegmentStatus, SessionUsage};
 use biwrite_providers::RequestRecord;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime, Wry};
 
 use crate::request_log::LogSink;
 
@@ -15,25 +15,41 @@ pub const EVENT_NOTICE: &str = "notice";
 pub const EVENT_REQUEST_LOG: &str = "request-log";
 pub const EVENT_FILLS: &str = "segment-fills";
 
-pub struct TauriSink {
-    app: AppHandle,
+pub struct TauriSink<R: Runtime = Wry> {
+    app: AppHandle<R>,
+    /// The window whose document the events are about; every window
+    /// without one.
+    window: Option<String>,
 }
 
-impl TauriSink {
-    pub fn new(app: AppHandle) -> Self {
-        Self { app }
+impl<R: Runtime> TauriSink<R> {
+    /// Events for every window (the request log).
+    pub fn new(app: AppHandle<R>) -> Self {
+        Self { app, window: None }
+    }
+
+    /// Events for window `label` only (its document's engine).
+    pub fn for_window(app: AppHandle<R>, label: &str) -> Self {
+        Self {
+            app,
+            window: Some(label.to_owned()),
+        }
     }
 
     fn emit<S: serde::Serialize + Clone>(&self, event: &str, payload: S) {
         // Events are best-effort: if the webview is gone or reloading, it
         // resynchronizes with `get_session` on startup.
-        if let Err(e) = self.app.emit(event, payload) {
+        let sent = match &self.window {
+            Some(label) => self.app.emit_to(label.as_str(), event, payload),
+            None => self.app.emit(event, payload),
+        };
+        if let Err(e) = sent {
             log::warn!("failed to emit {event}: {e}");
         }
     }
 }
 
-impl EventSink for TauriSink {
+impl<R: Runtime> EventSink for TauriSink<R> {
     fn segment_states(&self, states: &[SegmentState]) {
         // Failed translations go to the log; the message is already redacted.
         for s in states.iter().filter(|s| s.status == SegmentStatus::Error) {
@@ -58,7 +74,7 @@ impl EventSink for TauriSink {
     }
 }
 
-impl LogSink for TauriSink {
+impl<R: Runtime> LogSink for TauriSink<R> {
     fn updated(&self, record: &RequestRecord) {
         self.emit(EVENT_REQUEST_LOG, record);
     }

@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 
 use biwrite_core::TextFile;
 use serde::{Deserialize, Serialize};
-use tauri::{State, WebviewWindow};
+use tauri::WebviewWindow;
 
 use crate::commands::{open_path, refresh_title};
 use crate::error::{CommandError, CommandResult};
 use crate::files;
 use crate::pairing;
-use crate::state::{AppState, SessionView};
+use crate::state::{Doc, Document, SessionView};
 
 /// The bytes of the file at `path`, `None` if it can't be read (gone).
 async fn read_bytes(path: &Path) -> Option<Vec<u8>> {
@@ -78,7 +78,7 @@ async fn changed_stamp(path: &Path, known: &str, ignored: Option<&[u8]>) -> Opti
 /// each (see [`changed_on_disk`]). Only a paired file that exists counts.
 type Known = (PathBuf, String, Option<Vec<u8>>);
 
-fn known(state: &AppState) -> (Option<Known>, Option<Known>) {
+fn known(state: &Document) -> (Option<Known>, Option<Known>) {
     let fs = state.file();
     let document = fs
         .path
@@ -96,10 +96,7 @@ fn known(state: &AppState) -> (Option<Known>, Option<Known>) {
 /// (to a version the author did not choose to ignore). `None` if
 /// `document` is no longer the open one.
 #[tauri::command]
-pub async fn check_disk(
-    state: State<'_, AppState>,
-    document: u64,
-) -> CommandResult<Option<DiskView>> {
+pub async fn check_disk(state: Doc, document: u64) -> CommandResult<Option<DiskView>> {
     check(&state, document).await
 }
 
@@ -110,14 +107,14 @@ pub async fn check_disk(
 /// read.
 #[tauri::command]
 pub async fn disk_diff(
-    state: State<'_, AppState>,
+    state: Doc,
     which: String,
 ) -> CommandResult<Vec<biwrite_core::repair::Hunk>> {
     Ok(diff(&state, &which).await)
 }
 
 /// See [`disk_diff`].
-pub(crate) async fn diff(state: &AppState, which: &str) -> Vec<biwrite_core::repair::Hunk> {
+pub(crate) async fn diff(state: &Document, which: &str) -> Vec<biwrite_core::repair::Hunk> {
     let (document, mirror) = known(state);
     let Some((path, known, _)) = (if which == "mirror" { mirror } else { document }) else {
         return Vec::new();
@@ -132,7 +129,7 @@ pub(crate) async fn diff(state: &AppState, which: &str) -> Vec<biwrite_core::rep
 }
 
 /// See [`check_disk`].
-pub(crate) async fn check(state: &AppState, document: u64) -> CommandResult<Option<DiskView>> {
+pub(crate) async fn check(state: &Document, document: u64) -> CommandResult<Option<DiskView>> {
     // Never halfway through a write of ours.
     let _no_save_meanwhile = state.save_lock.lock().await;
     if state.engine.document() != document {
@@ -160,16 +157,12 @@ pub(crate) async fn check(state: &AppState, document: u64) -> CommandResult<Opti
 /// changes, and they are not reported again (a later change is). Saving
 /// still asks before writing over them.
 #[tauri::command]
-pub async fn ignore_disk(
-    state: State<'_, AppState>,
-    document: u64,
-    which: DiskView,
-) -> CommandResult<()> {
+pub async fn ignore_disk(state: Doc, document: u64, which: DiskView) -> CommandResult<()> {
     ignore(&state, document, which).await
 }
 
 /// See [`ignore_disk`].
-pub(crate) async fn ignore(state: &AppState, document: u64, which: DiskView) -> CommandResult<()> {
+pub(crate) async fn ignore(state: &Document, document: u64, which: DiskView) -> CommandResult<()> {
     let _no_save_meanwhile = state.save_lock.lock().await;
     if state.engine.document() != document {
         return Err(biwrite_engine::EngineError::Stale.into());
@@ -214,15 +207,12 @@ pub(crate) async fn ignore(state: &AppState, document: u64, which: DiskView) -> 
 /// here until the editor holds it ([`adopt_disk`]). `None` if `document` is
 /// no longer the open one or is untitled.
 #[tauri::command]
-pub async fn reload_document(
-    state: State<'_, AppState>,
-    document: u64,
-) -> CommandResult<Option<String>> {
+pub async fn reload_document(state: Doc, document: u64) -> CommandResult<Option<String>> {
     reload(&state, document).await
 }
 
 /// See [`reload_document`].
-pub(crate) async fn reload(state: &AppState, document: u64) -> CommandResult<Option<String>> {
+pub(crate) async fn reload(state: &Document, document: u64) -> CommandResult<Option<String>> {
     let _no_save_meanwhile = state.save_lock.lock().await;
     if state.engine.document() != document {
         return Ok(None);
@@ -243,16 +233,12 @@ pub(crate) async fn reload(state: &AppState, document: u64) -> CommandResult<Opt
 /// disk still reads so, it is what the app knows of the file from now on.
 /// Returns whether it was (else it changed again, and is reported again).
 #[tauri::command]
-pub async fn adopt_disk(
-    state: State<'_, AppState>,
-    document: u64,
-    text: String,
-) -> CommandResult<bool> {
+pub async fn adopt_disk(state: Doc, document: u64, text: String) -> CommandResult<bool> {
     adopt(&state, document, &text).await
 }
 
 /// See [`adopt_disk`].
-pub(crate) async fn adopt(state: &AppState, document: u64, text: &str) -> CommandResult<bool> {
+pub(crate) async fn adopt(state: &Document, document: u64, text: &str) -> CommandResult<bool> {
     let _no_save_meanwhile = state.save_lock.lock().await;
     if state.engine.document() != document {
         return Ok(false);
@@ -282,7 +268,7 @@ pub(crate) async fn adopt(state: &AppState, document: u64, text: &str) -> Comman
 #[tauri::command]
 pub async fn reopen_file(
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     document: u64,
 ) -> CommandResult<Option<SessionView>> {
     let view = reopen(&state, document).await?;
@@ -291,7 +277,7 @@ pub async fn reopen_file(
 }
 
 /// See [`reopen_file`].
-pub(crate) async fn reopen(state: &AppState, document: u64) -> CommandResult<Option<SessionView>> {
+pub(crate) async fn reopen(state: &Document, document: u64) -> CommandResult<Option<SessionView>> {
     let _no_save_meanwhile = state.save_lock.lock().await;
     if state.engine.document() != document {
         return Ok(None);
@@ -312,7 +298,7 @@ pub(crate) async fn reopen(state: &AppState, document: u64) -> CommandResult<Opt
 #[tauri::command]
 pub async fn reload_mirror(
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
 ) -> CommandResult<Option<SessionView>> {
@@ -323,7 +309,7 @@ pub async fn reload_mirror(
 
 /// See [`reload_mirror`].
 pub(crate) async fn repair(
-    state: &AppState,
+    state: &Document,
     text: String,
     document: u64,
 ) -> CommandResult<Option<SessionView>> {

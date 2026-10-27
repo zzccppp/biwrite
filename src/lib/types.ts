@@ -61,6 +61,13 @@ export interface Snapshot {
   usage: SessionUsage;
 }
 
+/** A file the author opened: loaded here (`view`), or in another window. */
+export interface Opened {
+  view: SessionView | null;
+  /** False when the author cancelled. */
+  opened: boolean;
+}
+
 export interface SessionView {
   path: string | null;
   name: string;

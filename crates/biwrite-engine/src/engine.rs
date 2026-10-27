@@ -931,6 +931,16 @@ impl Engine {
         self.inner.lock().usage
     }
 
+    /// Stop all work, for good: requests in flight are cancelled and
+    /// nothing queued or held is sent (the window showing the document is
+    /// gone).
+    pub fn stop(&self) {
+        let mut st = self.inner.lock();
+        st.stopped = true;
+        st.cancel_all();
+        self.inner.release(st);
+    }
+
     /// Number of queued plus in-flight jobs.
     pub fn pending(&self) -> usize {
         let st = self.inner.lock();

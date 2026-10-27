@@ -3,11 +3,10 @@
 
 use biwrite_providers::RequestRecord;
 use serde::Serialize;
-use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::request_log::LogSettings;
-use crate::state::AppState;
+use crate::state::{AppState, Doc};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,16 +27,13 @@ fn view(state: &AppState) -> LogView {
 }
 
 #[tauri::command]
-pub async fn get_request_log(state: State<'_, AppState>) -> CommandResult<LogView> {
+pub async fn get_request_log(state: Doc) -> CommandResult<LogView> {
     Ok(view(&state))
 }
 
 /// Pause or resume recording, and turn the log file on or off.
 #[tauri::command]
-pub async fn set_request_log(
-    state: State<'_, AppState>,
-    settings: LogSettings,
-) -> CommandResult<LogView> {
+pub async fn set_request_log(state: Doc, settings: LogSettings) -> CommandResult<LogView> {
     {
         let mut s = state.settings();
         s.request_log = settings;
@@ -49,14 +45,14 @@ pub async fn set_request_log(
 
 /// Clear the panel (the log file keeps its records).
 #[tauri::command]
-pub async fn clear_request_log(state: State<'_, AppState>) -> CommandResult<LogView> {
+pub async fn clear_request_log(state: Doc) -> CommandResult<LogView> {
     state.request_log.clear();
     Ok(view(&state))
 }
 
 /// Show the log file in Finder / Explorer.
 #[tauri::command]
-pub async fn reveal_request_log(state: State<'_, AppState>) -> CommandResult<()> {
+pub async fn reveal_request_log(state: Doc) -> CommandResult<()> {
     let Some(file) = state.request_log.file() else {
         return Err(CommandError::Settings("the request log has no file".into()));
     };

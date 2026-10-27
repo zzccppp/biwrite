@@ -8,16 +8,17 @@ use biwrite_core::{Mode, SegmentId};
 use biwrite_engine::Snapshot;
 
 use crate::error::CommandError;
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, Runtime, WebviewWindow};
 
 use crate::error::CommandResult;
 use crate::files;
 use crate::pairing;
-use crate::state::{AppState, SavedView, SessionView, display_name};
+use crate::state::{Doc, Document, SavedView, SessionView, display_name};
+use crate::windows;
 
 /// Cosmetic, so a failure is logged rather than failing the command (which
 /// could leave frontend and backend on different documents).
-pub(crate) fn refresh_title(window: &WebviewWindow, state: &AppState) {
+pub(crate) fn refresh_title<R: Runtime>(window: &WebviewWindow<R>, state: &Document) {
     let title = state.file().window_title();
     if let Err(e) = window.set_title(&title) {
         log::warn!("failed to set window title: {e}");
@@ -26,32 +27,30 @@ pub(crate) fn refresh_title(window: &WebviewWindow, state: &AppState) {
 
 /// Current document and all segment states (used on startup and reload).
 #[tauri::command]
-pub async fn get_session(state: State<'_, AppState>) -> CommandResult<SessionView> {
+pub async fn get_session(state: Doc) -> CommandResult<SessionView> {
     let snapshot = state.engine.snapshot();
     Ok(state.session_view(snapshot))
 }
 
-/// Show the Open dialog and load the chosen file. `None` if cancelled.
+/// Show the Open dialog and open the chosen file (see
+/// [`windows::open_from`]). The view if it was loaded in this window.
 #[tauri::command]
 pub async fn open_file(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
 ) -> CommandResult<Option<SessionView>> {
-    if state.is_dirty() && !files::confirm_discard(&app, &window).await {
-        return Ok(None);
-    }
     let Some(path) = files::pick_open(&app, &window).await else {
         return Ok(None);
     };
-    load(&window, &state, path).await.map(Some)
+    Ok(windows::open_from(&app, &window, &state, path).await?.view)
 }
 
 /// Make `path` the open document (the caller has dealt with unsaved
 /// changes).
-pub(crate) async fn load(
-    window: &WebviewWindow,
-    state: &AppState,
+pub(crate) async fn load<R: Runtime>(
+    window: &WebviewWindow<R>,
+    state: &Document,
     path: PathBuf,
 ) -> CommandResult<SessionView> {
     let _no_save_meanwhile = state.save_lock.lock().await;
@@ -61,11 +60,19 @@ pub(crate) async fn load(
 }
 
 /// [`load`] without the window title.
-pub(crate) async fn open_path(state: &AppState, path: PathBuf) -> CommandResult<SessionView> {
+pub(crate) async fn open_path(state: &Document, path: PathBuf) -> CommandResult<SessionView> {
     let file = files::read_text_file(path.clone()).await?;
     // The file the author paired it with, or one in the other language by
-    // the same name, is its mirror.
+    // the same name, is its mirror, unless another window has it open (or
+    // is opening it).
     let mirror = match pairing::mirror_path(state, &path) {
+        Some(m) if state.window_with(&m, &state.label).is_some() || state.is_opening(&m) => {
+            log::info!(
+                "{} is open in another window: not paired",
+                display_name(Some(&m))
+            );
+            None
+        }
         Some(m) => files::read_text_file(m.clone()).await.ok().map(|f| (m, f)),
         None => None,
     };
@@ -82,7 +89,7 @@ pub(crate) async fn open_path(state: &AppState, path: PathBuf) -> CommandResult<
 pub async fn save_file(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
     overwrite: bool,
@@ -96,7 +103,10 @@ pub async fn save_file(
     let path = match current {
         Some(path) => path,
         None => match files::pick_save(&app, &window, None).await {
-            Some(path) => path,
+            Some(path) => {
+                not_open_elsewhere(&state, [&path])?;
+                path
+            }
             None => return Ok(None),
         },
     };
@@ -109,12 +119,28 @@ pub async fn save_file(
         .map(Some)
 }
 
+/// A save never writes over a file another window has open.
+pub(crate) fn not_open_elsewhere<'a>(
+    state: &Document,
+    targets: impl IntoIterator<Item = &'a PathBuf>,
+) -> CommandResult<()> {
+    for target in targets {
+        if state.window_with(target, &state.label).is_some() {
+            return Err(CommandError::Settings(format!(
+                "{} is open in another window: close it there first",
+                display_name(Some(target))
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Save under a new name.
 #[tauri::command]
 pub async fn save_file_as(
     app: AppHandle,
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
 ) -> CommandResult<Option<SavedView>> {
@@ -141,6 +167,7 @@ pub async fn save_file_as(
             _ => None,
         }
     };
+    not_open_elsewhere(&state, std::iter::once(&path).chain(mirror_to.as_ref()))?;
     // Chosen in the dialog, which asked before replacing a file.
     let over = Overwrite {
         document: true,
@@ -180,7 +207,7 @@ pub(crate) struct Overwrite {
 /// the editor holds the file's own language and the mirror follows.
 ///
 /// The engine holds `editor_text` already ([`AppState::sync_text`]).
-pub(crate) fn home_text(state: &AppState, editor_text: String) -> CommandResult<String> {
+pub(crate) fn home_text(state: &Document, editor_text: String) -> CommandResult<String> {
     if state.editing_own_language() {
         Ok(editor_text)
     } else {
@@ -194,7 +221,7 @@ pub(crate) fn home_text(state: &AppState, editor_text: String) -> CommandResult<
 /// taken from the editor (fills may land during the dialog and the write).
 async fn save_to(
     window: &WebviewWindow,
-    state: &AppState,
+    state: &Document,
     path: PathBuf,
     text: String,
     mirror_to: Option<PathBuf>,
@@ -214,7 +241,7 @@ async fn save_to(
 /// caller holds `save_lock`, so the document can't change meanwhile. Not
 /// over the file if it changed on disk since it was read or written.
 pub(crate) async fn write_document(
-    state: &AppState,
+    state: &Document,
     path: PathBuf,
     text: String,
     mirror_to: Option<PathBuf>,
@@ -224,7 +251,7 @@ pub(crate) async fn write_document(
 
 /// [`write_document`], over changes made on disk elsewhere as `over` says.
 pub(crate) async fn write_document_with(
-    state: &AppState,
+    state: &Document,
     path: PathBuf,
     text: String,
     mirror_to: Option<PathBuf>,
@@ -303,7 +330,7 @@ pub(crate) async fn write_document_with(
 #[tauri::command]
 pub async fn swap_languages(
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
     keep: Option<bool>,
@@ -316,7 +343,7 @@ pub async fn swap_languages(
 }
 
 /// [`swap_languages`] without the window title.
-pub(crate) fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<SessionView> {
+pub(crate) fn swap(state: &Document, text: String, keep: bool) -> CommandResult<SessionView> {
     if state.file().pair.is_some() {
         return pairing::swap(state, text, keep);
     }
@@ -357,7 +384,7 @@ pub(crate) fn swap(state: &AppState, text: String, keep: bool) -> CommandResult<
 #[tauri::command]
 pub async fn retarget_language(
     window: WebviewWindow,
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
     only_if_needed: bool,
@@ -373,7 +400,7 @@ pub async fn retarget_language(
 
 /// See [`retarget_language`].
 pub(crate) fn retarget(
-    state: &AppState,
+    state: &Document,
     text: String,
     only_if_needed: bool,
 ) -> CommandResult<Option<Snapshot>> {
@@ -415,16 +442,12 @@ pub(crate) fn retarget(
 /// while the other language is edited, also the paragraphs still written in
 /// the file's language. Returns how many paragraphs were taken up.
 #[tauri::command]
-pub async fn continue_translation(
-    state: State<'_, AppState>,
-    text: String,
-    document: u64,
-) -> CommandResult<usize> {
+pub async fn continue_translation(state: Doc, text: String, document: u64) -> CommandResult<usize> {
     continue_left(&state, text, document)
 }
 
 /// [`continue_translation`] without Tauri.
-pub(crate) fn continue_left(state: &AppState, text: String, document: u64) -> CommandResult<usize> {
+pub(crate) fn continue_left(state: &Document, text: String, document: u64) -> CommandResult<usize> {
     state.sync_text(document, &text)?;
     Ok(state
         .engine
@@ -436,7 +459,7 @@ pub(crate) fn continue_left(state: &AppState, text: String, document: u64) -> Co
 /// crossed a swap or an open): it is dropped.
 #[tauri::command]
 pub async fn update_document(
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     document: u64,
 ) -> CommandResult<Option<Snapshot>> {
@@ -447,7 +470,7 @@ pub async fn update_document(
 /// links are paragraphs of the mode it was paired in.
 #[tauri::command]
 pub async fn set_mode(
-    state: State<'_, AppState>,
+    state: Doc,
     mode: Mode,
     text: String,
     document: u64,
@@ -462,7 +485,7 @@ pub async fn set_mode(
 
 /// The translations are text the user wrote and the file keeps: a pair's
 /// other file, or the file's own language while the other is edited.
-fn translations_are_own(state: &AppState) -> bool {
+fn translations_are_own(state: &Document) -> bool {
     let fs = state.file();
     fs.pair.is_some() || state.engine.direction() != fs.home
 }
@@ -470,7 +493,7 @@ fn translations_are_own(state: &AppState) -> bool {
 /// Retranslate one paragraph (also retries a failed one). Never one whose
 /// translation is the user's own text: it would replace it in the file.
 #[tauri::command]
-pub async fn retranslate_segment(state: State<'_, AppState>, id: u64) -> CommandResult<()> {
+pub async fn retranslate_segment(state: Doc, id: u64) -> CommandResult<()> {
     let id = SegmentId(id);
     if translations_are_own(&state) && state.engine.has_exact_translation(id) {
         return Err(CommandError::Settings(
@@ -496,7 +519,7 @@ pub struct SentencesView {
 /// the source sentence in the same place.
 #[tauri::command]
 pub async fn source_sentences(
-    state: State<'_, AppState>,
+    state: Doc,
     text: String,
     pos: usize,
 ) -> CommandResult<Option<SentencesView>> {
@@ -519,12 +542,12 @@ pub(crate) fn sentences_view(text: &str, mode: Mode, pos: usize) -> Option<Sente
 /// Translate the edited paragraphs still waiting out the translation delay
 /// now (a swap needs them). Returns how many there were.
 #[tauri::command]
-pub async fn translate_held(state: State<'_, AppState>) -> CommandResult<usize> {
+pub async fn translate_held(state: Doc) -> CommandResult<usize> {
     Ok(state.engine.translate_held())
 }
 
 #[tauri::command]
-pub async fn retranslate_all(state: State<'_, AppState>) -> CommandResult<()> {
+pub async fn retranslate_all(state: Doc) -> CommandResult<()> {
     if translations_are_own(&state) {
         return Err(CommandError::Settings(
             "The translations are your own text, which the file keeps: retranslating \
@@ -537,7 +560,7 @@ pub async fn retranslate_all(state: State<'_, AppState>) -> CommandResult<()> {
 }
 
 #[tauri::command]
-pub async fn set_auto_translate(state: State<'_, AppState>, on: bool) -> CommandResult<()> {
+pub async fn set_auto_translate(state: Doc, on: bool) -> CommandResult<()> {
     state.engine.set_auto_translate(on);
     Ok(())
 }
@@ -545,11 +568,7 @@ pub async fn set_auto_translate(state: State<'_, AppState>, on: bool) -> Command
 /// The frontend reports when the editor content starts/stops differing from
 /// the saved file (drives the title marker and close confirmation).
 #[tauri::command]
-pub async fn set_dirty(
-    window: WebviewWindow,
-    state: State<'_, AppState>,
-    dirty: bool,
-) -> CommandResult<()> {
+pub async fn set_dirty(window: WebviewWindow, state: Doc, dirty: bool) -> CommandResult<()> {
     state.file().dirty = dirty;
     refresh_title(&window, &state);
     Ok(())

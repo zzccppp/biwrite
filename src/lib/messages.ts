@@ -849,7 +849,12 @@ export const messages = {
   "toolbar.toMainTitle": { en: "Back to the main file, {file}", zh: "回到主文件 {file}" },
   "editor.openInclude": { en: "Open {file}. ⌘-click the name opens it too.", zh: "打开 {file}。按住 ⌘ 点文件名也能打开。" },
   "toolbar.open": { en: "Open", zh: "打开" },
-  "toolbar.openTitle": { en: "Open… ({key})", zh: "打开…（{key}）" },
+  "toolbar.openTitle": {
+    en: "Open… ({key}): in a new window, unless this one is empty",
+    zh: "打开…（{key}）：在新窗口中打开，除非当前窗口为空",
+  },
+  "toolbar.newWindow": { en: "New window", zh: "新窗口" },
+  "toolbar.newWindowTitle": { en: "New window ({key})", zh: "新建窗口（{key}）" },
   "toolbar.saveTitle": { en: "Save ({save}) · Save As ({saveAs})", zh: "保存（{save}）· 另存为（{saveAs}）" },
   "toolbar.export": { en: "Export", zh: "导出" },
   "toolbar.exportTitle": {

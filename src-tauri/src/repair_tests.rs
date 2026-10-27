@@ -114,7 +114,7 @@ fn project_files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     out
 }
 
-fn open(state: &AppState, path: &Path) {
+fn open(state: &Document, path: &Path) {
     let file = TextFile::decode(std::fs::read(path).unwrap()).unwrap();
     pairing::open(state, path.to_owned(), file, None);
 }
@@ -131,7 +131,7 @@ async fn a_fix_gives_the_model_the_errors_and_offers_what_compiles() {
     std::fs::write(&path, DOC).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let before = project_files(&dir);
@@ -179,7 +179,7 @@ async fn a_document_that_compiles_needs_no_model() {
     std::fs::write(&path, CLEAN).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let model = Scripted::new(&[]);
@@ -205,7 +205,7 @@ async fn a_bibtex_failure_is_no_error_to_repair() {
     std::fs::write(&path, &doc).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let model = Scripted::new(&[]);
@@ -249,7 +249,7 @@ async fn smart_apply_repairs_an_answer_that_brings_errors() {
     std::fs::write(&path, CLEAN).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let before = project_files(&dir);
@@ -284,7 +284,7 @@ async fn an_answer_that_compiles_is_applied_as_it_is() {
     std::fs::write(&path, CLEAN).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let model = Scripted::new(&[]);
@@ -307,7 +307,7 @@ async fn errors_the_document_had_are_not_the_answers() {
     std::fs::write(&path, &broken).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let model = Scripted::new(&[]);
@@ -385,7 +385,7 @@ async fn a_real_paper_builds_unsaved_and_repairs_a_figure() {
     let dir = main.parent().unwrap().to_path_buf();
     let app = tauri::test::mock_app();
     app.manage(app_state(&temp("real-cfg")));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &main);
     settle(&state).await;
     let saved = std::fs::read_to_string(&main).unwrap();
@@ -518,7 +518,7 @@ async fn accepting_with_the_model_down_is_an_error_before_any_build() {
     // The frontend then applies the answer as it is.
     let app = tauri::test::mock_app();
     app.manage(app_state(&temp("fit-down")));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     let start = CheckStart {
         fit: true,
         ..insertion(9, CLEAN, FIGURE, "\\usepackage{tikz}\n")
@@ -534,7 +534,7 @@ async fn accepting_fits_the_answer_with_the_model_and_then_builds_it() {
     std::fs::write(&path, CLEAN).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let before = project_files(&dir);
@@ -607,7 +607,7 @@ async fn a_fix_of_a_section_mends_its_own_errors_and_names_the_others() {
     let path = dir.join("sections/method.tex");
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let model = Scripted::new(&[
@@ -665,7 +665,7 @@ async fn a_figure_of_a_section_is_checked_with_the_lines_the_main_file_needs() {
     std::fs::write(&path, method).unwrap();
     let app = tauri::test::mock_app();
     app.manage(app_state(&dir));
-    let state = app.state::<AppState>();
+    let state = app.state::<Doc>().inner().clone();
     open(&state, &path);
     settle(&state).await;
     let at = method.encode_utf16().count();

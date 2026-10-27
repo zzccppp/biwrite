@@ -65,6 +65,38 @@ async fn concurrency_limit_is_respected() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_stopped_engine_sends_nothing_more() {
+    let mock = std::sync::Arc::new(MockTranslator::with_delay(
+        Duration::from_millis(500),
+        Duration::from_millis(2000),
+    ));
+    let engine = biwrite_engine::Engine::new(
+        mock.clone(),
+        std::sync::Arc::new(MemoryCache::default()),
+        std::sync::Arc::new(NullSink),
+        EngineSettings {
+            concurrency: 3,
+            ..EngineSettings::default()
+        },
+        tokio::runtime::Handle::current(),
+    );
+    engine.load(join(&paragraphs(20)), Mode::Plain);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(mock.calls(), 3);
+    engine.stop();
+    assert_eq!(engine.pending(), 0);
+    // Neither the queue, an edit, a retry nor a new translator starts a
+    // request.
+    engine.update(join(&paragraphs(21)));
+    engine.retry_failed();
+    engine.retranslate_all();
+    engine.set_translator(mock.clone());
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert_eq!(mock.calls(), 3);
+    assert_eq!(engine.pending(), 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn rate_limits_are_retried_with_backoff() {
     let h = harness(EngineSettings::default());
     h.translator.fail_next([

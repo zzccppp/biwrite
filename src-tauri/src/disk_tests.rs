@@ -8,7 +8,7 @@ use crate::disk_commands::{DiskView, adopt, check, ignore, reload, reopen, repai
 use crate::error::CommandError;
 use crate::pair_tests::{app_state, settle};
 use crate::pairing::{self, MirrorProblem};
-use crate::state::AppState;
+use crate::state::{Doc, Document};
 
 const EN: &str = "\\section{Method}\n\
 Our method prepares tables in three steps.\n\n\
@@ -27,7 +27,7 @@ fn temp(name: &str) -> PathBuf {
 }
 
 /// A document alone (`paired`: with its translation in the other folder).
-async fn opened(dir: &Path, paired: bool) -> (AppState, PathBuf, PathBuf) {
+async fn opened(dir: &Path, paired: bool) -> (Doc, PathBuf, PathBuf) {
     let en = dir.join("sections_en/method.tex");
     let zh = dir.join("sections_zh/method.tex");
     std::fs::write(&en, EN).unwrap();
@@ -46,16 +46,16 @@ fn changed(document: bool, mirror: bool) -> Option<(bool, bool)> {
     Some((document, mirror))
 }
 
-async fn checked(state: &AppState) -> Option<(bool, bool)> {
+async fn checked(state: &Document) -> Option<(bool, bool)> {
     reported(state).await.map(|v| (v.document, v.mirror))
 }
 
-async fn reported(state: &AppState) -> Option<DiskView> {
+async fn reported(state: &Document) -> Option<DiskView> {
     check(state, state.engine.document()).await.unwrap()
 }
 
 /// Ignore what is reported now.
-async fn ignore_reported(state: &AppState) {
+async fn ignore_reported(state: &Document) {
     let which = reported(state).await.unwrap();
     ignore(state, state.engine.document(), which).await.unwrap();
 }
