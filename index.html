@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-lang="en">
+<html lang="zh-CN" data-lang="zh">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,59 +7,61 @@
   (function () {
     var root = document.documentElement;
     try {
-      var q = new URLSearchParams(location.search).get('lang');
-      var saved = localStorage.getItem('biwrite-site-lang');
-      var nav = (navigator.language || navigator.userLanguage || 'en').toLowerCase();
-      var lang = (q === 'zh' || q === 'en') ? q
-        : (saved === 'zh' || saved === 'en') ? saved
-        : (nav.indexOf('zh') === 0 ? 'zh' : 'en');
-      root.setAttribute('data-lang', lang);
-      root.setAttribute('lang', lang === 'zh' ? 'zh-CN' : 'en');
+      var q = new URLSearchParams(location.search).get("lang");
+      var saved = localStorage.getItem("biwrite-site-lang");
+      var nav = (navigator.language || navigator.userLanguage || "").toLowerCase();
+      var tz = "";
+      try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
+      var preferZh = nav.indexOf("zh") === 0 || /^Asia\/(Shanghai|Chongqing|Harbin|Urumqi|Hong_Kong|Macau|Taipei)$/.test(tz);
+      var lang = (q === "zh" || q === "en") ? q
+        : (saved === "zh" || saved === "en") ? saved
+        : (preferZh ? "zh" : "en");
+      root.setAttribute("data-lang", lang);
+      root.setAttribute("lang", lang === "zh" ? "zh-CN" : "en");
     } catch (e) {
-      root.setAttribute('data-lang', 'en');
+      root.setAttribute("data-lang", "zh");
     }
   })();
 </script>
-<title>BiWrite — One draft, two languages. Bilingual LaTeX &amp; Markdown editor</title>
-<meta name="description" content="A desktop editor for writing academic papers in English and Chinese at once. Paragraph-by-paragraph translation, LaTeX and PDF side by side, and a writing assistant that follows the rules of research-builder.">
-<meta name="theme-color" content="#f7f2e8">
+<title>BiWrite — 专注学术论文的中英双语桌面编辑器 (LaTeX &amp; Markdown)</title>
+<meta name="description" content="BiWrite 是一款开源的中英双语学术论文桌面编辑器。支持段落级增量重译、LaTeX 公式与引用占位符无损保护、本地不保存隔离编译、PDF 句子级双向定位、paper_zh.tex 双文件同步，以及内置 research-builder 规范的去 AI 腔润色与科研绘图助手。">
+<meta name="theme-color" content="#faf9f6">
 <meta name="color-scheme" content="light">
 <link rel="canonical" href="https://zzccppp.github.io/biwrite/">
-<link rel="alternate" hreflang="en" href="https://zzccppp.github.io/biwrite/?lang=en">
 <link rel="alternate" hreflang="zh-CN" href="https://zzccppp.github.io/biwrite/?lang=zh">
+<link rel="alternate" hreflang="en" href="https://zzccppp.github.io/biwrite/?lang=en">
 <link rel="alternate" hreflang="x-default" href="https://zzccppp.github.io/biwrite/">
 <meta property="og:type" content="website">
-<meta property="og:title" content="BiWrite — One draft, two languages.">
-<meta property="og:description" content="A desktop editor for writing an academic paper in English and Chinese at once. Only the paragraphs you edit are translated again.">
+<meta property="og:title" content="BiWrite — 专注学术论文的中英双语桌面编辑器">
+<meta property="og:description" content="逐段增量重译、公式与引用无损保护、本地 LaTeX 隔离编译、PDF 句子级定位，内置 research-builder 规范写作与绘图助手。">
 <meta property="og:url" content="https://zzccppp.github.io/biwrite/">
 <meta property="og:site_name" content="BiWrite">
-<meta property="og:locale" content="en_US">
-<meta property="og:locale:alternate" content="zh_CN">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:locale:alternate" content="en_US">
 <meta property="og:image" content="https://zzccppp.github.io/biwrite/assets/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="BiWrite — one draft, two languages. A bilingual academic writing editor.">
+<meta property="og:image:alt" content="BiWrite — 中英双语学术论文桌面编辑器">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="BiWrite — One draft, two languages.">
-<meta name="twitter:description" content="A desktop editor for writing an academic paper in English and Chinese at once.">
+<meta name="twitter:title" content="BiWrite — Bilingual Desktop Editor for Academic Papers">
+<meta name="twitter:description" content="Live paragraph-by-paragraph bilingual editing, byte-exact LaTeX placeholder protection, local SyncTeX compilation, and a research-builder writing assistant.">
 <meta name="twitter:image" content="https://zzccppp.github.io/biwrite/assets/og.png">
-<meta name="twitter:image:alt" content="BiWrite — one draft, two languages.">
 <link rel="icon" href="assets/brand/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="assets/brand/favicon-32.png">
 <link rel="apple-touch-icon" href="assets/brand/apple-touch-icon.png">
 <link rel="stylesheet" href="assets/css/site.css">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"BiWrite","applicationCategory":"WritingApplication","operatingSystem":"macOS 12+, Windows 10, Windows 11","description":"A desktop editor for writing an academic paper in English and Chinese at once, with LaTeX compilation and a rule-following writing assistant.","url":"https://zzccppp.github.io/biwrite/","downloadUrl":"https://github.com/zzccppp/biwrite/releases","softwareVersion":"0.2.25","inLanguage":["en","zh"],"image":"https://zzccppp.github.io/biwrite/assets/og.png","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"BiWrite","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 12+, Windows 10, Windows 11","license":"https://opensource.org/licenses/MIT","description":"Bilingual LaTeX and Markdown desktop editor for academic papers, featuring incremental paragraph translation, byte-exact math/citation protection, local TeX compilation with SyncTeX, and a research-builder writing assistant.","url":"https://zzccppp.github.io/biwrite/","downloadUrl":"https://github.com/zzccppp/biwrite/releases/latest","softwareVersion":"0.2.31","inLanguage":["zh-CN","en"],"image":"https://zzccppp.github.io/biwrite/assets/og.png","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
 </head>
 <body>
-<a class="skip-link" href="#main"><span class="lang-en">Skip to content</span><span class="lang-zh">跳到正文</span></a>
+<a class="skip-link" href="#main"><span class="lang-zh">跳到正文</span><span class="lang-en">Skip to content</span></a>
 <p id="lang-status" class="sr-only" aria-live="polite"></p>
 
 <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
   <symbol id="i-mark" viewBox="0 0 64 64">
-    <rect x="2" y="2" width="60" height="60" rx="15" fill="#f2ebdc"/>
-    <path d="M17 2H32V62H17A15 15 0 0 1 2 47V17A15 15 0 0 1 17 2Z" fill="#202b52"/>
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="#f2ebdc"/>
+    <path d="M16 2H32V62H16A14 14 0 0 1 2 48V16A14 14 0 0 1 16 2Z" fill="#202b52"/>
     <rect x="31.1" y="2" width="1.8" height="60" fill="#c05a3c"/>
     <g fill="#f2ebdc">
       <rect x="9.5" y="16" width="16" height="2.7" rx="1.35"/>
@@ -77,696 +79,775 @@
     </g>
   </symbol>
   <symbol id="i-github" viewBox="0 0 24 24">
-    <path fill="currentColor" stroke="none" d="M12 .5C5.73.5.5 5.73.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.53-1.34-1.3-1.7-1.3-1.7-1.06-.72.08-.71.08-.71 1.17.08 1.79 1.2 1.79 1.2 1.04 1.78 2.73 1.27 3.4.97.11-.76.41-1.27.74-1.56-2.55-.29-5.23-1.28-5.23-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.25 5.69.42.36.79 1.08.79 2.18 0 1.58-.01 2.85-.01 3.24 0 .31.21.68.8.56A10.99 10.99 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"/>
+    <path fill="currentColor" d="M12 .5C5.73.5.5 5.73.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.53-1.34-1.3-1.7-1.3-1.7-1.06-.72.08-.71.08-.71 1.17.08 1.79 1.2 1.79 1.2 1.04 1.78 2.73 1.27 3.4.97.11-.76.41-1.27.74-1.56-2.55-.29-5.23-1.28-5.23-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.41-5.25 5.69.42.36.79 1.08.79 2.18 0 1.58-.01 2.85-.01 3.24 0 .31.21.68.8.56A10.99 10.99 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"/>
   </symbol>
   <symbol id="i-apple" viewBox="0 0 384 512">
-    <path fill="currentColor" stroke="none" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5c0 26.4 4.8 53.7 14.4 81.3 12.8 36.7 59 126.7 107.4 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65-30.7-61.9-90-61.9-92zM255.4 90.8c23.4-27.8 21.3-53.1 20.6-62.2-20.7 1.2-44.6 14.1-58.2 29.9-15 17-23.8 38.1-21.9 61.2 22.4 1.7 42.9-9.9 59.5-28.9z"/>
+    <path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5c0 26.4 4.8 53.7 14.4 81.3 12.8 36.7 59 126.7 107.4 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65-30.7-61.9-90-61.9-92zM255.4 90.8c23.4-27.8 21.3-53.1 20.6-62.2-20.7 1.2-44.6 14.1-58.2 29.9-15 17-23.8 38.1-21.9 61.2 22.4 1.7 42.9-9.9 59.5-28.9z"/>
   </symbol>
   <symbol id="i-windows" viewBox="0 0 24 24">
-    <g fill="currentColor" stroke="none"><rect x="3" y="3" width="8.2" height="8.2"/><rect x="12.8" y="3" width="8.2" height="8.2"/><rect x="3" y="12.8" width="8.2" height="8.2"/><rect x="12.8" y="12.8" width="8.2" height="8.2"/></g>
+    <g fill="currentColor"><rect x="3" y="3" width="8.2" height="8.2" rx="1"/><rect x="12.8" y="3" width="8.2" height="8.2" rx="1"/><rect x="3" y="12.8" width="8.2" height="8.2" rx="1"/><rect x="12.8" y="12.8" width="8.2" height="8.2" rx="1"/></g>
   </symbol>
-  <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 6l6 6-6 6"/></symbol>
-  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></symbol>
-  <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
-  <symbol id="i-split" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 4v16M6 8h3M6 11.5h3M6 15h3M15 8h3M15 11.5h3"/></symbol>
-  <symbol id="i-page" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.5h8l4 4v15H6z"/><path d="M14 2.5v5h5M9 13h6M9 17h4"/></symbol>
-  <symbol id="i-pen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
-  <symbol id="i-question" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.4 9a2.6 2.6 0 1 1 4.1 2.1c-.9.7-1.5 1.2-1.5 2.4"/><circle cx="12" cy="17.2" r=".7" fill="currentColor" stroke="none"/></symbol>
-  <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16.5l9 5 9-5"/></symbol>
-  <symbol id="i-figure" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="1.5"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></symbol>
-  <symbol id="i-wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5a3.7 3.7 0 0 0-4.9 4.9L3 18l3 3 6.6-6.6a3.7 3.7 0 0 0 4.9-4.9l-2.2 2.2-2.2-.3-.3-2.2 2.2-2.2Z"/></symbol>
-  <symbol id="i-translate" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5h8M7.5 3v2.5M5.2 5.5c.8 2.4 2.4 4.3 4.7 5.4M3 12c2.6-.6 4.7-2.1 6-4.2"/><path d="m12.5 21 3.8-9.5L20 21M13.9 17.2h5.2"/></symbol>
-  <symbol id="i-template" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="1.5"/><path d="M3 9h18M9 9v12"/></symbol>
-  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
-  <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15.5" r="4"/><path d="m11 12.5 9-9M16.5 6.5l2 2M14.5 8.5l2 2"/></symbol>
-  <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 6h12M8.5 12h12M8.5 18h12"/><circle cx="3.8" cy="6" r=".9" fill="currentColor" stroke="none"/><circle cx="3.8" cy="12" r=".9" fill="currentColor" stroke="none"/><circle cx="3.8" cy="18" r=".9" fill="currentColor" stroke="none"/></symbol>
-  <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.9 3 2.9 15 0 18M12 3c-2.9 3-2.9 15 0 18"/></symbol>
-  <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
-  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M4 12h16"/></symbol>
-  <symbol id="i-asterisk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
+  <symbol id="i-zoom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M11 8v6M8 11h6"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.5 4.5L19 7"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-split" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M6.5 8.5h3M6.5 12h2.5M14.5 8.5h3M14.5 12h3"/></symbol>
+  <symbol id="i-pdf" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.5h8l4 4v15H6a1.5 1.5 0 0 1-1.5-1.5V4A1.5 1.5 0 0 1 6 2.5Z"/><path d="M14 2.5v4.5h4.5M8.5 12.5h7M8.5 16h4.5"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 4.5-9 4.5-9-4.5L12 3Z"/><path d="m3 12 9 4.5 9-4.5M3 16.5 12 21l9-4.5"/></symbol>
+  <symbol id="i-figure" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="6" rx="1.2"/><rect x="14" y="4" width="7" height="6" rx="1.2"/><rect x="8.5" y="14" width="7" height="6" rx="1.2"/><path d="M10 7h4M12 10v4"/></symbol>
+  <symbol id="i-wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.2 5.2L3 18l3 3 6.5-6.5a4 4 0 0 0 5.2-5.2l-2.3 2.3-2.4-.3-.3-2.4 2-2.6Z"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.3-9.3M17 6l2.5 2.5M14.5 8.5 17 11"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7" r="1" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r="1" fill="currentColor" stroke="none"/></symbol>
 </svg>
 
 <header class="site-header" id="site-header">
-  <div class="wrap nav">
+  <div class="container nav-bar">
     <a class="brand" href="#top" aria-label="BiWrite">
       <svg class="brand-mark" aria-hidden="true"><use href="#i-mark"/></svg>
       <span class="brand-name">BiWrite</span>
+      <span class="version-pill" data-release-version>v0.2.31</span>
     </a>
-    <nav class="nav-links" aria-label="Primary / 主导航">
-      <a href="#bilingual"><span class="lang-en">Bilingual</span><span class="lang-zh">双语编辑</span></a>
-      <a href="#latex"><span class="lang-en">LaTeX</span><span class="lang-zh">LaTeX</span></a>
-      <a href="#assistant"><span class="lang-en">Assistant</span><span class="lang-zh">写作助手</span></a>
-      <a href="#method"><span class="lang-en">The method</span><span class="lang-zh">方法</span></a>
+
+    <nav class="nav-links" aria-label="主导航 / Primary">
+      <a href="#why"><span class="lang-zh">核心优势</span><span class="lang-en">Why BiWrite</span></a>
+      <a href="#latex"><span class="lang-zh">LaTeX 工作台</span><span class="lang-en">LaTeX &amp; PDF</span></a>
+      <a href="#assistant"><span class="lang-zh">写作与绘图助手</span><span class="lang-en">Assistant</span></a>
+      <a href="#engineering"><span class="lang-zh">号池与工程</span><span class="lang-en">Key Pool &amp; Logs</span></a>
+      <a href="#faq"><span class="lang-zh">常见问题</span><span class="lang-en">FAQ</span></a>
     </nav>
+
     <div class="nav-actions">
-      <div class="lang-switch" role="group" aria-label="Language / 语言">
-        <button type="button" data-set-lang="en" aria-pressed="true" title="English">EN</button>
-        <button type="button" data-set-lang="zh" aria-pressed="false" title="中文">中</button>
+      <a class="nav-doc-link" data-manual-link href="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-zh.pdf" data-href-zh="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-zh.pdf" data-href-en="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-en.pdf" target="_blank" rel="noopener noreferrer">
+        <span class="lang-zh">使用说明 PDF</span><span class="lang-en">Manual PDF</span>
+      </a>
+      <div class="lang-switch" role="group" aria-label="语言切换 / Language">
+        <button type="button" data-set-lang="zh" aria-pressed="true">中文</button>
+        <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
       </div>
-      <a class="nav-github" href="https://github.com/zzccppp/biwrite" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository">
+      <a class="icon-link" href="https://github.com/zzccppp/biwrite" target="_blank" rel="noopener noreferrer" aria-label="GitHub Repository" title="GitHub">
         <svg aria-hidden="true"><use href="#i-github"/></svg>
       </a>
-      <a class="btn btn-small btn-primary" href="#download">
-        <span class="lang-en">Download</span><span class="lang-zh">下载</span>
+      <a class="btn btn-primary btn-sm" href="#download">
+        <span class="lang-zh">免费下载</span><span class="lang-en">Download</span>
       </a>
     </div>
   </div>
 </header>
 
 <main id="main" tabindex="-1">
+  <!-- HERO & INTERACTIVE WORKSPACE SHOWCASE -->
   <section class="hero" id="top">
-    <div class="wrap">
-      <div class="hero-meta">
-        <p class="kicker">
-          <span class="lang-en">Bilingual academic writing · desktop</span>
-          <span class="lang-zh">中英双语论文写作 · 桌面编辑器</span>
-        </p>
-        <p class="hero-meta-right">
-          <span class="lang-en">macOS 12+ · Windows 10/11 · v0.2.25</span>
-          <span class="lang-zh">macOS 12+ · Windows 10/11 · 版本 0.2.25</span>
-        </p>
-      </div>
-
-      <div class="hero-title-block">
-        <h1 class="hero-title lang-en">One draft.<br><span class="accent">Two languages.</span></h1>
-        <p class="hero-gloss lang-en" lang="zh-CN"><span class="gloss-rule" aria-hidden="true"></span>一篇稿子，两种语言。</p>
-        <h1 class="hero-title hero-title-zh lang-zh" lang="zh-CN">一篇稿子<br><span class="accent">两种语言。</span></h1>
-        <p class="hero-gloss lang-zh" lang="en"><span class="gloss-rule" aria-hidden="true"></span><em>One draft. Two languages.</em></p>
-      </div>
-
-      <div class="hero-bottom">
-        <div class="hero-intro">
-          <p class="hero-dek lang-en">Write an academic paper in English and Chinese at once. Type on one side; the other keeps up paragraph by paragraph. LaTeX compiles beside the source, and the writing assistant follows the rules of <a class="inline-link" href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a>.</p>
-          <p class="hero-dek lang-zh">在一个窗口里同时写中英文论文。在一侧写作，另一侧逐段跟上。LaTeX 在源码旁编译，写作助手遵循 <a class="inline-link" href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a> 的规则。</p>
+    <div class="container">
+      <div class="hero-header">
+        <div class="eyebrow-row">
+          <span class="eyebrow-badge">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span class="lang-zh">MIT 开源桌面软件 · macOS 12+ &amp; Windows 10/11 · Rust + Tauri 原生构建</span>
+            <span class="lang-en">MIT Open-Source Desktop App · macOS 12+ &amp; Windows 10/11 · Built with Rust &amp; Tauri</span>
+          </span>
         </div>
-        <div class="hero-cta">
-          <div class="cta-row">
-            <a class="btn btn-primary btn-large" href="#download">
-              <svg class="btn-icon" aria-hidden="true"><use href="#i-download"/></svg>
-              <span class="lang-en">Download BiWrite</span><span class="lang-zh">下载 BiWrite</span>
-            </a>
-            <a class="btn btn-ghost btn-large" href="#bilingual">
-              <span class="lang-en">See what it does</span><span class="lang-zh">看看它能做什么</span>
-              <svg class="btn-icon" aria-hidden="true"><use href="#i-arrow"/></svg>
-            </a>
+
+        <h1 class="hero-title">
+          <span class="lang-zh">专注学术论文的<span class="text-primary">中英双语</span>桌面编辑器</span>
+          <span class="lang-en">Bilingual Desktop Editor for <span class="text-primary">Academic Papers</span></span>
+        </h1>
+
+        <p class="hero-lead">
+          <span class="lang-zh">左侧编写 LaTeX 或 Markdown，右侧逐段实时对照译文——<strong>只增量修订改过的段落</strong>，数学公式与 <code>\cite</code> 引用逐字节无损还原。内置不污染原稿的本地 TeX 编译、PDF 句子级双向定位，以及遵循 <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a> 学术规范的去 AI 腔润色与绘图助手。</span>
+          <span class="lang-en">Write LaTeX or Markdown on the left with live paragraph-level translation on the right — <strong>revising only edited paragraphs</strong> while restoring math formulas and <code>\cite</code> keys byte for byte. Built-in local TeX compilation, SyncTeX click-to-source, and a <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a> academic writing and diagram assistant.</span>
+        </p>
+
+        <div class="hero-cta-group">
+          <a class="btn btn-primary btn-lg" href="#download">
+            <svg class="btn-icon" aria-hidden="true"><use href="#i-download"/></svg>
+            <span class="lang-zh">下载桌面客户端 (<span data-release-version>v0.2.31</span>)</span>
+            <span class="lang-en">Download for Desktop (<span data-release-version>v0.2.31</span>)</span>
+          </a>
+          <a class="btn btn-secondary btn-lg" data-manual-link href="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-zh.pdf" data-href-zh="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-zh.pdf" data-href-en="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-en.pdf" target="_blank" rel="noopener noreferrer">
+            <svg class="btn-icon" aria-hidden="true"><use href="#i-book"/></svg>
+            <span class="lang-zh">阅读图文说明书 (PDF)</span>
+            <span class="lang-en">Illustrated User Guide (PDF)</span>
+          </a>
+          <a class="btn btn-ghost btn-lg" href="https://github.com/zzccppp/biwrite" target="_blank" rel="noopener noreferrer">
+            <svg class="btn-icon" aria-hidden="true"><use href="#i-github"/></svg>
+            <span>GitHub</span>
+          </a>
+        </div>
+
+        <div class="hero-highlights" aria-label="核心特性摘要 / Key highlights">
+          <div class="highlight-item">
+            <svg aria-hidden="true"><use href="#i-check"/></svg>
+            <span class="lang-zh"><strong>逐段增量重译</strong> · 未改段落零请求</span>
+            <span class="lang-en"><strong>Incremental sync</strong> · Only edited paragraphs re-translate</span>
           </div>
-          <p class="cta-note lang-en">Free download · no account · bring your own model</p>
-          <p class="cta-note lang-zh">免费下载 · 无需账号 · 使用你自己的模型接口</p>
+          <div class="highlight-item">
+            <svg aria-hidden="true"><use href="#i-check"/></svg>
+            <span class="lang-zh"><strong>公式与引用零损坏</strong> · 占位符逐字节还原</span>
+            <span class="lang-en"><strong>Formula &amp; cite safe</strong> · Byte-exact placeholder restore</span>
+          </div>
+          <div class="highlight-item">
+            <svg aria-hidden="true"><use href="#i-check"/></svg>
+            <span class="lang-zh"><strong>已有中文稿直连</strong> · <code>paper_zh.tex</code> 原位互写</span>
+            <span class="lang-en"><strong>Pair existing Chinese</strong> · In-place <code>paper_zh.tex</code> sync</span>
+          </div>
+          <div class="highlight-item">
+            <svg aria-hidden="true"><use href="#i-check"/></svg>
+            <span class="lang-zh"><strong>自带接口 · 本地存储</strong> · 多 Key 号池与验真日志</span>
+            <span class="lang-en"><strong>BYOK &amp; 100% local</strong> · Multi-key pool &amp; verified logs</span>
+          </div>
         </div>
       </div>
 
-      <figure class="hero-figure reveal">
-        <button class="plate plate-button" type="button" data-lightbox data-full-en="assets/screens/editor-en-1700.webp" data-full-zh="assets/screens/editor-zh-1700.webp" data-cap-en="The editor: paper.tex on the left, its Chinese in the translation pane. Only paragraph 8 was edited, so only paragraph 8 was translated again." data-cap-zh="编辑器：左侧是 paper.tex，右侧译文栏是它的中文。只有第 8 段被改过，所以只有第 8 段重新翻译。" data-aria-en="View the editor screenshot at full size" data-aria-zh="查看编辑器截图原图">
-          <img id="hero-shot" src="assets/screens/editor-en-1700.webp"
-               srcset="assets/screens/editor-en-900.webp 900w, assets/screens/editor-en-1700.webp 1700w"
-               sizes="(max-width: 760px) calc(100vw - 40px), min(1220px, 100vw - 80px)"
-               data-src-en="assets/screens/editor-en-1700.webp" data-src-zh="assets/screens/editor-zh-1700.webp"
-               data-srcset-en="assets/screens/editor-en-900.webp 900w, assets/screens/editor-en-1700.webp 1700w"
-               data-srcset-zh="assets/screens/editor-zh-900.webp 900w, assets/screens/editor-zh-1700.webp 1700w"
-               data-alt-en="BiWrite editor with an English LaTeX paper on the left and its Chinese translation on the right"
-               data-alt-zh="BiWrite 编辑器：左侧是英文 LaTeX 论文，右侧是对照中文"
-               width="1700" height="1062" alt="BiWrite editor with an English LaTeX paper on the left and its Chinese translation on the right" fetchpriority="high" decoding="async">
-          <span class="plate-expand" aria-hidden="true"><svg><use href="#i-plus"/></svg></span>
-        </button>
-        <figcaption>
-          <span class="fig-no"><span class="lang-en">Fig. 1</span><span class="lang-zh">图 1</span></span>
-          <span class="lang-en">The editor window. English on the left, Chinese on the right; only the paragraph you edited is translated again. <button class="cap-button" type="button" data-lightbox data-full-en="assets/screens/editor-en-1700.webp" data-full-zh="assets/screens/editor-zh-1700.webp" data-cap-en="The editor: paper.tex on the left, its Chinese in the translation pane." data-cap-zh="编辑器：左侧是 paper.tex，右侧译文栏是它的中文。">Open full size</button></span>
-          <span class="lang-zh">编辑器窗口。左侧英文，右侧中文；只有你改过的段落会重新翻译。<button class="cap-button" type="button" data-lightbox data-full-en="assets/screens/editor-en-1700.webp" data-full-zh="assets/screens/editor-zh-1700.webp" data-cap-en="The editor: paper.tex on the left, its Chinese in the translation pane." data-cap-zh="编辑器：左侧是 paper.tex，右侧译文栏是它的中文。">查看原图</button></span>
-        </figcaption>
-      </figure>
+      <!-- INTERACTIVE 4-TAB WORKSPACE SHOWCASE -->
+      <div class="showcase" id="workspace">
+        <div class="showcase-tabs" role="tablist" aria-label="软件界面预览 / Workspace views">
+          <button type="button" class="showcase-tab is-active" role="tab" aria-selected="true" aria-controls="showcase-panel" id="tab-editor" data-tab="editor">
+            <span class="tab-num">01</span>
+            <span class="tab-label">
+              <strong class="lang-zh">双语逐段对照</strong>
+              <strong class="lang-en">Incremental Bilingual Edit</strong>
+              <small class="lang-zh">改哪段译哪段，公式无损</small>
+              <small class="lang-en">Paragraph sync, intact math</small>
+            </span>
+          </button>
+          <button type="button" class="showcase-tab" role="tab" aria-selected="false" aria-controls="showcase-panel" id="tab-pdf" data-tab="pdf">
+            <span class="tab-num">02</span>
+            <span class="tab-label">
+              <strong class="lang-zh">本地编译与点击定位</strong>
+              <strong class="lang-en">Local TeX &amp; Click-to-Source</strong>
+              <small class="lang-zh">不保存编译，点 PDF 选源码</small>
+              <small class="lang-en">Unsaved build &amp; SyncTeX</small>
+            </span>
+          </button>
+          <button type="button" class="showcase-tab" role="tab" aria-selected="false" aria-controls="showcase-panel" id="tab-assistant" data-tab="assistant">
+            <span class="tab-num">03</span>
+            <span class="tab-label">
+              <strong class="lang-zh">学术规范写作助手</strong>
+              <strong class="lang-en">Rule-Based Assistant</strong>
+              <small class="lang-zh">去 AI 腔润色、画图、试编采纳</small>
+              <small class="lang-en">De-AI polish, figures &amp; test-build</small>
+            </span>
+          </button>
+          <button type="button" class="showcase-tab" role="tab" aria-selected="false" aria-controls="showcase-panel" id="tab-pair" data-tab="pair">
+            <span class="tab-num">04</span>
+            <span class="tab-label">
+              <strong class="lang-zh">双文件配对与按译文改</strong>
+              <strong class="lang-en">File Pairing &amp; Edit via Zh</strong>
+              <small class="lang-zh">直连 paper_zh.tex，改中文同步英文</small>
+              <small class="lang-en">Sync paper_zh.tex &amp; reverse-edit</small>
+            </span>
+          </button>
+        </div>
+
+        <div class="showcase-frame" id="showcase-panel" role="tabpanel" aria-labelledby="tab-editor">
+          <div class="window-bar">
+            <div class="window-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+            <div class="window-title" id="showcase-filename">paper.tex — BiWrite</div>
+            <button type="button" class="window-zoom-btn" id="showcase-zoom-btn" data-lightbox-current>
+              <svg aria-hidden="true"><use href="#i-zoom"/></svg>
+              <span class="lang-zh">查看高清原图</span><span class="lang-en">Full resolution</span>
+            </button>
+          </div>
+
+          <button type="button" class="showcase-screen-btn" data-lightbox-current aria-label="点击放大查看截图 / Click to enlarge screenshot">
+            <img id="showcase-img"
+                 src="assets/screens/editor-zh-1700.webp"
+                 srcset="assets/screens/editor-zh-900.webp 900w, assets/screens/editor-zh-1700.webp 1700w"
+                 sizes="(max-width: 768px) calc(100vw - 32px), min(1120px, calc(100vw - 64px))"
+                 width="1700" height="1062"
+                 alt="BiWrite 编辑器界面：左侧编写英文 LaTeX 源码，右侧逐段实时显示中文译文"
+                 fetchpriority="high" decoding="async">
+          </button>
+
+          <div class="showcase-caption">
+            <p id="showcase-desc-zh" class="lang-zh">
+              <strong>双语逐段对照：</strong>左侧编写 <code>paper.tex</code>，右侧按段落一一对应显示中文。图中仅第 8 段被修改，因此只有第 8 段基于原译文增量修订，其余段落直接命中缓存跳过（底部状态栏实时统计已翻译与跳过段数、请求耗时及缓存命中）。
+            </p>
+            <p id="showcase-desc-en" class="lang-en">
+              <strong>Incremental Bilingual Editing:</strong> Edit <code>paper.tex</code> on the left while aligned translations appear block by block on the right. Only paragraph 8 was modified, so only paragraph 8 is revised from its prior translation while unchanged blocks stay untouched.
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 
-  <section class="premise" aria-label="Why BiWrite / 为什么选择 BiWrite">
-    <div class="wrap">
-      <h2 class="sr-only"><span class="lang-en">Why write in two languages</span><span class="lang-zh">为什么用两种语言写作</span></h2>
-      <div class="premise-grid">
-        <p class="kicker">
-          <span class="lang-en">The premise</span>
-          <span class="lang-zh">出发点</span>
+  <!-- SECTION 1: WHY BIWRITE / PAIN POINT COMPARISON -->
+  <section class="section section-alt" id="why">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag"><span class="lang-zh">为什么选择 BiWrite</span><span class="lang-en">Why BiWrite</span></span>
+        <h2 class="section-title">
+          <span class="lang-zh">告别「编辑器 + 翻译网页」来回复制的割裂工作流</span>
+          <span class="lang-en">Stop Copy-Pasting Between Your TeX Editor and Chat Tabs</span>
+        </h2>
+        <p class="section-desc">
+          <span class="lang-zh">写英文顶会或维护中英双版本论文时，传统机翻与侧栏聊天工具往往破坏 LaTeX 语法、覆盖手工修辞、浪费大量 Token。BiWrite 从底层数据结构针对学术稿件重新设计：</span>
+          <span class="lang-en">Generic translators and chat sidebars break LaTeX macros, overwrite manual phrasing, and re-translate entire files from scratch. BiWrite solves academic bilingual editing at the structural level:</span>
         </p>
-        <div class="premise-body">
-          <p class="premise-quote lang-en">A translation is not an attachment you bolt on <span class="nowrap">at the end.</span> It is the second reading of your paper — <em>the one many of your readers will actually use.</em></p>
-          <p class="premise-quote lang-zh">译文不是最后才补上的附件，<br>而是论文的第二种读法——<br><em>读者真正会去读的那一种。</em></p>
-          <p class="premise-attrib lang-en">BiWrite keeps both readings alive while you write.</p>
-          <p class="premise-attrib lang-zh">BiWrite 让两种语言在你写作的时候同时成立。</p>
-        </div>
-      </div>
-      <ol class="steps">
-        <li>
-          <span class="step-no">01</span>
-          <p class="step-title lang-en">Open a paper</p><p class="step-title lang-zh">打开论文</p>
-          <p class="lang-en">A <code>.tex</code>, <code>.md</code> or <code>.txt</code> file. If you already keep a Chinese version, pair it and BiWrite uses it.</p>
-          <p class="lang-zh">支持 <code>.tex</code>、<code>.md</code>、<code>.txt</code>。已经有中文版就配对进来，BiWrite 直接使用你的译文。</p>
-        </li>
-        <li>
-          <span class="step-no">02</span>
-          <p class="step-title lang-en">Write once</p><p class="step-title lang-zh">只写一遍</p>
-          <p class="lang-en">One side is yours to edit. The other follows paragraph by paragraph, revising only what changed.</p>
-          <p class="lang-zh">一侧由你编辑，另一侧逐段跟随；只修订改动过的段落，其余一字不动。</p>
-        </li>
-        <li>
-          <span class="step-no">03</span>
-          <p class="step-title lang-en">Finish in both</p><p class="step-title lang-zh">双语定稿</p>
-          <p class="lang-en">Compile the PDF beside you, polish with rules, and export the Chinese version when you need it.</p>
-          <p class="lang-zh">PDF 在旁边编译，按规则润色，需要时导出中文版本。</p>
-        </li>
-      </ol>
-    </div>
-  </section>
-
-  <section class="section" id="bilingual">
-    <div class="wrap">
-      <div class="section-head reveal">
-        <p class="section-no">01</p>
-        <div class="section-heading">
-          <p class="kicker"><span class="lang-en">Bilingual editing</span><span class="lang-zh">双语编辑</span></p>
-          <h2 class="lang-en">The other language keeps up with you.</h2>
-          <h2 class="lang-zh">另一种语言，<br>跟着你的笔走。</h2>
-        </div>
       </div>
 
-      <div class="feature-grid">
-        <div class="feature-copy reveal">
-          <p class="lead lang-en">English on the left, Chinese on the right — or the other way round. Stop typing for a moment and the paragraph you changed is translated again, revised from its previous translation. Nothing else is touched.</p>
-          <p class="lead lang-zh">左侧英文，右侧中文，也可以反过来。停下打字，改过的段落就会以原译文为基础重新修订；其余段落，一字不动。</p>
+      <div class="compare-grid">
+        <div class="compare-list">
+          <article class="compare-item">
+            <div class="compare-bad">
+              <span class="badge-old"><span class="lang-zh">传统痛点</span><span class="lang-en">Typical Pain</span></span>
+              <p class="lang-zh">改一个词就要把整段甚至整节重新丢给大模型翻译，不仅慢、费 Token，还把之前斟酌好的译文措辞全部冲掉。</p>
+              <p class="lang-en">Changing three words forces re-translating the whole section, burning tokens and wiping out phrasing you already refined.</p>
+            </div>
+            <div class="compare-good">
+              <span class="badge-new">BiWrite</span>
+              <h3 class="lang-zh">基于旧译文的「段落级增量修订」</h3>
+              <h3 class="lang-en">Paragraph-Level Incremental Revision</h3>
+              <p class="lang-zh">停笔后自动识别变更段落，<strong>只重译改过的那一段</strong>，且将旧译文一并交给模型做最小幅度修订；其余未改段落一字不动。</p>
+              <p class="lang-en">Detects dirty paragraphs after a brief pause and revises <strong>only the changed block</strong> against its previous translation, leaving every other paragraph untouched.</p>
+            </div>
+          </article>
 
-          <ul class="points">
-            <li>
-              <span class="point-mark" aria-hidden="true">¶</span>
-              <div>
-                <p class="lang-en"><strong>Only edited paragraphs.</strong> A changed paragraph is revised from its old translation, not translated from scratch, and the result streams in.</p>
-                <p class="lang-zh"><strong>只重译改过的段落。</strong>以原译文为基础修订，而不是推倒重来；结果以流式返回。</p>
-              </div>
-            </li>
-            <li>
-              <span class="point-mark" aria-hidden="true">⟦⟧</span>
-              <div>
-                <p class="lang-en"><strong>Placeholders, both ways.</strong> Math, citations, cross-references, labels, URLs and comments reach the model as placeholders and return byte for byte.</p>
-                <p class="lang-zh"><strong>占位符来回无损。</strong>公式、引用、交叉引用、标签、网址和注释以占位符发给模型，返回后逐字节还原。</p>
-              </div>
-            </li>
-            <li>
-              <span class="point-mark" aria-hidden="true">↔</span>
-              <div>
-                <p class="lang-en"><strong>Switch or pair.</strong> <code>EN ↔ 中</code> puts Chinese on the left to edit. Pair <code>paper.tex</code> with <code>paper_zh.tex</code> and your own Chinese is used — with no translation requests.</p>
-                <p class="lang-zh"><strong>换边或配对。</strong>用 <code>EN ↔ 中</code> 把中文放到左侧编辑。把 <code>paper.tex</code> 与 <code>paper_zh.tex</code> 配对，你的中文直接作为译文——不产生翻译请求。</p>
-              </div>
-            </li>
-          </ul>
+          <article class="compare-item">
+            <div class="compare-bad">
+              <span class="badge-old"><span class="lang-zh">传统痛点</span><span class="lang-en">Typical Pain</span></span>
+              <p class="lang-zh">翻译或润色后，大模型经常擅自改写 <code>\cite{}</code> 键值、漏掉 <code>$...$</code> 闭合符号或破坏 <code>\label</code> 交叉引用，导致编译报错。</p>
+              <p class="lang-en">LLMs silently alter <code>\cite{}</code> keys, drop math delimiters, or mangle <code>\ref</code> labels, breaking TeX builds.</p>
+            </div>
+            <div class="compare-good">
+              <span class="badge-new">BiWrite</span>
+              <h3 class="lang-zh">公式、引用与宏命令「占位符逐字节还原」</h3>
+              <h3 class="lang-en">Byte-for-Byte Placeholder Protection</h3>
+              <p class="lang-zh">请求发出前，数学公式、<code>\cite</code>、<code>\ref</code>、<code>\label</code>、网址与注释全部抽离为紧凑占位符，收到结果后逐字节精准还原，模型根本没机会改坏语法。</p>
+              <p class="lang-en">Math expressions, citations, references, labels, URLs, and comments are masked as placeholders before leaving your machine and restored byte-for-byte on return.</p>
+            </div>
+          </article>
+
+          <article class="compare-item">
+            <div class="compare-bad">
+              <span class="badge-old"><span class="lang-zh">传统痛点</span><span class="lang-en">Typical Pain</span></span>
+              <p class="lang-zh">同时维护英文投稿版 <code>paper.tex</code> 与中文学位论文/报告版 <code>paper_zh.tex</code> 时，两边手工同步极易漏改错位。</p>
+              <p class="lang-en">Maintaining parallel <code>paper.tex</code> and <code>paper_zh.tex</code> files by hand quickly drifts out of sync during deadline revisions.</p>
+            </div>
+            <div class="compare-good">
+              <span class="badge-new">BiWrite</span>
+              <h3 class="lang-zh">已有中文稿智能配对，零请求原位回写</h3>
+              <h3 class="lang-en">Zero-Request Pairing with Existing Chinese Files</h3>
+              <p class="lang-zh">自动识别并对齐 <code>paper_zh.tex</code> 或 <code>sections_zh/</code>（按引用键、公式、标签与数字匹配，图表位置不同也能对上）。直接复用你现成的中文，保存时只原位替换改动段落，其余字节不变。</p>
+              <p class="lang-en">Automatically aligns <code>paper_zh.tex</code> or <code>sections_zh/</code> by citations, math, labels, and numbers — zero API calls on load, and saving updates only modified paragraphs in place.</p>
+            </div>
+          </article>
+
+          <article class="compare-item">
+            <div class="compare-bad">
+              <span class="badge-old"><span class="lang-zh">传统痛点</span><span class="lang-en">Typical Pain</span></span>
+              <p class="lang-zh">写英文长难句卡壳，心里清楚中文逻辑怎么讲，却很难让模型只按中文意思微调英文而不大改整段结构。</p>
+              <p class="lang-en">When an English sentence feels clunky, you know what you mean in Chinese, but asking a chatbot rewrites your whole paragraph.</p>
+            </div>
+            <div class="compare-good">
+              <span class="badge-new">BiWrite</span>
+              <h3 class="lang-zh">双向自由换边（<code>EN ⇄ 中</code>）与单段「按译文改」</h3>
+              <h3 class="lang-en">Instant <code>EN ⇄ 中</code> Swap &amp; Edit-via-Translation</h3>
+              <p class="lang-zh">既可一键把中文切到左侧主写（提前切换时未译完段落后台译好自动填回），也可点任意段落的铅笔图标直接改写中文，让英文以最小编辑幅度同步语义。</p>
+              <p class="lang-en">Swap Chinese into the left editor at any time, or click the pencil icon on any single paragraph to edit its Chinese and let the English follow with minimal changes.</p>
+            </div>
+          </article>
         </div>
 
-        <div class="feature-visual reveal">
-          <figure class="demo-figure">
-            <div class="spread" role="group" aria-label="Paragraph pairing demo / 段落配对演示">
-              <div class="spread-top">
-                <span class="spread-file"><span class="tab-dot" aria-hidden="true"></span>paper.tex</span>
-                <span class="spread-dir" aria-hidden="true">EN <span>↔</span> 中</span>
-                <span class="spread-status"><span class="live-dot" aria-hidden="true"></span><span class="lang-en">15 translated · 6 skipped</span><span class="lang-zh">已翻译 15 · 跳过 6</span></span>
-              </div>
-              <div class="spread-body">
-                <div class="pane" lang="en">
-                  <div class="pane-head"><span class="lang-en">English</span><span class="lang-zh">English</span><span class="pane-file">paper.tex</span></div>
-                  <div class="para" data-pair="p7">
-                    <span class="para-no">7</span>
-                    <p>Graph neural networks (GNNs) are the standard tool for learning on relational data [kipf2017gcn]. Their success rests on task-specific training.</p>
-                  </div>
-                  <div class="para is-edited" data-pair="p8">
-                    <span class="para-no">8</span>
-                    <p>We answer this question affirmatively. Our contributions are threefold. First, we formalize in-context learning for graphs. Second, we propose a prompt graph construction that connects query nodes to labelled example nodes.</p>
-                  </div>
-                  <div class="para" data-pair="p9">
-                    <span class="para-no">9</span>
-                    <p><code>\section{Method}</code> Let $X \in \mathbb{R}^{n \times d}$ denote node features and $A$ the adjacency matrix.</p>
-                  </div>
-                </div>
-                <div class="pane pane-zh" lang="zh-CN">
-                  <div class="pane-head"><span lang="zh-CN">中文</span><span class="pane-file">译文</span></div>
-                  <div class="para" data-pair="p7">
-                    <span class="para-no">7</span>
-                    <p>图神经网络（GNN）是用于关系数据学习的标准工具 [kipf2017gcn]。其成功依赖于针对特定任务的训练。</p>
-                  </div>
-                  <div class="para is-edited" data-pair="p8">
-                    <span class="para-no">8</span>
-                    <p>我们对这一问题给出了肯定的回答。我们的贡献有三个方面。首先，我们对图上的上下文学习进行了形式化定义。其次，我们提出了一种提示图构建方法，将查询节点与带标签的示例节点连接起来。</p>
-                  </div>
-                  <div class="para" data-pair="p9">
-                    <span class="para-no">9</span>
-                    <p><code>\section{方法}</code> 令 $X \in \mathbb{R}^{n \times d}$ 表示节点特征，$A$ 表示邻接矩阵。</p>
-                  </div>
-                </div>
-              </div>
-              <div class="spread-foot">
-                <span class="lang-en"><strong>¶ 8</strong> edited · revised from previous translation</span>
-                <span class="lang-zh"><strong>¶ 8</strong> 有改动 · 在原译文基础上修订</span>
-                <span class="spread-cost lang-en">1 request · 2.4 s</span>
-                <span class="spread-cost lang-zh">1 次请求 · 2.4 秒</span>
-              </div>
+        <!-- CONCRETE TECHNICAL PIPELINE CARD -->
+        <aside class="pipeline-card" aria-label="无损占位与双文件配对原理 / Placeholder & pairing mechanics">
+          <div class="pipeline-block">
+            <p class="pipeline-kicker"><span class="lang-zh">机制透视 01 · 占位符往返保护</span><span class="lang-en">Mechanism 01 · Lossless Placeholders</span></p>
+            <h4><span class="lang-zh">模型只碰自然语言，绝不触碰公式与引用键</span><span class="lang-en">Models Touch Prose, Never Your TeX Tokens</span></h4>
+
+            <div class="code-stage">
+              <span class="stage-label"><span class="lang-zh">1. 编辑器源码</span><span class="lang-en">1. Source paragraph</span></span>
+              <pre><code>We study node classification on <span class="tok-keep">$G=(V,E)$</span> following <span class="tok-keep">\cite{kipf2017gcn}</span> (Section~<span class="tok-keep">\ref{sec:exp}</span>).</code></pre>
             </div>
 
-            <div class="placeholder-card">
-              <p class="ph-kicker"><span class="lang-en">Placeholders, both ways</span><span class="lang-zh">占位符，一来一回</span></p>
-              <div class="ph-row">
-                <span class="ph-label">sent</span>
-                <p>… formalize in-context learning for <mark>⟦1⟧</mark>. … match the baseline on <mark>⟦2⟧</mark>.</p>
-              </div>
-              <div class="ph-row">
-                <span class="ph-label">back</span>
-                <p><mark>⟦1⟧</mark> <code>$G = (V, E)$</code> &nbsp; <mark>⟦2⟧</mark> <code>\cite{kfp2017gcn}</code></p>
-              </div>
-              <p class="ph-note lang-en">Restored byte for byte. The model never rewrites your formulas or citation keys.</p>
-              <p class="ph-note lang-zh">逐字节还原。模型不会改写你的公式或引用键。</p>
+            <div class="code-stage">
+              <span class="stage-label"><span class="lang-zh">2. 实际发往模型</span><span class="lang-en">2. Sent to model</span></span>
+              <pre><code>We study node classification on <span class="tok-ph">⟦1⟧</span> following <span class="tok-ph">⟦2⟧</span> (Section~<span class="tok-ph">⟦3⟧</span>).</code></pre>
             </div>
 
-            <figcaption>
-              <span class="fig-no"><span class="lang-en">Fig. 2</span><span class="lang-zh">图 2</span></span>
-              <span class="lang-en">Paragraphs are paired, not pages. Point at any paragraph to find its counterpart; the highlighted ¶ 8 is the only one that changed.</span>
-              <span class="lang-zh">配对的是段落，不是页面。指到任意一段，都会亮起另一侧的自己；高亮的第 8 段是唯一改动过的段落。</span>
-            </figcaption>
-          </figure>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="section section-alt" id="latex">
-    <div class="wrap">
-      <div class="section-head reveal">
-        <p class="section-no">02</p>
-        <div class="section-heading">
-          <p class="kicker"><span class="lang-en">LaTeX, in place</span><span class="lang-zh">LaTeX，原地编译</span></p>
-          <h2 class="lang-en">The PDF sits beside the source.</h2>
-          <h2 class="lang-zh">PDF 就在<br>稿纸旁边。</h2>
-        </div>
-      </div>
-
-      <div class="feature-grid feature-grid-flip">
-        <div class="feature-copy reveal">
-          <p class="lead lang-en">Compile with your own TeX distribution. Unsaved edits compile in a hidden cache, so the file on disk stays exactly as you last saved it. Click a sentence in the PDF and its source is selected.</p>
-          <p class="lead lang-zh">用你本机的 TeX 发行版编译。未保存的修改在缓存里编译，磁盘上的 <code>.tex</code> 保持你上次保存的样子。点 PDF 里的句子，源码中的那一句随即被选中。</p>
-
-          <ul class="points">
-            <li>
-              <span class="point-mark" aria-hidden="true">⌘B</span>
-              <div>
-                <p class="lang-en"><strong>Unsaved, still compiled.</strong> Edits are written to a <code>.biwrite/</code> cache folder; your paper on disk does not move.</p>
-                <p class="lang-zh"><strong>不保存也能编译。</strong>修改写入 <code>.biwrite/</code> 缓存文件夹，磁盘上的论文保持原样。</p>
-              </div>
-            </li>
-            <li>
-              <span class="point-mark" aria-hidden="true">↵</span>
-              <div>
-                <p class="lang-en"><strong>Click to source.</strong> A click on a PDF sentence selects it in the source through SyncTeX. <code>⌘⌥J</code> finds the cursor's paragraph in the PDF.</p>
-                <p class="lang-zh"><strong>点 PDF，回到源码。</strong>由 SyncTeX 定位到对应句子；<code>⌘⌥J</code> 在 PDF 中高亮光标所在的段落。</p>
-              </div>
-            </li>
-            <li>
-              <span class="point-mark" aria-hidden="true">中</span>
-              <div>
-                <p class="lang-en"><strong>A Chinese PDF too.</strong> XeLaTeX and <code>ctex</code> build a PDF from the translation; the Chinese <code>.tex</code> can be exported on its own.</p>
-                <p class="lang-zh"><strong>还有中文 PDF。</strong>用 XeLaTeX 和 <code>ctex</code> 由译文编译，也可以单独导出中文 <code>.tex</code>。</p>
-              </div>
-            </li>
-            <li>
-              <span class="point-mark" aria-hidden="true">TeX</span>
-              <div>
-                <p class="lang-en"><strong>Any engine, real templates.</strong> latexmk, pdfLaTeX, XeLaTeX or LuaLaTeX. PVLDB 2027, ICLR 2027 and IEEE TII are built in.</p>
-                <p class="lang-zh"><strong>各种引擎，真实模板。</strong>latexmk、pdfLaTeX、XeLaTeX、LuaLaTeX。内置 PVLDB 2027、ICLR 2027 和 IEEE TII。</p>
-              </div>
-            </li>
-          </ul>
-        </div>
-
-        <div class="feature-visual reveal">
-          <figure class="shot">
-            <button class="plate plate-button" type="button" data-lightbox data-full-en="assets/screens/pdf-en-1700.webp" data-full-zh="assets/screens/pdf-zh-1700.webp" data-cap-en="A click on a sentence in the PDF selects it in the source. Compile errors and warnings link to their lines." data-cap-zh="点 PDF 中的句子，源码中对应的句子被选中；编译错误和警告跳到对应行。" data-aria-en="View the PDF screenshot at full size" data-aria-zh="查看 PDF 截图原图">
-              <img src="assets/screens/pdf-en-1700.webp"
-                   srcset="assets/screens/pdf-en-900.webp 900w, assets/screens/pdf-en-1700.webp 1700w"
-                   sizes="(max-width: 760px) calc(100vw - 40px), (max-width: 1000px) calc(100vw - 96px), (max-width: 1080px) 46vw, 610px"
-                   data-src-en="assets/screens/pdf-en-1700.webp" data-src-zh="assets/screens/pdf-zh-1700.webp"
-                   data-srcset-en="assets/screens/pdf-en-900.webp 900w, assets/screens/pdf-en-1700.webp 1700w"
-                   data-srcset-zh="assets/screens/pdf-zh-900.webp 900w, assets/screens/pdf-zh-1700.webp 1700w"
-                   data-alt-en="BiWrite compiling a LaTeX paper and showing the PDF beside the source"
-                   data-alt-zh="BiWrite 编译 LaTeX 论文，在源码旁显示 PDF"
-                   width="1700" height="1062" alt="BiWrite compiling a LaTeX paper and showing the PDF beside the source" loading="lazy" decoding="async">
-              <span class="plate-expand" aria-hidden="true"><svg><use href="#i-plus"/></svg></span>
-            </button>
-            <figcaption>
-              <span class="fig-no"><span class="lang-en">Fig. 3</span><span class="lang-zh">图 3</span></span>
-              <span class="lang-en">The PDF, the problems list and the source, in one window. Errors and warnings link to their lines; a click in the PDF selects the sentence. <button class="cap-button" type="button" data-lightbox data-full-en="assets/screens/pdf-en-1700.webp" data-full-zh="assets/screens/pdf-zh-1700.webp" data-cap-en="A click on a sentence in the PDF selects it in the source. Compile errors and warnings link to their lines." data-cap-zh="点 PDF 中的句子，源码中对应的句子被选中；编译错误和警告跳到对应行。">Open full size</button></span>
-              <span class="lang-zh">PDF、问题列表和源码在同一个窗口里。错误和警告跳到对应行；点 PDF 中的句子即选中源码。<button class="cap-button" type="button" data-lightbox data-full-en="assets/screens/pdf-en-1700.webp" data-full-zh="assets/screens/pdf-zh-1700.webp" data-cap-en="A click on a sentence in the PDF selects it in the source. Compile errors and warnings link to their lines." data-cap-zh="点 PDF 中的句子，源码中对应的句子被选中；编译错误和警告跳到对应行。">查看原图</button></span>
-            </figcaption>
-          </figure>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="section" id="assistant">
-    <div class="wrap">
-      <div class="section-head reveal">
-        <p class="section-no">03</p>
-        <div class="section-heading">
-          <p class="kicker"><span class="lang-en">Writing assistant</span><span class="lang-zh">写作助手</span></p>
-          <h2 class="lang-en">A second reader who knows the rules.</h2>
-          <h2 class="lang-zh">多一位懂规矩的读者。</h2>
-        </div>
-      </div>
-
-      <div class="feature-grid">
-        <div class="feature-copy reveal">
-          <p class="lead lang-en">Select a sentence and ask. Polish it, question it, write the next paragraph in the manner of your references, draw the figure, or repair the LaTeX. Jobs run in the background and results arrive as diffs; nothing enters the paper until you accept it.</p>
-          <p class="lead lang-zh">选中一句，然后发问。润色、提问、按参照样例仿写下一段、画图、修 LaTeX。任务在后台运行，结果以差异显示；你点采纳，它才进入论文。</p>
-
-          <div class="assistant-note">
-            <span class="note-mark" aria-hidden="true"><svg><use href="#i-asterisk"/></svg></span>
-            <p class="lang-en">In a LaTeX paper, <strong>Accept</strong> first has the model fit the result to your document, then compiles it. If it needs a package or a TikZ library, the model repairs that before the text is written.</p>
-            <p class="lang-zh">在 LaTeX 论文中，<strong>采纳</strong>会先让模型把结果改成适合这篇文档的样子，再编译一次。缺宏包或缺 TikZ 库时，模型会先修好，再写入正文。</p>
+            <div class="code-stage">
+              <span class="stage-label"><span class="lang-zh">3. 逐字节还原结果</span><span class="lang-en">3. Restored byte-for-byte</span></span>
+              <pre><code>我们参照 <span class="tok-keep">\cite{kipf2017gcn}</span> 研究图 <span class="tok-keep">$G=(V,E)$</span> 上的节点分类问题（第~<span class="tok-keep">\ref{sec:exp}</span>~节）。</code></pre>
+            </div>
           </div>
 
-          <p class="assistant-aside lang-en">Wait as long as you like. Edits you make while a job runs are not overwritten — the result waits for you.</p>
-          <p class="assistant-aside lang-zh">可以慢慢等。任务运行期间你继续写的内容不会被覆盖，结果会放在那里等你。</p>
-        </div>
+          <div class="pipeline-divider"></div>
 
-        <div class="feature-visual reveal">
-          <figure class="shot">
-            <button class="plate plate-button" type="button" data-lightbox data-full-en="assets/screens/assistant-en-1700.webp" data-full-zh="assets/screens/assistant-zh-1700.webp" data-cap-en="A polish result shown as a diff, with the Chinese translation beside it and a list of what changed. Nothing is written into the paper until Accept." data-cap-zh="润色结果以差异显示，旁边是对照译文和改动说明。点采纳之前，正文不变。" data-aria-en="View the writing assistant screenshot at full size" data-aria-zh="查看写作助手截图原图">
-              <img src="assets/screens/assistant-en-1700.webp"
-                   srcset="assets/screens/assistant-en-900.webp 900w, assets/screens/assistant-en-1700.webp 1700w"
-                   sizes="(max-width: 760px) calc(100vw - 40px), (max-width: 1000px) calc(100vw - 96px), (max-width: 1080px) 46vw, 610px"
-                   data-src-en="assets/screens/assistant-en-1700.webp" data-src-zh="assets/screens/assistant-zh-1700.webp"
-                   data-srcset-en="assets/screens/assistant-en-900.webp 900w, assets/screens/assistant-en-1700.webp 1700w"
-                   data-srcset-zh="assets/screens/assistant-zh-900.webp 900w, assets/screens/assistant-zh-1700.webp 1700w"
-                   data-alt-en="The BiWrite writing assistant showing a polish diff, the Chinese translation and the list of edits"
-                   data-alt-zh="BiWrite 写作助手：润色差异、对照译文和改动说明"
-                   width="1700" height="1062" alt="The BiWrite writing assistant showing a polish diff, the Chinese translation and the list of edits" loading="lazy" decoding="async">
-              <span class="plate-expand" aria-hidden="true"><svg><use href="#i-plus"/></svg></span>
-            </button>
-            <figcaption>
-              <span class="fig-no"><span class="lang-en">Fig. 4</span><span class="lang-zh">图 4</span></span>
-              <span class="lang-en">A polish result: the diff, the facing Chinese, the reasons. Accept, regenerate, revise or discard — the paper is untouched until you choose. <button class="cap-button" type="button" data-lightbox data-full-en="assets/screens/assistant-en-1700.webp" data-full-zh="assets/screens/assistant-zh-1700.webp" data-cap-en="A polish result shown as a diff, with the Chinese translation beside it and a list of what changed. Nothing is written into the paper until Accept." data-cap-zh="润色结果以差异显示，旁边是对照译文和改动说明。点采纳之前，正文不变。">Open full size</button></span>
-              <span class="lang-zh">一次润色的结果：差异、对照中文、改动说明。采纳、重新生成、修改或放弃——你做出选择之前，正文不变。<button class="cap-button" type="button" data-lightbox data-full-en="assets/screens/assistant-en-1700.webp" data-full-zh="assets/screens/assistant-zh-1700.webp" data-cap-en="A polish result shown as a diff, with the Chinese translation beside it and a list of what changed. Nothing is written into the paper until Accept." data-cap-zh="润色结果以差异显示，旁边是对照译文和改动说明。点采纳之前，正文不变。">查看原图</button></span>
-            </figcaption>
-          </figure>
-        </div>
+          <div class="pipeline-block">
+            <p class="pipeline-kicker"><span class="lang-zh">机制透视 02 · 多维特征段落对齐</span><span class="lang-en">Mechanism 02 · Structural Paragraph Pairing</span></p>
+            <h4><span class="lang-zh">已有 <code>paper_zh.tex</code> 自动关联信号</span><span class="lang-en">How <code>paper.tex</code> Pairs with <code>paper_zh.tex</code></span></h4>
+            <ul class="signal-list">
+              <li><code>\cite{...}</code> / <code>\ref{...}</code> / <code>\label{...}</code> <span class="lang-zh">共享键值匹配</span><span class="lang-en">shared keys</span></li>
+              <li><code>$...$</code> <span class="lang-zh">行内与行间数学公式结构特征</span><span class="lang-en">inline &amp; display math structure</span></li>
+              <li><span class="lang-zh">段落类型（章节标题 / 正文 / 图表 Caption）与数值专名</span><span class="lang-en">block kind (heading / prose / caption), numbers &amp; proper nouns</span></li>
+              <li><span class="lang-zh">支持单文件后缀（<code>_zh</code> / <code>.zh</code> / <code>_cn</code>）与平行目录（<code>sections_en/</code> ↔ <code>sections_zh/</code>）</span><span class="lang-en">supports file suffixes (<code>_zh</code>, <code>_cn</code>) and parallel folders (<code>sections_en/</code> ↔ <code>sections_zh/</code>)</span></li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 2: LATEX WORKBENCH -->
+  <section class="section" id="latex">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag"><span class="lang-zh">LaTeX 深度支持</span><span class="lang-en">Native LaTeX Workbench</span></span>
+        <h2 class="section-title">
+          <span class="lang-zh">为真实多文件顶会工程打造的本地编译台</span>
+          <span class="lang-en">Built for Real Multi-File Conference &amp; Journal Projects</span>
+        </h2>
+        <p class="section-desc">
+          <span class="lang-zh">直接调用你本机的 MacTeX、TeX Live 或 MiKTeX（自动识别 <code>latexmk</code> / <code>pdflatex</code> / <code>xelatex</code> / <code>lualatex</code>），无需上传代码到云端，也不污染本地 Git 仓库。</span>
+          <span class="lang-en">Compiles directly with your local MacTeX, TeX Live, or MiKTeX distribution (<code>latexmk</code>, <code>pdflatex</code>, <code>xelatex</code>, or <code>lualatex</code>) — private, fast, and clean on disk.</span>
+        </p>
       </div>
 
-      <div class="action-grid reveal">
-        <article class="action-card">
-          <div class="action-icon"><svg aria-hidden="true"><use href="#i-pen"/></svg></div>
-          <h3><span class="lang-en">Polish</span><span class="lang-zh">润色</span></h3>
-          <p class="lang-en">Rewrite under the writing rules, or under your own instruction. Claims, numbers, citations and formulas stay fixed.</p>
-          <p class="lang-zh">按写作规则改写，也可以写上你的要求。论断、数字、引用和公式保持不变。</p>
+      <div class="bento-grid-2">
+        <article class="feature-card">
+          <div class="card-head">
+            <span class="card-icon"><svg aria-hidden="true"><use href="#i-terminal"/></svg></span>
+            <div>
+              <h3><span class="lang-zh">不保存也能编译（<code>.biwrite/</code> 隔离缓存）</span><span class="lang-en">Compile Without Saving (<code>.biwrite/</code> Cache)</span></h3>
+            </div>
+          </div>
+          <p class="lang-zh">随时按 <code>⌘B</code> 编译当前编辑器里的草稿（包括未保存的分章节修改和写作助手刚生成的图表文件）。所有中间产物写入隐藏的 <code>.biwrite/</code> 缓存目录，磁盘上的 <code>.tex</code> 源文件保持上次 <code>⌘S</code> 的干净状态，直到你主动保存。</p>
+          <p class="lang-en">Press <code>⌘B</code> anytime to build unsaved buffer edits — even across multi-file <code>\input</code> sections and newly generated figures — inside a hidden <code>.biwrite/</code> cache, leaving your files on disk untouched until you save.</p>
         </article>
-        <article class="action-card">
-          <div class="action-icon"><svg aria-hidden="true"><use href="#i-question"/></svg></div>
-          <h3><span class="lang-en">Ask</span><span class="lang-zh">提问</span></h3>
-          <p class="lang-en">Questions about the selection or the whole paper, with follow-ups. Answers, never edits.</p>
-          <p class="lang-zh">就所选文字或整篇论文回答，可以追问。只给回答，不改正文。</p>
+
+        <article class="feature-card">
+          <div class="card-head">
+            <span class="card-icon"><svg aria-hidden="true"><use href="#i-pdf"/></svg></span>
+            <div>
+              <h3><span class="lang-zh">抗行号干扰的 PDF ↔ 源码句子级直达</span><span class="lang-en">Sentence-Level SyncTeX &amp; Inline Actions</span></h3>
+            </div>
+          </div>
+          <p class="lang-zh">点击 PDF 中的任意一句话，通过 SyncTeX 结合词句文本核对（即使双栏盲审模板叠加了页边行号也能准确定位），自动打开对应分文件并选中该句源码，同时浮出小菜单支持一键<strong>润色</strong>或<strong>提问</strong>；按 <code>⌘⌥J</code> 则从光标反向高亮 PDF。</p>
+          <p class="lang-en">Click any sentence in the PDF to select that exact sentence in its <code>.tex</code> file (cross-checking words so review line numbers never throw off SyncTeX) and pop up quick <strong>Polish</strong> / <strong>Ask</strong> actions. Press <code>⌘⌥J</code> to highlight the cursor's paragraph in the PDF.</p>
         </article>
-        <article class="action-card">
-          <div class="action-icon"><svg aria-hidden="true"><use href="#i-layers"/></svg></div>
-          <h3><span class="lang-en">Imitate</span><span class="lang-zh">仿写</span></h3>
-          <p class="lang-en">A new paragraph after the cursor, in the voice of your writing samples, with a facing Chinese version.</p>
-          <p class="lang-zh">在光标后写新段落，模仿你写作样例的文风，并附对照中文。</p>
+
+        <article class="feature-card">
+          <div class="card-head">
+            <span class="card-icon"><svg aria-hidden="true"><use href="#i-split"/></svg></span>
+            <div>
+              <h3><span class="lang-zh">多文件项目、多窗口并行与中文 PDF 编译</span><span class="lang-en">Multi-File Projects, Multi-Window &amp; Chinese PDF</span></h3>
+            </div>
+          </div>
+          <p class="lang-zh">自动解析 <code>% !TEX root</code> 与多层嵌套 <code>\input</code> / <code>\include</code>，译文栏支持「本文件 / 全文」切换；支持<strong>多窗口同时编辑多篇文档</strong>（各窗口独立缓存互不覆盖）及系统右键「打开方式 → BiWrite」；开关切到「中文」即用 XeLaTeX + <code>ctex</code> 编译整篇中文 PDF 或导出独立中文 <code>.tex</code>。</p>
+          <p class="lang-en">Follows <code>% !TEX root</code> and nested <code>\input</code> chains with a <em>Whole paper</em> translation view. Open multiple windows at once (each compiling in its own isolated cache) or via Finder/Explorer <em>Open With</em>, and flip one switch to build a full Chinese PDF via XeLaTeX + <code>ctex</code>.</p>
         </article>
-        <article class="action-card">
-          <div class="action-icon"><svg aria-hidden="true"><use href="#i-figure"/></svg></div>
-          <h3><span class="lang-en">Figures</span><span class="lang-zh">图表</span></h3>
-          <p class="lang-en">LaTeX code, a compiled PDF, or an editable PowerPoint diagram — traced from a draft or only in its style.</p>
-          <p class="lang-zh">LaTeX 代码、编译好的 PDF，或可编辑的 PowerPoint 示意图——可以临摹，也可以只仿风格。</p>
-        </article>
-        <article class="action-card">
-          <div class="action-icon"><svg aria-hidden="true"><use href="#i-wrench"/></svg></div>
-          <h3><span class="lang-en">Fix</span><span class="lang-zh">语法修复</span></h3>
-          <p class="lang-en">TeX errors handed to the model with their lines, up to three rounds, shown as a diff before anything changes.</p>
-          <p class="lang-zh">把 TeX 错误连同所在行交给模型，最多三轮；改动以差异显示，你确认后才写入。</p>
-        </article>
-        <article class="action-card">
-          <div class="action-icon"><svg aria-hidden="true"><use href="#i-translate"/></svg></div>
-          <h3><span class="lang-en">Via translation</span><span class="lang-zh">按译文改</span></h3>
-          <p class="lang-en">Rewrite the Chinese; the English follows with the smallest edit that means the same thing.</p>
-          <p class="lang-zh">改写中文，英文以最小的改动成为同一个意思。</p>
+
+        <article class="feature-card">
+          <div class="card-head">
+            <span class="card-icon"><svg aria-hidden="true"><use href="#i-layers"/></svg></span>
+            <div>
+              <h3><span class="lang-zh">内置顶会与期刊模板 + 缺失图片一键拉取</span><span class="lang-en">Built-in Venue Templates &amp; Missing Figure Fetch</span></h3>
+            </div>
+          </div>
+          <p class="lang-zh">开箱内置官方 <strong>PVLDB 2027、ICLR 2027 与 IEEE TII</strong> 模板，一键新建即可编译；支持将任意项目文件夹或 <code>.zip</code> 导入为自定义模板，或将当前工程打包导出（也可将多章节合并另存为单个 <code>.tex</code>）。文中引用的网图未落盘时还会自动识别并提供一键下载。</p>
+          <p class="lang-en">Ships with official <strong>PVLDB 2027, ICLR 2027, and IEEE TII</strong> templates ready to build. Import any folder or <code>.zip</code> as a reusable template, flatten multi-file projects into a single <code>.tex</code>, and fetch missing referenced image URLs in one click.</p>
         </article>
       </div>
     </div>
   </section>
 
-  <section class="method" id="method">
-    <div class="wrap">
-      <div class="method-grid">
-        <div class="method-copy reveal">
-          <p class="kicker kicker-light"><span class="lang-en">The method behind the assistant</span><span class="lang-zh">助手背后的方法</span></p>
-          <h2 class="lang-en">Not another chatbot in the sidebar.</h2>
-          <h2 class="lang-zh">不是又一个<br>塞进侧栏的聊天框。</h2>
-          <p class="method-lead lang-en">Every assistant action follows a part of <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a> — an open, MIT-licensed method for empirical papers. BiWrite ships a copy of the skill, can update it from GitHub, and can use your own skill folder together with its <code>materials/</code>.</p>
-          <p class="method-lead lang-zh">每一项助手操作都遵循 <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a> 的一部分。那是一套开源（MIT）的实证论文方法。BiWrite 自带一份 skill，可以从 GitHub 更新，也可以换成你自己的 skill 文件夹，连同其中的 <code>materials/</code> 一起使用。</p>
-          <a class="method-link" href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">
-            <span class="lang-en">Read the method on GitHub</span><span class="lang-zh">在 GitHub 上读这套方法</span>
-            <svg aria-hidden="true"><use href="#i-external"/></svg>
-          </a>
-        </div>
-
-        <div class="method-list reveal">
-          <div class="method-item">
-            <span class="method-no">01</span>
-            <div><h3><span class="lang-en">De-AI phrasing</span><span class="lang-zh">去 AI 腔</span></h3><p class="lang-en">Remove the tells. Keep the argument.</p><p class="lang-zh">去掉机器味，留住论证。</p></div>
-          </div>
-          <div class="method-item">
-            <span class="method-no">02</span>
-            <div><h3><span class="lang-en">Voice matching</span><span class="lang-zh">声音匹配</span></h3><p class="lang-en">Write in the voice of your own samples.</p><p class="lang-zh">用你自己样例里的声音来写。</p></div>
-          </div>
-          <div class="method-item">
-            <span class="method-no">03</span>
-            <div><h3><span class="lang-en">Paper anatomy</span><span class="lang-zh">论文骨架</span></h3><p class="lang-en">New paragraphs follow the paper's structure.</p><p class="lang-zh">新段落遵循论文本来的结构。</p></div>
-          </div>
-          <div class="method-item">
-            <span class="method-no">04</span>
-            <div><h3><span class="lang-en">Figure style</span><span class="lang-zh">图表风格</span></h3><p class="lang-en">Figures in the method's visual language.</p><p class="lang-zh">图遵循这套方法的视觉语言。</p></div>
-          </div>
-          <div class="method-item">
-            <span class="method-no">05</span>
-            <div><h3><span class="lang-en">Editable PPT diagrams</span><span class="lang-zh">可编辑 PPT 图</span></h3><p class="lang-en">Native shapes, arrows and your icons.</p><p class="lang-zh">原生形状、块状箭头和你的图标。</p></div>
-          </div>
-          <div class="method-item">
-            <span class="method-no">06</span>
-            <div><h3><span class="lang-en">Your materials</span><span class="lang-zh">你的素材</span></h3><p class="lang-en">Your papers, figures and icons as references.</p><p class="lang-zh">你的论文、图和图标可以作为参照。</p></div>
-          </div>
-        </div>
+  <!-- SECTION 3: RESEARCH-BUILDER WRITING & FIGURE ASSISTANT -->
+  <section class="section section-alt" id="assistant">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag"><span class="lang-zh">受控学术写作助手</span><span class="lang-en">Academic Writing &amp; Figure Assistant</span></span>
+        <h2 class="section-title">
+          <span class="lang-zh">深度执行 <code>research-builder</code> 规范：去 AI 腔、绘原生科研图、先试编再落盘</span>
+          <span class="lang-en">Powered by <code>research-builder</code>: De-AI Prose, Editable Diagrams &amp; Verified Builds</span>
+        </h2>
+        <p class="section-desc">
+          <span class="lang-zh">BiWrite 是开源科研技能 <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a>（MIT）的桌面编辑器：终端里用 Claude Code / Codex 跑实验推进研究，桌面端在 BiWrite 中精修论文，共享同一套写作规则与本机 <code>materials/</code> 个人素材库（文风样本、往期论文、参考配图与 SVG 图标）。</span>
+          <span class="lang-en">BiWrite is the desktop companion to <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a> (MIT): run empirical research in your terminal with Claude Code or Codex, and write in BiWrite under the exact same rules and local <code>materials/</code> library (voice samples, prior papers, reference figures, and SVG icons).</span>
+        </p>
       </div>
-      <div class="seal-stamp" aria-hidden="true"><span>文</span></div>
+
+      <!-- SMART ACCEPT PIPELINE BANNER -->
+      <div class="smart-accept-bar">
+        <div class="smart-accept-title">
+          <span class="smart-badge"><span class="lang-zh">安全闭环</span><span class="lang-en">Safe Apply Loop</span></span>
+          <strong class="lang-zh">LaTeX「编译级智能采纳」机制：所有后台任务绝不擅自改稿</strong>
+          <strong class="lang-en">Compile-Verified "Smart Accept": Background Jobs Never Touch Your Draft Uninvited</strong>
+        </div>
+        <ol class="smart-steps">
+          <li>
+            <span class="s-idx">1</span>
+            <span class="lang-zh"><strong>后台运行 + Diff 预览</strong>：等待期间可继续打字，返回逐行差异、对照中文与双语修改理由</span>
+            <span class="lang-en"><strong>Background Diff</strong>: Keep typing while jobs run; review inline diffs, facing Chinese, and edit rationale</span>
+          </li>
+          <li>
+            <span class="s-idx">2</span>
+            <span class="lang-zh"><strong>自动适配宏包与配色</strong>：点「采纳」时先对齐当前论文已加载的宏包与配色，自动补齐导言区 <code>\usepackage</code></span>
+            <span class="lang-en"><strong>Preamble Fit</strong>: On Accept, adapts code to your document's packages/colors and adds needed <code>\usepackage</code> lines</span>
+          </li>
+          <li>
+            <span class="s-idx">3</span>
+            <span class="lang-zh"><strong>缓存试编 + 最多 3 轮自修</strong>：在 <code>.biwrite/</code> 试编译，若缺 TikZ 库或报错自动交模型修好后再写入</span>
+            <span class="lang-en"><strong>Test-Build &amp; Auto-Repair</strong>: Compiles in <code>.biwrite/</code> first, repairing new TeX/TikZ errors up to 3 rounds before applying</span>
+          </li>
+          <li>
+            <span class="s-idx">4</span>
+            <span class="lang-zh"><strong>一键安全还原</strong>：随时撤回单张卡片；还原图表时自动检测并安全清理不再使用的导言区宏包</span>
+            <span class="lang-en"><strong>Clean Revert</strong>: Revert any accepted card later; safely removes added preamble lines after a check build</span>
+          </li>
+        </ol>
+      </div>
+
+      <div class="bento-grid-3">
+        <article class="cap-card">
+          <div class="cap-icon"><svg aria-hidden="true"><use href="#i-pen"/></svg></div>
+          <h3>
+            <span class="lang-zh">去 AI 腔润色</span><span class="lang-en">De-AI Polish</span>
+            <kbd>⌘⇧P</kbd>
+          </h3>
+          <p class="lang-zh">严格按学术写作手册清理高频 AI 套话、滥用破折号与分号拼接句，同时结合你 <code>writing-samples/</code> 中的代表作匹配个人文风；<strong>论断、实验数字、引用与公式严禁改动</strong>。</p>
+          <p class="lang-en">Strips LLM clichés, em-dash chains, and vague filler while matching the voice of your <code>writing-samples/</code>. Claims, numbers, citations, and formulas remain locked.</p>
+        </article>
+
+        <article class="cap-card">
+          <div class="cap-icon"><svg aria-hidden="true"><use href="#i-layers"/></svg></div>
+          <h3><span class="lang-zh">参照范文仿写</span><span class="lang-en">Reference-Guided Imitation</span></h3>
+          <p class="lang-zh">在光标后续写引言或相关工作等段落：挂载顶会 <code>.tex</code> 或 <code>materials/domain/</code> 中的论文，学习其段落推进与句式骨架（附双语对照），<strong>缺失的实验数据自动留作 <code>[result]</code> 占位，绝不编造结果</strong>。</p>
+          <p class="lang-en">Drafts new paragraphs in the structural rhythm and voice of reference papers from files or <code>materials/domain/</code>, leaving unknown metrics as <code>[result]</code> placeholders instead of hallucinating numbers.</p>
+        </article>
+
+        <article class="cap-card">
+          <div class="cap-icon"><svg aria-hidden="true"><use href="#i-figure"/></svg></div>
+          <h3><span class="lang-zh">科研图表（TikZ / PDF / 可编辑 PPT）</span><span class="lang-en">Figures: LaTeX, TikZ PDF &amp; Editable PPTX</span></h3>
+          <p class="lang-zh">支持生成 LaTeX 表格代码、独立编译的 TikZ PDF，或由<strong>原生形状、块状箭头与 SVG 图标组成的可编辑 PowerPoint 示意图</strong>。可传手绘草图选<strong>「临摹」</strong>（自动按正文核对符号与步骤）或传论文图选<strong>「仿风格」</strong>。</p>
+          <p class="lang-en">Generates LaTeX tables, compiled TikZ PDFs, or <strong>editable PowerPoint diagrams built from native shapes, arrows, and your SVG icons</strong> — either tracing your rough sketch (cross-checked against paper notation) or matching a reference figure's style.</p>
+        </article>
+
+        <article class="cap-card">
+          <div class="cap-icon"><svg aria-hidden="true"><use href="#i-wrench"/></svg></div>
+          <h3><span class="lang-zh">LaTeX 语法闭环修复</span><span class="lang-en">Multi-Round TeX Error Repair</span></h3>
+          <p class="lang-zh">编译出错时一键提取 TeX 报错日志与对应源码行交给模型，后台自动修改并重新编译验证（最多连续 3 轮），直到编译通过后以 Diff 呈现给你确认。</p>
+          <p class="lang-en">Hands TeX compiler errors and their surrounding lines to the model, re-compiling up to three rounds in the background and presenting verified fixes as an inline diff.</p>
+        </article>
+
+        <article class="cap-card">
+          <div class="cap-icon"><svg aria-hidden="true"><use href="#i-swap"/></svg></div>
+          <h3><span class="lang-zh">按译文改原文</span><span class="lang-en">Revise Source via Translation</span></h3>
+          <p class="lang-zh">点任意段落旁的铅笔按钮直接编辑中文译文：把中文改成你想要表达的准确意思，模型即以最小改动幅度修订对应的英文原段。</p>
+          <p class="lang-en">Click the pencil icon on any translated block, rewrite the Chinese meaning directly, and let the model update the English paragraph with the smallest edit needed.</p>
+        </article>
+
+        <article class="cap-card">
+          <div class="cap-icon"><svg aria-hidden="true"><use href="#i-chat"/></svg></div>
+          <h3><span class="lang-zh">选区与全文追问</span><span class="lang-en">Contextual Ask &amp; Follow-Up</span></h3>
+          <p class="lang-zh">可选仅当前段、含前后段或按主文件拼合的<strong>整篇多文件论文</strong>作为上下文，检查推导漏洞或审稿风险，支持连续多轮追问，严格只答疑不改稿。</p>
+          <p class="lang-en">Ask questions scoped to a selection, neighboring paragraphs, or the assembled multi-file paper with multi-turn follow-ups — strictly answers, never unrequested edits.</p>
+        </article>
+      </div>
     </div>
   </section>
 
-  <section class="section" id="more">
-    <div class="wrap">
-      <div class="section-head reveal">
-        <p class="section-no">04</p>
-        <div class="section-heading">
-          <p class="kicker"><span class="lang-en">Also in the box</span><span class="lang-zh">箱子里还有</span></p>
-          <h2 class="lang-en">Small things that save the paper.</h2>
-          <h2 class="lang-zh">那些真正省事的细节。</h2>
-        </div>
+  <!-- SECTION 4: API, KEY POOL, VERIFIED LOGS & NATIVE ARCHITECTURE -->
+  <section class="section" id="engineering">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag"><span class="lang-zh">模型调度与底层工程</span><span class="lang-en">API Pool, Telemetry-Free Privacy &amp; Native Craft</span></span>
+        <h2 class="section-title">
+          <span class="lang-zh">专为高频科研与多渠道接口场景打磨的工程细节</span>
+          <span class="lang-en">Engineered for High-Throughput APIs, Key Pools, and Local Ownership</span>
+        </h2>
+        <p class="section-desc">
+          <span class="lang-zh">无论是官方接口、第三方中转服务还是本机离线模型，BiWrite 都提供了完整的并发调度、限流容灾与服务端真实性核验工具。</span>
+          <span class="lang-en">Whether you use official endpoints, third-party relays, or local models, BiWrite gives you full control over concurrency, failover, and server honesty verification.</span>
+        </p>
       </div>
 
-      <div class="more-grid reveal">
-        <article class="more-card">
-          <div class="more-icon"><svg aria-hidden="true"><use href="#i-template"/></svg></div>
-          <h3><span class="lang-en">Templates</span><span class="lang-zh">模板</span></h3>
-          <p class="lang-en">PVLDB 2027, ICLR 2027 and IEEE TII are built in. Import a folder or a <code>.zip</code> as a template; export a project as one; open any LaTeX folder.</p>
-          <p class="lang-zh">内置 PVLDB 2027、ICLR 2027 和 IEEE TII。把文件夹或 <code>.zip</code> 导入为模板，把项目导出为模板，也可以打开任意 LaTeX 文件夹。</p>
-          <p class="more-tag">PVLDB · ICLR · IEEE TII</p>
+      <div class="bento-grid-2">
+        <article class="eng-card">
+          <div class="eng-top">
+            <span class="card-icon"><svg aria-hidden="true"><use href="#i-server"/></svg></span>
+            <div>
+              <h3><span class="lang-zh">三大接口协议 &amp;「翻译 / 写作」双模型分工</span><span class="lang-en">All Major Wire APIs &amp; Split Model Roles</span></h3>
+              <p class="eng-meta">Chat Completions · OpenAI Responses · Anthropic Messages</p>
+            </div>
+          </div>
+          <p class="lang-zh">内置 OpenAI、Anthropic（支持 Claude 1M 上下文开关）、DeepSeek、通义千问、Kimi、OpenRouter 与本地 Ollama 等预设，全面支持推理强度（Reasoning Effort）与服务等级（Service Tier）参数。可<strong>指定轻量高速模型负责实时翻译，同时让旗舰推理模型负责润色、仿写与画图</strong>，兼顾响应速度与写作质量。</p>
+          <p class="lang-en">Supports OpenAI-compatible Chat Completions, OpenAI Responses (with reasoning effort &amp; service tier), and Anthropic Messages (with 1M context toggle), plus presets for DeepSeek, Qwen, Kimi, OpenRouter, and Ollama. Pair a fast model for live translation with a frontier reasoning model for the assistant.</p>
         </article>
-        <article class="more-card">
-          <div class="more-icon"><svg aria-hidden="true"><use href="#i-split"/></svg></div>
-          <h3><span class="lang-en">Your own Chinese version</span><span class="lang-zh">你自己的中文版</span></h3>
-          <p class="lang-en">Pair <code>paper.tex</code> with <code>paper_zh.tex</code>, or <code>sections_en/</code> with <code>sections_zh/</code>. Your Chinese is the translation, with no requests, and every edit is written back in place.</p>
-          <p class="lang-zh"><code>paper.tex</code> 与 <code>paper_zh.tex</code>，或 <code>sections_en/</code> 与 <code>sections_zh/</code> 逐段配对。你的中文直接作为译文，不产生请求；改动原位写回另一个文件。</p>
-          <p class="more-tag">21 / 21 paragraphs paired</p>
+
+        <article class="eng-card">
+          <div class="eng-top">
+            <span class="card-icon"><svg aria-hidden="true"><use href="#i-key"/></svg></span>
+            <div>
+              <h3><span class="lang-zh">多密钥号池（Key Pool）负载均衡与自动容灾</span><span class="lang-en">Multi-Key Pool Load Balancing &amp; Auto-Failover</span></h3>
+              <p class="eng-meta"><span class="lang-zh">按单 Key 并发均匀分配 · 限流自动冷却换号</span><span class="lang-en">Per-key concurrency · Rate-limit cooldown &amp; hot-swap</span></p>
+            </div>
+          </div>
+          <p class="lang-zh">单个接口可挂载多个命名密钥，请求自动优先分配给最空闲的可用 Key；遇到 429 限流自动进入冷却并秒切其他 Key 重试，被拒密钥清晰展示服务端报错。支持<strong>原位替换失效 Key、临时忽略单个 Key、随机微问答测活、保活机制以及密钥池文件一键导入导出</strong>。</p>
+          <p class="lang-en">Attach multiple named keys per provider with per-key concurrency caps. Requests route evenly to the least-busy active key, automatically cooling down rate-limited keys and failing over. Supports in-place key replacement, temporary mute, live micro-prompt testing, and plain-file import/export.</p>
         </article>
-        <article class="more-card">
-          <div class="more-icon"><svg aria-hidden="true"><use href="#i-globe"/></svg></div>
-          <h3><span class="lang-en">Any model provider</span><span class="lang-zh">接上任何模型</span></h3>
-          <p class="lang-en">OpenAI-compatible Chat Completions, the OpenAI Responses API and Anthropic Messages, with presets for DeepSeek, Qwen, Kimi, OpenRouter and local Ollama.</p>
-          <p class="lang-zh">OpenAI 兼容的 Chat Completions、OpenAI Responses 和 Anthropic Messages；DeepSeek、通义千问、Kimi、OpenRouter、本地 Ollama 等都有预设。</p>
-          <p class="more-tag">Chat · Responses · Messages</p>
+
+        <article class="eng-card">
+          <div class="eng-top">
+            <span class="card-icon"><svg aria-hidden="true"><use href="#i-terminal"/></svg></span>
+            <div>
+              <h3><span class="lang-zh">透明「验真」请求日志（Request Log）</span><span class="lang-en">Server-Verified Request Log</span></h3>
+              <p class="eng-meta"><kbd>⌘⇧L</kbd> · <span class="lang-zh">对比请求参数与服务端实际返回声明</span><span class="lang-en">Sent vs. server-declared model, effort &amp; tier</span></p>
+            </div>
+          </div>
+          <p class="lang-zh">每次请求均详细记录<strong>发出的模型名、推理强度、服务等级</strong>以及<strong>服务端实际返回的声明值——一旦不一致直接醒目标出</strong>，第三方接口是否降级或替换模型一目了然。同时完整展示首字延迟、总耗时、输入/输出/缓存/推理 Token、所用 Key 尾号及完整收发 Prompt（日志仅存本机，绝不记录密钥明文）。</p>
+          <p class="lang-en">Logs every call with both the <strong>requested</strong> and <strong>server-declared</strong> model name, reasoning effort, and service tier — flagging mismatches immediately — alongside TTFT, total latency, cached/reasoning tokens, key suffix, and full prompts (stored locally, never recording raw keys).</p>
         </article>
-        <article class="more-card">
-          <div class="more-icon"><svg aria-hidden="true"><use href="#i-key"/></svg></div>
-          <h3><span class="lang-en">Key pools</span><span class="lang-zh">号池</span></h3>
-          <p class="lang-en">Several named keys per provider, used evenly with a per-key limit, failover on rate limits, and a new key swapped in place. Import and export to a file.</p>
-          <p class="lang-zh">每个接口挂多个命名的密钥，按并发上限均匀使用，限流时换号；可以原位换 key，也可以导入和导出到文件。</p>
-          <p class="more-tag">keys × concurrency</p>
-        </article>
-        <article class="more-card">
-          <div class="more-icon"><svg aria-hidden="true"><use href="#i-list"/></svg></div>
-          <h3><span class="lang-en">Request log</span><span class="lang-zh">请求日志</span></h3>
-          <p class="lang-en">The model, reasoning effort and service tier that were sent — and the ones the server declared. Timings, tokens and the key used, without ever storing the key.</p>
-          <p class="lang-zh">记录发出的模型、推理强度和服务等级，以及服务端声明的实际值；还有耗时、token 和所用密钥，但从不保存密钥本身。</p>
-          <p class="more-tag">1.2k in · 300 out · 2 cached</p>
-        </article>
-        <article class="more-card">
-          <div class="more-icon"><svg aria-hidden="true"><use href="#i-folder"/></svg></div>
-          <h3><span class="lang-en">My materials</span><span class="lang-zh">我的素材</span></h3>
-          <p class="lang-en"><code>writing-samples/</code> sets the voice; <code>domain/</code> and <code>figures/</code> are references; <code>icons/</code> go into PowerPoint figures. The folders mirror the skill's <code>materials/</code>.</p>
-          <p class="lang-zh"><code>writing-samples/</code> 给出你的文风；<code>domain/</code> 与 <code>figures/</code> 作为参照；<code>icons/</code> 用在 PPT 图里。分类与 skill 的 <code>materials/</code> 相同。</p>
-          <p class="more-tag">voice · references · icons</p>
+
+        <article class="eng-card">
+          <div class="eng-top">
+            <span class="card-icon"><svg aria-hidden="true"><use href="#i-shield"/></svg></span>
+            <div>
+              <h3><span class="lang-zh">原生轻量架构、100% 本地数据与内置升降级</span><span class="lang-en">Lightweight Rust/Tauri App &amp; 100% Local Data</span></h3>
+              <p class="eng-meta"><span class="lang-zh">无账号 · 无云端中转 · 零统计遥测</span><span class="lang-en">No account · No cloud relay · Zero analytics</span></p>
+            </div>
+          </div>
+          <p class="lang-zh">基于 Rust + Tauri 2 + Svelte 5 构建（全仓库禁用 <code>unsafe</code>），启动迅速、内存占用极低。支持术语表管理（CSV 导入导出，改术语只重译相关段落）、外部编辑器改动冲突逐行 Diff 检查、关闭窗口驻留菜单栏/系统托盘，以及<strong>软件内经 SHA-256 校验直接安装任意 GitHub 正式版或预发布版</strong>。</p>
+          <p class="lang-en">Built on Rust (<code>unsafe</code> forbidden), Tauri 2, and Svelte 5 for instant startup and tiny memory footprint. Includes CSV glossary management, external-edit diff protection, menu-bar/tray background persistence, and in-app SHA-256 verified upgrades or rollbacks across any GitHub release.</p>
         </article>
       </div>
-
-      <p class="footnote reveal">
-        <span class="fn-mark" aria-hidden="true">*</span>
-        <span class="lang-en">Any GitHub release can be installed from inside the app, pre-releases and older versions included. Closing the window leaves BiWrite in the menu bar or notification area, so the paper is still open when you come back.</span>
-        <span class="lang-zh">软件内可以安装 GitHub 上发布的任意版本，包括预发布的分支构建和旧版本。关闭窗口后，BiWrite 带着打开的文档留在菜单栏或任务栏通知区域，回来时论文还在。</span>
-      </p>
     </div>
   </section>
 
-  <section class="download" id="download">
-    <div class="wrap">
-      <div class="download-grid">
-        <div class="download-copy reveal">
-          <p class="kicker"><span class="lang-en">Get BiWrite</span><span class="lang-zh">下载 BiWrite</span></p>
-          <h2 class="lang-en">Write it once.</h2>
-          <h2 class="lang-zh">写一遍就够了。</h2>
-          <p class="download-lead lang-en">Download the latest release for macOS or Windows. Bring a model endpoint, and the TeX distribution you already use.</p>
-          <p class="download-lead lang-zh">下载适用于 macOS 或 Windows 的最新版本。准备一个模型接口，以及你本来就在用的 TeX 发行版。</p>
-          <p class="version-line"><span class="lang-en">Version 0.2.25 · free download</span><span class="lang-zh">版本 0.2.25 · 免费下载</span></p>
-        </div>
-
-        <div class="download-actions reveal">
-          <a class="dl-btn" href="https://github.com/zzccppp/biwrite/releases/latest" target="_blank" rel="noopener noreferrer">
-            <svg class="platform" aria-hidden="true"><use href="#i-apple"/></svg>
-            <span class="dl-text">
-              <strong class="lang-en">Download for macOS</strong><strong class="lang-zh">下载 macOS 版</strong>
-              <small class="lang-en">Universal .dmg · macOS 12 or later</small>
-              <small class="lang-zh">通用版 .dmg · macOS 12 或更高</small>
+  <!-- SECTION 5: DOWNLOAD & QUICK START -->
+  <section class="section download-section" id="download">
+    <div class="container">
+      <div class="download-box">
+        <div class="download-intro">
+          <span class="section-tag"><span class="lang-zh">免费下载 · 开箱即用</span><span class="lang-en">Free &amp; Open Source</span></span>
+          <h2 class="download-title">
+            <span class="lang-zh">立即下载 BiWrite</span>
+            <span class="lang-en">Download BiWrite</span>
+          </h2>
+          <p class="download-desc">
+            <span class="lang-zh">完全免费开源（MIT 协议），无需注册账号。准备好你的模型 API 密钥与本机 TeX 发行版即可开始写作。</span>
+            <span class="lang-en">Free forever under the MIT License with no account required. Bring your own model API key and your local TeX distribution.</span>
+          </p>
+          <div class="release-meta-row">
+            <span class="release-badge">
+              <span class="lang-zh">当前最新版本：</span><span class="lang-en">Latest Release: </span>
+              <strong data-release-version>v0.2.31</strong>
             </span>
-            <svg class="dl-arrow" aria-hidden="true"><use href="#i-arrow"/></svg>
-          </a>
-          <a class="dl-btn" href="https://github.com/zzccppp/biwrite/releases/latest" target="_blank" rel="noopener noreferrer">
-            <svg class="platform" aria-hidden="true"><use href="#i-windows"/></svg>
-            <span class="dl-text">
-              <strong class="lang-en">Download for Windows</strong><strong class="lang-zh">下载 Windows 版</strong>
-              <small class="lang-en">x64 setup .exe · Windows 10 / 11</small>
-              <small class="lang-zh">x64 安装包 .exe · Windows 10 / 11</small>
+            <a class="text-link" href="https://github.com/zzccppp/biwrite/releases" target="_blank" rel="noopener noreferrer">
+              <span class="lang-zh">查看全部历史版本与更新日志</span><span class="lang-en">All releases &amp; changelog</span>
+              <svg aria-hidden="true"><use href="#i-external"/></svg>
+            </a>
+          </div>
+        </div>
+
+        <div class="download-cards">
+          <a class="os-card" data-dl-os="macos" href="https://github.com/zzccppp/biwrite/releases/download/v0.2.31/BiWrite_0.2.31_universal.dmg" target="_blank" rel="noopener noreferrer">
+            <span class="os-icon"><svg aria-hidden="true"><use href="#i-apple"/></svg></span>
+            <span class="os-info">
+              <strong class="lang-zh">下载 macOS 客户端</strong>
+              <strong class="lang-en">Download for macOS</strong>
+              <small class="lang-zh"><span data-dmg-name>BiWrite_0.2.31_universal.dmg</span> · Apple Silicon &amp; Intel 通用 · macOS 12+</small>
+              <small class="lang-en"><span data-dmg-name>BiWrite_0.2.31_universal.dmg</span> · Universal (Apple Silicon &amp; Intel) · macOS 12+</small>
             </span>
-            <svg class="dl-arrow" aria-hidden="true"><use href="#i-arrow"/></svg>
+            <span class="os-dl-icon"><svg aria-hidden="true"><use href="#i-download"/></svg></span>
           </a>
-          <a class="all-releases" href="https://github.com/zzccppp/biwrite/releases" target="_blank" rel="noopener noreferrer">
-            <span class="lang-en">All releases and pre-releases</span><span class="lang-zh">全部版本与预发布</span>
-            <svg aria-hidden="true"><use href="#i-external"/></svg>
+
+          <a class="os-card" data-dl-os="windows" href="https://github.com/zzccppp/biwrite/releases/download/v0.2.31/BiWrite_0.2.31_x64-setup.exe" target="_blank" rel="noopener noreferrer">
+            <span class="os-icon"><svg aria-hidden="true"><use href="#i-windows"/></svg></span>
+            <span class="os-info">
+              <strong class="lang-zh">下载 Windows 客户端</strong>
+              <strong class="lang-en">Download for Windows</strong>
+              <small class="lang-zh"><span data-exe-name>BiWrite_0.2.31_x64-setup.exe</span> · 64 位安装程序 · Windows 10 / 11</small>
+              <small class="lang-en"><span data-exe-name>BiWrite_0.2.31_x64-setup.exe</span> · 64-bit NSIS Installer · Windows 10 / 11</small>
+            </span>
+            <span class="os-dl-icon"><svg aria-hidden="true"><use href="#i-download"/></svg></span>
           </a>
+
+          <div class="manual-links-row">
+            <a class="manual-pill" href="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-zh.pdf" target="_blank" rel="noopener noreferrer">
+              <svg aria-hidden="true"><use href="#i-book"/></svg>
+              <span>中文图文说明书 (PDF)</span>
+            </a>
+            <a class="manual-pill" href="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-en.pdf" target="_blank" rel="noopener noreferrer">
+              <svg aria-hidden="true"><use href="#i-book"/></svg>
+              <span>English User Guide (PDF)</span>
+            </a>
+          </div>
         </div>
       </div>
 
-      <div class="notes-grid reveal">
-        <div class="note-col">
-          <h3><span class="lang-en">You'll need</span><span class="lang-zh">你还需要</span></h3>
-          <ul>
-            <li class="lang-en">macOS 12+, or Windows 10 / 11.</li>
-            <li class="lang-zh">macOS 12+，或 Windows 10 / 11。</li>
-            <li class="lang-en">A TeX distribution for LaTeX: MacTeX, TeX Live or MiKTeX.</li>
-            <li class="lang-zh">LaTeX 功能需要 TeX 发行版：MacTeX、TeX Live 或 MiKTeX。</li>
-            <li class="lang-en">LibreOffice, only to turn PowerPoint figures into PDF.</li>
-            <li class="lang-zh">把 PPT 图转成 PDF 时需要 LibreOffice。</li>
-            <li class="lang-en">A model endpoint for translation and the assistant.</li>
-            <li class="lang-zh">翻译和写作助手需要一个模型接口。</li>
-          </ul>
+      <!-- SETUP NOTES -->
+      <div class="setup-grid">
+        <div class="setup-card">
+          <h3><span class="lang-zh">1. 环境准备</span><span class="lang-en">1. Prerequisites</span></h3>
+          <p class="lang-zh">编辑 Markdown / 纯文本与双语对照开箱即用；编译 LaTeX 论文需本机安装 <strong>MacTeX</strong>（macOS）或 <strong>TeX Live / MiKTeX</strong>（Windows），软件会自动查找路径。将 PPT 图自动转为 PDF 可选装 <a href="https://www.libreoffice.org/" target="_blank" rel="noopener noreferrer">LibreOffice</a>。</p>
+          <p class="lang-en">Markdown and plain-text bilingual editing work out of the box. LaTeX compilation uses your local <strong>MacTeX</strong>, <strong>TeX Live</strong>, or <strong>MiKTeX</strong> (auto-detected). Optional <a href="https://www.libreoffice.org/" target="_blank" rel="noopener noreferrer">LibreOffice</a> converts generated PPTX figures to PDF.</p>
         </div>
-        <div class="note-col">
-          <h3><span class="lang-en">First launch</span><span class="lang-zh">首次打开</span></h3>
-          <p class="lang-en">The installers are not signed with a trusted certificate yet. On macOS, open BiWrite once, then allow it under <em>System Settings → Privacy &amp; Security → Open Anyway</em>. On Windows, SmartScreen: <em>More info → Run anyway</em>.</p>
-          <p class="lang-zh">安装包尚未获得受信任的证书签名。macOS 上先打开一次，再到<em>系统设置 → 隐私与安全性</em>点「仍要打开」；Windows 上在 SmartScreen 中依次点「更多信息」「仍要运行」。</p>
+
+        <div class="setup-card">
+          <h3><span class="lang-zh">2. 首次启动放行提示</span><span class="lang-en">2. First Launch Approval</span></h3>
+          <p class="lang-zh">安装包暂未附商业代码签名证书。<strong>Windows</strong> 弹出 SmartScreen 时点「更多信息 → 仍要运行」；<strong>macOS</strong> 拖入应用程序后可在「系统设置 → 隐私与安全性」点「仍要打开」，或直接在终端执行：</p>
+          <p class="lang-en">Installers are not notarized with a paid certificate yet. On <strong>Windows</strong> SmartScreen, click <em>More info → Run anyway</em>. On <strong>macOS</strong>, click <em>System Settings → Privacy &amp; Security → Open Anyway</em>, or run once in Terminal:</p>
+          <div class="cmd-box">
+            <code id="xattr-cmd">xattr -dr com.apple.quarantine /Applications/BiWrite.app</code>
+            <button type="button" class="copy-btn" data-copy-target="xattr-cmd" aria-label="复制终端命令 / Copy command">
+              <svg aria-hidden="true"><use href="#i-copy"/></svg>
+              <span class="copy-label"><span class="lang-zh">复制</span><span class="lang-en">Copy</span></span>
+            </button>
+          </div>
         </div>
-        <div class="note-col">
-          <h3><span class="lang-en">Your data</span><span class="lang-zh">你的数据</span></h3>
-          <p class="lang-en">Keys live in the system keychain. Settings, the translation cache and request logs stay on your machine. No account, no analytics.</p>
-          <p class="lang-zh">密钥保存在系统钥匙串。设置、翻译缓存和请求日志只存在本机。没有账号，也没有统计。</p>
+
+        <div class="setup-card">
+          <h3><span class="lang-zh">3. 三十秒配置开写</span><span class="lang-en">3. Quick Start in 30 Seconds</span></h3>
+          <p class="lang-zh">打开设置（<code>⌘,</code>）→ 选择模型预设并粘贴一个或多个 API Key → 点「测试」确认连通 → 用内置顶会模板新建或直接打开已有 <code>.tex</code> / <code>.md</code> 论文即可开始双语写作。</p>
+          <p class="lang-en">Open Settings (<code>⌘,</code>) → pick a provider preset and paste one or more API keys → click <em>Test</em> → start from a built-in conference template or open any existing <code>.tex</code> or <code>.md</code> manuscript.</p>
         </div>
       </div>
 
-      <div class="faq reveal">
-        <details>
-          <summary><span class="lang-en">Is BiWrite free?</span><span class="lang-zh">BiWrite 免费吗？</span><svg aria-hidden="true"><use href="#i-plus"/></svg></summary>
-          <p class="lang-en">Yes. Download the installers from GitHub Releases at no cost. You pay your model provider directly, if it charges anything.</p>
-          <p class="lang-zh">免费。安装包在 GitHub Releases 上直接下载。模型接口的费用由你直接付给服务商（如果它收费）。</p>
-        </details>
-        <details>
-          <summary><span class="lang-en">Does it work offline?</span><span class="lang-zh">可以离线使用吗？</span><svg aria-hidden="true"><use href="#i-plus"/></svg></summary>
-          <p class="lang-en">Opening, writing, compiling and paired translations work offline. New translations and assistant jobs need your model endpoint, which can be a local server such as Ollama.</p>
-          <p class="lang-zh">打开、写作、编译和已有的配对译文都可以离线完成。新的翻译和助手任务需要模型接口，也可以接本地的 Ollama。</p>
-        </details>
-        <details>
-          <summary><span class="lang-en">What happens to my files and keys?</span><span class="lang-zh">文件和密钥会被怎样处理？</span><svg aria-hidden="true"><use href="#i-plus"/></svg></summary>
-          <p class="lang-en">Your files stay where they are; edits are only written when you save. Keys go into the system keychain and are never shown again. Request logs stay on this machine and do not record keys.</p>
-          <p class="lang-zh">文件留在原来的位置，只有保存时才写入。密钥保存在系统钥匙串中，之后不再显示。请求日志只存在本机，不记录密钥。</p>
-        </details>
-        <details>
-          <summary><span class="lang-en">Can I keep my existing Chinese version?</span><span class="lang-zh">可以继续用我已有的中文版吗？</span><svg aria-hidden="true"><use href="#i-plus"/></svg></summary>
-          <p class="lang-en">Yes. Pair <code>paper.tex</code> with <code>paper_zh.tex</code>, or <code>sections_en/</code> with <code>sections_zh/</code>. BiWrite matches paragraphs by citations, labels, formulas and numbers, and writes each edited paragraph back in place.</p>
-          <p class="lang-zh">可以。把 <code>paper.tex</code> 与 <code>paper_zh.tex</code> 配对，或 <code>sections_en/</code> 与 <code>sections_zh/</code>。BiWrite 按引用、标签、公式和数字匹配段落，保存时把每个改动过的段落原位写回。</p>
-        </details>
+      <!-- FAQ -->
+      <div class="faq-block" id="faq">
+        <h3 class="faq-heading"><span class="lang-zh">常见问题解答</span><span class="lang-en">Frequently Asked Questions</span></h3>
+        <div class="faq-grid">
+          <details class="faq-item">
+            <summary>
+              <span class="lang-zh">BiWrite 收费吗？需要注册账号吗？</span>
+              <span class="lang-en">Is BiWrite free? Do I need an account?</span>
+              <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+            </summary>
+            <p class="lang-zh">软件完全免费并基于 MIT 协议开源，无任何账号体系或订阅收费。你只需配置自己的模型接口密钥（官方 API、第三方兼容接口或本地免费的 Ollama / LM Studio 均可）。</p>
+            <p class="lang-en">BiWrite is 100% free and MIT open-source with no account or subscription. You simply connect your own API key (official providers, compatible relays, or local free servers like Ollama).</p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span class="lang-zh">我的论文源码和 API 密钥安全吗？会经过第三方服务器吗？</span>
+              <span class="lang-en">Where are my manuscripts and API keys stored?</span>
+              <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+            </summary>
+            <p class="lang-zh">所有源码、SQLite 翻译缓存与请求日志仅保存在你的电脑本地，软件不包含任何统计或遥测代码。API 请求由你本机直接发往你填写的模型接口地址；密钥保存在本机仅当前系统账户可读的配置文件或系统钥匙串中，日志绝不记录密钥明文。</p>
+            <p class="lang-en">Manuscripts, SQLite translation caches, and request logs never leave your machine, with zero telemetry. API calls go directly from your desktop to your configured endpoint, and keys stay in local user-only storage or your OS keychain.</p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span class="lang-zh">我已经有一份手写的中文版论文，怎么和英文版同步维护？</span>
+              <span class="lang-en">Can I pair an existing manually written Chinese version?</span>
+              <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+            </summary>
+            <p class="lang-zh">把中文稿命名为 <code>paper_zh.tex</code> 放在 <code>paper.tex</code> 旁（或使用 <code>sections_en/</code> 与 <code>sections_zh/</code> 目录），打开时即自动逐段对齐，也可点标题栏链条图标手动选择配对文件。配对后直接显示你的中文，零翻译请求；改任意一侧，保存时另一侧只原位替换对应段落。</p>
+            <p class="lang-en">Place <code>paper_zh.tex</code> beside <code>paper.tex</code> (or use <code>sections_en/</code> and <code>sections_zh/</code>) for automatic alignment, or click the Pair icon in the toolbar. Your Chinese text loads with zero API requests, and edits sync in place when you save.</p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span class="lang-zh">不保存直接编译，或者使用写作助手，会改坏我磁盘上的原文件吗？</span>
+              <span class="lang-en">Will unsaved builds or assistant actions overwrite my files on disk?</span>
+              <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+            </summary>
+            <p class="lang-zh">不会。未保存编译在隐藏的 <code>.biwrite/</code> 缓存目录中进行，助手的「采纳」与「还原」也只修改编辑器内存中的内容（且随时可 <code>⌘Z</code> 撤销）。只有你按下 <code>⌘S</code> 保存时才写入本地文件；若期间文件被外部程序（如 Git）修改过，保存前还会弹出逐行 Diff 提醒。</p>
+            <p class="lang-en">Never. Unsaved builds run inside a hidden <code>.biwrite/</code> cache folder, and assistant edits apply only to the in-memory editor buffer (undoable via <code>⌘Z</code>). Disk files are written only on Save, with a line-by-line diff prompt if modified externally.</p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span class="lang-zh">第三方接口容易遇到 429 限流或疑似降智，怎么处理？</span>
+              <span class="lang-en">How does BiWrite handle API rate limits or unreliable relays?</span>
+              <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+            </summary>
+            <p class="lang-zh">在接口设置中打开「管理号池」粘贴多个密钥并设定单 Key 并发，软件会自动均衡调度并在限流时秒切可用 Key，也可在「请求节奏」中调大单次合并段落数（1–8 段）。按 <code>⌘⇧L</code> 打开请求日志，可直接核对服务端实际返回的模型名称、推理强度与服务等级是否与请求一致。</p>
+            <p class="lang-en">Add multiple keys in the Key Pool with per-key concurrency limits for automatic load balancing and cooldown failover, or batch 2–8 new paragraphs per request. Open the Request Log (<code>⌘⇧L</code>) to inspect server-declared model names, reasoning effort, and service tiers.</p>
+          </details>
+
+          <details class="faq-item">
+            <summary>
+              <span class="lang-zh">可以直接写中文初稿，让右侧实时生成英文论文吗？</span>
+              <span class="lang-en">Can I write my primary draft in Chinese and translate into English?</span>
+              <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+            </summary>
+            <p class="lang-zh">完全支持。打开中文文档时软件会自动识别为「左中右英」（<code>zh → en</code>）模式；英文文档也可以随时点顶部的 <code>EN ⇄ 中</code> 切为中文侧编辑，编译英文 PDF 或导出英文 <code>.tex</code> 同样一键完成。</p>
+            <p class="lang-en">Yes. Opening a Chinese manuscript automatically sets Chinese as the primary editor with English generated on the right (<code>zh → en</code>), and you can export or compile the English LaTeX PDF directly.</p>
+          </details>
+        </div>
       </div>
     </div>
   </section>
 </main>
 
 <footer class="site-footer">
-  <div class="wrap">
-    <div class="footer-main">
+  <div class="container">
+    <div class="footer-grid">
       <div class="footer-brand">
         <a class="brand" href="#top">
           <svg class="brand-mark" aria-hidden="true"><use href="#i-mark"/></svg>
           <span class="brand-name">BiWrite</span>
         </a>
-        <p class="lang-en">For researchers who write in two languages.</p>
-        <p class="lang-zh">为同时用中英文写作的研究者而做。</p>
-        <p class="footer-version">v0.2.25</p>
+        <p class="lang-zh">专注学术论文写作的中英双语桌面编辑器。<br>开源免费（MIT），数据与密钥完全留在本地。</p>
+        <p class="lang-en">Open-source bilingual LaTeX &amp; Markdown desktop editor for academic papers. MIT licensed, 100% local data ownership.</p>
+        <p class="footer-tech">Rust · Tauri 2 · Svelte 5 · CodeMirror 6 · KaTeX · PDF.js</p>
       </div>
-      <div class="footer-cols">
+
+      <div class="footer-links">
         <div class="footer-col">
-          <h3><span class="lang-en">Product</span><span class="lang-zh">产品</span></h3>
-          <a href="#bilingual"><span class="lang-en">Bilingual editing</span><span class="lang-zh">双语编辑</span></a>
-          <a href="#latex">LaTeX</a>
-          <a href="#assistant"><span class="lang-en">Writing assistant</span><span class="lang-zh">写作助手</span></a>
-          <a href="#download"><span class="lang-en">Download</span><span class="lang-zh">下载</span></a>
+          <h4><span class="lang-zh">产品特性</span><span class="lang-en">Features</span></h4>
+          <a href="#workspace"><span class="lang-zh">界面总览</span><span class="lang-en">Workspace</span></a>
+          <a href="#why"><span class="lang-zh">双语增量与配对</span><span class="lang-en">Bilingual &amp; Pairing</span></a>
+          <a href="#latex"><span class="lang-zh">LaTeX 本地工作台</span><span class="lang-en">LaTeX Workbench</span></a>
+          <a href="#assistant"><span class="lang-zh">学术写作与绘图助手</span><span class="lang-en">Writing Assistant</span></a>
+          <a href="#engineering"><span class="lang-zh">号池与验真日志</span><span class="lang-en">Key Pool &amp; Logs</span></a>
         </div>
+
         <div class="footer-col">
-          <h3><span class="lang-en">Resources</span><span class="lang-zh">资料</span></h3>
-          <a href="https://github.com/zzccppp/biwrite" target="_blank" rel="noopener noreferrer">GitHub</a>
-          <a href="https://github.com/zzccppp/biwrite/releases" target="_blank" rel="noopener noreferrer">Releases</a>
-          <a href="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-en.pdf" target="_blank" rel="noopener noreferrer"><span class="lang-en">User guide (PDF)</span><span class="lang-zh">使用说明（英文 PDF）</span></a>
-          <a href="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-zh.pdf" target="_blank" rel="noopener noreferrer"><span class="lang-en">User guide (Chinese PDF)</span><span class="lang-zh">使用说明（中文 PDF）</span></a>
+          <h4><span class="lang-zh">下载与文档</span><span class="lang-en">Downloads &amp; Docs</span></h4>
+          <a href="#download"><span class="lang-zh">客户端下载</span><span class="lang-en">Desktop Installers</span></a>
+          <a href="https://github.com/zzccppp/biwrite/releases" target="_blank" rel="noopener noreferrer"><span class="lang-zh">历史版本 (Releases)</span><span class="lang-en">GitHub Releases</span></a>
+          <a href="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-zh.pdf" target="_blank" rel="noopener noreferrer">中文使用说明 (PDF)</a>
+          <a href="https://github.com/zzccppp/biwrite/blob/master/docs/manual/BiWrite-Manual-en.pdf" target="_blank" rel="noopener noreferrer">User Guide (English PDF)</a>
         </div>
+
         <div class="footer-col">
-          <h3><span class="lang-en">Elsewhere</span><span class="lang-zh">别处</span></h3>
-          <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a>
-          <a href="https://linux.do/" target="_blank" rel="noopener noreferrer">LINUX DO</a>
-          <a href="https://github.com/zzccppp/biwrite/issues" target="_blank" rel="noopener noreferrer"><span class="lang-en">Issues</span><span class="lang-zh">问题反馈</span></a>
+          <h4><span class="lang-zh">开源与交流社区</span><span class="lang-en">Open Source &amp; Community</span></h4>
+          <a href="https://github.com/zzccppp/biwrite" target="_blank" rel="noopener noreferrer"><span class="lang-zh">GitHub 源码仓库</span><span class="lang-en">GitHub Repository</span></a>
+          <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder Skill</a>
+          <a href="https://linux.do/" target="_blank" rel="noopener noreferrer"><span class="lang-zh">LINUX DO 交流社区</span><span class="lang-en">LINUX DO Community</span></a>
+          <a href="https://github.com/zzccppp/biwrite/issues" target="_blank" rel="noopener noreferrer"><span class="lang-zh">问题反馈 (Issues)</span><span class="lang-en">Report an Issue</span></a>
         </div>
       </div>
     </div>
+
     <div class="footer-bottom">
-      <p class="lang-en">© 2026 BiWrite. Set in Iowan Old Style and Songti. Built with Tauri, Svelte, CodeMirror and KaTeX.</p>
-      <p class="lang-zh">© 2026 BiWrite。字体：Iowan Old Style 与宋体。技术：Tauri、Svelte、CodeMirror、KaTeX。</p>
-      <p class="footer-mark"><span class="lang-en">One draft, two languages.</span><span class="lang-zh">一篇稿子，两种语言。</span></p>
+      <p>© 2026 BiWrite Contributors · Released under the MIT License.</p>
+      <p class="lang-zh">友情链接：<a href="https://linux.do/" target="_blank" rel="noopener noreferrer">LINUX DO</a>（BiWrite 交流讨论社区） · <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a></p>
+      <p class="lang-en">Community &amp; Ecosystem: <a href="https://linux.do/" target="_blank" rel="noopener noreferrer">LINUX DO</a> · <a href="https://github.com/qzkinhit/research-builder" target="_blank" rel="noopener noreferrer">research-builder</a></p>
     </div>
   </div>
 </footer>
 
 <dialog class="lightbox" id="lightbox" aria-labelledby="lightbox-cap">
-  <button type="button" class="lightbox-close" aria-label="Close" data-aria-en="Close" data-aria-zh="关闭">
-    <svg aria-hidden="true"><use href="#i-close"/></svg>
-  </button>
-  <div class="lightbox-body">
-    <img id="lightbox-img" src="assets/screens/editor-en-1700.webp" alt="">
-    <div class="lightbox-meta">
+  <div class="lightbox-inner">
+    <div class="lightbox-bar">
       <p id="lightbox-cap"></p>
-      <a class="lightbox-original" id="lightbox-original" href="assets/screens/editor-en-1700.webp" target="_blank" rel="noopener noreferrer">
-        <span class="lang-en">Open original</span><span class="lang-zh">打开原图</span>
-        <svg aria-hidden="true"><use href="#i-external"/></svg>
-      </a>
+      <div class="lightbox-actions">
+        <a class="lightbox-open-raw" id="lightbox-original" href="assets/screens/editor-zh-1700.webp" target="_blank" rel="noopener noreferrer">
+          <span class="lang-zh">新标签页打开原图</span><span class="lang-en">Open raw image</span>
+          <svg aria-hidden="true"><use href="#i-external"/></svg>
+        </a>
+        <button type="button" class="lightbox-close" aria-label="关闭 / Close">
+          <svg aria-hidden="true"><use href="#i-close"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="lightbox-stage">
+      <img id="lightbox-img" src="assets/screens/editor-zh-1700.webp" alt="">
     </div>
   </div>
 </dialog>
