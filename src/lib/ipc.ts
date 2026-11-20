@@ -184,7 +184,8 @@ export const settingsIpc = {
   setAssistantProvider: (id: string) => invoke<SettingsView>("set_assistant_provider", { id }),
   setActive: (id: string) => invoke<SettingsView>("set_active_provider", { id }),
   test: (id: string) => invoke<TestAnswer>("test_provider", { id }),
-  listModels: (id: string) => invoke<string[]>("list_provider_models", { id }),
+  listModels: (id: string, provider?: ProviderConfig, key?: string) =>
+    invoke<string[]>("list_provider_models", { id, provider, key: key?.trim() || null }),
   setConcurrency: (concurrency: number) => invoke<SettingsView>("set_concurrency", { concurrency }),
   setDocNote: (note: string) => invoke<void>("set_doc_note", { note }),
   getPrompt: (direction: Direction) => invoke<PromptView>("get_prompt", { direction }),

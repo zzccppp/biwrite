@@ -36,7 +36,8 @@ use biwrite_engine::{MockTranslator, TranslateError, Translator};
 
 pub use chat::{ChatModel, ChatOutput, ChatRequest, ImageInput};
 pub use config::{
-    ConfigError, Effort, Preset, ProviderConfig, ProviderKind, ServiceTier, WireApi, presets,
+    ConfigError, Effort, Preset, ProviderConfig, ProviderKind, ServiceTier, WireApi,
+    is_loopback_url, presets,
 };
 pub use http::redact;
 pub use keys::{KeyFn, KeyStatus, fingerprint as key_fingerprint, tail as key_tail};

@@ -291,11 +291,11 @@
   }
   .zh.en {
     font-family: var(--font-prose);
-    font-size: 15.5px;
+    font-size: var(--zh-size);
     line-height: 1.7;
   }
   .zh.caption {
-    font-size: 0.92em;
+    font-size: calc(var(--zh-size) * 0.85);
     color: var(--ink-2);
   }
   .zh.caption::before {
@@ -313,13 +313,13 @@
     color: var(--hl-heading);
   }
   [data-level="1"] .zh {
-    font-size: 1.45em;
+    font-size: calc(var(--zh-size) * 1.31);
   }
   [data-level="2"] .zh {
-    font-size: 1.28em;
+    font-size: calc(var(--zh-size) * 1.16);
   }
   [data-level="3"] .zh {
-    font-size: 1.12em;
+    font-size: calc(var(--zh-size) * 1.05);
   }
   [data-level] {
     padding-top: 16px;
@@ -448,6 +448,7 @@
     padding: 2px 10px;
     overflow-x: auto;
     overflow-y: hidden;
+    font-size: calc(14px + var(--font-delta));
     color: var(--ink);
     user-select: text;
     -webkit-user-select: text;

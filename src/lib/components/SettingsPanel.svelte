@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { MAX_FONT_DELTA, MIN_FONT_DELTA, isMacPlatform } from "../fontSize";
   import { count, language, t } from "../i18n.svelte";
   import { errorMessage, settingsIpc } from "../ipc";
   import type { LatexStore } from "../latex.svelte";
@@ -20,13 +21,17 @@
     dirty: boolean;
     /** Scroll to a section when opening (e.g. "updates"). */
     focus?: string | null;
+    fontDelta: number;
+    fontSize: number;
+    onfontsize: (delta: number) => void;
     onchange: (view: SettingsView) => void;
     onskill: (skill: SkillInfo) => void;
     onclose: () => void;
     onglossary: () => void;
   }
 
-  let { settings, latex, dirty, focus = null, onchange, onskill, onclose, onglossary }: Props = $props();
+  let { settings, latex, dirty, focus = null, fontDelta, fontSize, onfontsize, onchange, onskill, onclose, onglossary }: Props = $props();
+  const mod = isMacPlatform() ? "⌘" : "Ctrl+";
   let body = $state<HTMLElement>();
 
   let selectedId = $state<string | null>(null);
@@ -168,6 +173,32 @@
 
     <section id="window">
       <h3 class="smallcaps">{t("settings.window")}</h3>
+      <div class="field size-field">
+        <span class="label">{t("settings.textSize")}</span>
+        <div class="row">
+          <div class="stepper" role="group" aria-label={t("settings.textSize")}>
+            <button
+              class="step-btn"
+              onclick={() => onfontsize(fontDelta - 1)}
+              disabled={fontDelta <= MIN_FONT_DELTA}
+              aria-label={t("pdf.zoomOut")}>−</button
+            >
+            <span class="size-value">{fontSize} px</span>
+            <button
+              class="step-btn"
+              onclick={() => onfontsize(fontDelta + 1)}
+              disabled={fontDelta >= MAX_FONT_DELTA}
+              aria-label={t("pdf.zoomIn")}>+</button
+            >
+          </div>
+          {#if fontDelta !== 0}
+            <button class="btn" onclick={() => onfontsize(0)}>{t("settings.textSizeReset")}</button>
+          {/if}
+        </div>
+        <span class="hint">
+          {t("settings.textSizeHint", { inKey: `${mod}+`, outKey: `${mod}-`, resetKey: `${mod}0` })}
+        </span>
+      </div>
       <label class="check">
         <input
           type="checkbox"
@@ -495,6 +526,45 @@
   .lang.on {
     background: var(--ink);
     color: var(--paper);
+  }
+  .size-field {
+    margin-bottom: 12px;
+  }
+  .stepper {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--rule-strong);
+    border-radius: 4px;
+    background: var(--paper);
+    height: 27px;
+  }
+  .step-btn {
+    width: 28px;
+    height: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--ink-2);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .step-btn:hover:not(:disabled) {
+    color: var(--accent);
+    background: var(--accent-wash);
+  }
+  .step-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .size-value {
+    min-width: 56px;
+    padding: 0 8px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--ink);
+    border-left: 1px solid var(--rule);
+    border-right: 1px solid var(--rule);
   }
   .check {
     display: flex;

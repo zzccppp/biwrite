@@ -1,6 +1,7 @@
 <script lang="ts">
   import { count, type MessageKey, t } from "../i18n.svelte";
   import { errorMessage, settingsIpc } from "../ipc";
+  import { isLoopbackBaseUrl, mergeModels, sameUrlOrigin, stepOptionIndex, visibleModels } from "../modelSelect";
   import type { Effort, ProviderConfig, ProviderView, ServiceTier, SettingsView } from "../types";
   import KeyManager from "./KeyManager.svelte";
 
@@ -33,19 +34,50 @@
   });
   let keyInput = $state("");
   let models = $state<string[]>([]);
+  let customModels = $state<string[]>([]);
+  let fetchedOrigin = $state("");
+  let fetchedKind = $state<ProviderConfig["kind"] | "">("");
+  let modelOpen = $state(false);
+  let filtering = $state(false);
+  let activeIndex = $state(-1);
+  let comboEl = $state<HTMLElement>();
+  let modelInput = $state<HTMLInputElement>();
+  let menuEl = $state<HTMLElement>();
   let managing = $state(false);
   let busy = $state<"" | "save" | "key" | "test" | "models" | "delete">("");
   let message = $state<{ ok: boolean; text: string } | null>(null);
 
   let lastId: string | null = null;
+  let fetchSeq = 0;
   $effect(() => {
     if (provider.id !== lastId || provider.id === "") {
       lastId = provider.id;
+      fetchSeq++;
       draft = copy(provider);
       keyInput = "";
       models = [];
+      customModels = [];
+      fetchedOrigin = "";
+      fetchedKind = "";
+      modelOpen = false;
+      filtering = false;
+      activeIndex = -1;
       managing = false;
       message = null;
+    }
+  });
+
+  // Models belong to one host and API family: changing either clears an earlier list.
+  $effect(() => {
+    if (fetchedOrigin && (draft.kind !== fetchedKind || !sameUrlOrigin(draft.baseUrl, fetchedOrigin))) {
+      fetchSeq++;
+      models = [];
+      customModels = [];
+      fetchedOrigin = "";
+      fetchedKind = "";
+      modelOpen = false;
+      filtering = false;
+      activeIndex = -1;
     }
   });
 
@@ -61,6 +93,115 @@
       .map((k) => k.trim())
       .filter(Boolean).length,
   );
+  const allModels = $derived(mergeModels(models, customModels));
+  const shown = $derived(visibleModels(allModels, draft.model, filtering));
+  const totalOptions = $derived(shown.options.length + (shown.canAddCustom ? 1 : 0));
+  const showDropdown = $derived(modelOpen && totalOptions > 0);
+  const canFetchModels = $derived(
+    !busy &&
+      draft.baseUrl.trim().length > 0 &&
+      (!provider.needsKey ||
+        pasted > 0 ||
+        isLoopbackBaseUrl(draft.baseUrl) ||
+        (!isNew && provider.hasKey && sameUrlOrigin(provider.baseUrl, draft.baseUrl))),
+  );
+
+  // Close the model dropdown on an outside click or Escape (capture phase so
+  // Escape does not also close the settings drawer underneath).
+  $effect(() => {
+    if (!showDropdown) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (comboEl && !comboEl.contains(e.target as Node)) {
+        modelOpen = false;
+        filtering = false;
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      e.stopPropagation();
+      modelOpen = false;
+      filtering = false;
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  });
+
+  function scrollOptionIntoView(index: number): void {
+    requestAnimationFrame(() => {
+      const item = menuEl?.children[index] as HTMLElement | undefined;
+      item?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  function openDropdown(filterByInput = false): void {
+    filtering = filterByInput;
+    modelOpen = true;
+    const current = draft.model.trim();
+    const idx = allModels.indexOf(current);
+    activeIndex = idx;
+    if (idx >= 0) scrollOptionIntoView(idx);
+  }
+
+  function toggleDropdown(): void {
+    if (showDropdown && !filtering) {
+      modelOpen = false;
+      return;
+    }
+    openDropdown(false);
+    modelInput?.focus();
+  }
+
+  function pickModel(m: string): void {
+    draft.model = m;
+    modelOpen = false;
+    filtering = false;
+  }
+
+  function addCustomModel(m: string): void {
+    const trimmed = m.trim();
+    if (!trimmed) return;
+    if (!models.includes(trimmed) && !customModels.includes(trimmed)) {
+      customModels = [...customModels, trimmed];
+    }
+    draft.model = trimmed;
+    modelOpen = false;
+    filtering = false;
+  }
+
+  function onModelKeydown(e: KeyboardEvent): void {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (allModels.length === 0 && !shown.canAddCustom) return;
+      e.preventDefault();
+      const delta = e.key === "ArrowDown" ? 1 : -1;
+      if (!showDropdown) {
+        openDropdown(false);
+        if (activeIndex < 0) activeIndex = stepOptionIndex(-1, delta, allModels.length);
+        if (activeIndex >= 0) scrollOptionIntoView(activeIndex);
+        return;
+      }
+      activeIndex = stepOptionIndex(activeIndex, delta, totalOptions);
+      if (activeIndex >= 0) scrollOptionIntoView(activeIndex);
+    } else if (e.key === "Enter" && showDropdown) {
+      e.preventDefault();
+      if (activeIndex >= 0 && activeIndex < shown.options.length) {
+        pickModel(shown.options[activeIndex]);
+      } else if (shown.canAddCustom && (activeIndex < 0 || activeIndex === shown.options.length)) {
+        addCustomModel(shown.customValue);
+      } else {
+        modelOpen = false;
+        filtering = false;
+      }
+    } else if (e.key === "Tab" && showDropdown) {
+      modelOpen = false;
+      filtering = false;
+    }
+  }
 
   function copy(p: ProviderConfig): ProviderConfig {
     return {
@@ -112,6 +253,9 @@
 
   async function save(): Promise<void> {
     const key = keyInput.trim();
+    const typedModel = draft.model.trim();
+    modelOpen = false;
+    filtering = false;
     await act("save", async () => {
       const view = await settingsIpc.saveProvider($state.snapshot(draft));
       const id = isNew ? (view.providers.at(-1)?.id ?? "") : draft.id;
@@ -119,6 +263,9 @@
       // leave the form "new" (and a second click create a duplicate).
       onsaved(view, id);
       resetFrom(view, id);
+      if (typedModel && models.length > 0 && !models.includes(typedModel) && !customModels.includes(typedModel)) {
+        customModels = [...customModels, typedModel];
+      }
       if (key && id) {
         onsaved(await settingsIpc.setApiKey(id, key), id);
         keyInput = "";
@@ -154,10 +301,49 @@
   }
 
   async function fetchModels(): Promise<void> {
-    const list = await act("models", () => settingsIpc.listModels(provider.id));
-    if (list) {
-      models = list;
-      message = { ok: true, text: count(list.length, "provider.models.one", "provider.models.many") };
+    const seq = ++fetchSeq;
+    const requestedId = provider.id;
+    const targetUrl = draft.baseUrl;
+    const targetKind = draft.kind;
+    const list = await act("models", () =>
+      settingsIpc.listModels(requestedId, $state.snapshot(draft), keyInput),
+    );
+    if (
+      !list ||
+      seq !== fetchSeq ||
+      provider.id !== requestedId ||
+      draft.kind !== targetKind ||
+      !sameUrlOrigin(draft.baseUrl, targetUrl)
+    ) {
+      return;
+    }
+    models = list;
+    const savedModel = provider.model.trim();
+    if (
+      !isNew &&
+      savedModel &&
+      provider.kind === targetKind &&
+      sameUrlOrigin(provider.baseUrl, targetUrl) &&
+      !list.includes(savedModel) &&
+      !customModels.includes(savedModel)
+    ) {
+      customModels = [...customModels, savedModel];
+    }
+    fetchedOrigin = targetUrl;
+    fetchedKind = targetKind;
+    if (list.length === 0 && customModels.length === 0) {
+      modelOpen = false;
+      message = { ok: true, text: t("provider.models.empty") };
+    } else {
+      message = {
+        ok: true,
+        text:
+          list.length === 0
+            ? t("provider.models.empty")
+            : count(list.length, "provider.models.one", "provider.models.many"),
+      };
+      openDropdown(false);
+      requestAnimationFrame(() => modelInput?.focus());
     }
   }
 
@@ -221,20 +407,102 @@
   <div class="field">
     <span class="label">{t("provider.model")}</span>
     <div class="row">
-      <input
-        class="input mono"
-        list={listId}
-        bind:value={draft.model}
-        spellcheck="false"
-        placeholder={t("provider.modelPlaceholder")}
-      />
-      <button class="btn" onclick={fetchModels} disabled={isNew || !!busy || (provider.needsKey && !provider.hasKey)}>
+      <div class="combo" bind:this={comboEl}>
+        <input
+          bind:this={modelInput}
+          class="input mono"
+          class:with-chev={allModels.length > 0}
+          role="combobox"
+          aria-label={t("provider.model")}
+          aria-expanded={showDropdown}
+          aria-autocomplete="list"
+          aria-controls={showDropdown ? listId : undefined}
+          aria-activedescendant={showDropdown && activeIndex >= 0 && activeIndex < totalOptions ? `${listId}-opt-${activeIndex}` : undefined}
+          autocomplete="off"
+          bind:value={draft.model}
+          spellcheck="false"
+          placeholder={t("provider.modelPlaceholder")}
+          onfocus={() => {
+            if (allModels.length > 0 && !modelOpen) openDropdown(false);
+          }}
+          onclick={() => {
+            if (allModels.length > 0 && !modelOpen) openDropdown(false);
+          }}
+          oninput={() => {
+            activeIndex = -1;
+            if (allModels.length > 0) {
+              filtering = true;
+              modelOpen = true;
+            }
+          }}
+          onkeydown={onModelKeydown}
+        />
+        {#if allModels.length > 0}
+          <button
+            type="button"
+            class="combo-btn"
+            class:open={showDropdown}
+            tabindex="-1"
+            aria-label={t("provider.showModels")}
+            title={t("provider.showModels")}
+            onmousedown={(e) => e.preventDefault()}
+            onclick={toggleDropdown}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5 8 10l3.5-3.5" /></svg>
+          </button>
+        {/if}
+        {#if showDropdown}
+          <ul
+            class="model-menu mono"
+            id={listId}
+            role="listbox"
+            aria-label={t("provider.model")}
+            bind:this={menuEl}
+            onmousedown={(e) => {
+              if (e.target !== e.currentTarget || e.offsetX < e.currentTarget.clientWidth) e.preventDefault();
+            }}
+          >
+            {#each shown.options as m, i (m)}
+              <li role="presentation">
+                <button
+                  type="button"
+                  id={`${listId}-opt-${i}`}
+                  role="option"
+                  class="model-opt"
+                  class:selected={draft.model.trim() === m}
+                  class:active={activeIndex === i}
+                  aria-selected={draft.model.trim() === m}
+                  onmouseenter={() => (activeIndex = i)}
+                  onclick={() => pickModel(m)}
+                >
+                  <span class="opt-name">{m}</span>
+                  {#if draft.model.trim() === m}<span class="opt-check" aria-hidden="true">✓</span>{/if}
+                </button>
+              </li>
+            {/each}
+            {#if shown.canAddCustom}
+              <li role="presentation" class:custom-sep={shown.options.length > 0}>
+                <button
+                  type="button"
+                  id={`${listId}-opt-${shown.options.length}`}
+                  role="option"
+                  class="model-opt custom"
+                  class:active={activeIndex === shown.options.length}
+                  aria-selected={false}
+                  onmouseenter={() => (activeIndex = shown.options.length)}
+                  onclick={() => addCustomModel(shown.customValue)}
+                >
+                  <span class="opt-name">{t("provider.addCustomModel", { model: shown.customValue })}</span>
+                </button>
+              </li>
+            {/if}
+          </ul>
+        {/if}
+      </div>
+      <button class="btn" onclick={fetchModels} disabled={!canFetchModels}>
         {busy === "models" ? t("common.loading") : t("provider.listModels")}
       </button>
     </div>
-    <datalist id={listId}>
-      {#each models as m (m)}<option value={m}></option>{/each}
-    </datalist>
   </div>
 
   {#if api !== "chat" || draft.kind === "openai_compatible"}
@@ -376,6 +644,108 @@
   .mono {
     font-family: var(--font-mono);
     font-size: 12px;
+  }
+  .combo {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+  }
+  .input.with-chev {
+    padding-right: 28px;
+  }
+  .combo-btn {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    bottom: 1px;
+    width: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 0 3px 3px 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0;
+  }
+  .combo-btn:hover {
+    color: var(--accent);
+    background: var(--accent-wash);
+  }
+  .combo-btn svg {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 140ms var(--ease);
+  }
+  .combo-btn.open svg {
+    transform: rotate(180deg);
+  }
+  .model-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 30;
+    max-height: 220px;
+    overflow-y: auto;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    background: var(--paper);
+    border: 1px solid var(--rule-strong);
+    border-radius: 6px;
+    box-shadow: 0 10px 26px -8px rgba(0, 0, 0, 0.28);
+  }
+  .model-opt {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .model-opt:hover,
+  .model-opt.active {
+    background: var(--accent-wash);
+    color: var(--accent);
+  }
+  .model-opt.selected {
+    font-weight: 600;
+  }
+  .opt-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .opt-check {
+    flex: none;
+    color: var(--accent);
+    font-size: 11px;
+  }
+  .custom-sep {
+    margin-top: 3px;
+    padding-top: 3px;
+    border-top: 1px solid var(--rule);
+  }
+  .model-opt.custom {
+    font-family: var(--font-ui);
+    font-size: 12.5px;
+    color: var(--accent);
   }
   .actions {
     margin: 4px 0 10px;

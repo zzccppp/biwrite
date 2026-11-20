@@ -14,9 +14,10 @@
     "Noto Serif CJK SC", "PingFang SC", "Microsoft YaHei", serif;
 
   --font-source: var(--font-prose);
-  --source-size: 16px;
+  --font-delta: 0px;
+  --source-size: calc(16px + var(--font-delta));
   --source-leading: 1.72;
-  --zh-size: 15.5px;
+  --zh-size: calc(15.5px + var(--font-delta));
   --zh-leading: 1.9;
 
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);

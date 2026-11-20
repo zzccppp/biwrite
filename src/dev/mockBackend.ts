@@ -1630,6 +1630,14 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return { question: "考考你：用一句话形容熊猫。像天气预报员一样说。", answer: "今日熊猫指数满格，黑白配色稳定，局部地区有竹子降落。" };
   },
   test_provider: () => ({ question: "Name a city that starts with K. Answer like a pirate.", answer: "Arr, Kyoto it be, matey!" }),
+  list_provider_models: (a) => {
+    const draft = a.provider as ProviderView | undefined;
+    const kind = draft?.kind ?? state.settings.providers.find((x) => x.id === String(a.id))?.kind;
+    if (kind === "anthropic") {
+      return ["claude-fable-5-1-reversed", "claude-haiku-4-5", "claude-opus-4-6", "claude-sonnet-4-6"];
+    }
+    return ["deepseek-chat", "deepseek-reasoner", "gpt-5", "gpt-5-mini", "gpt-6-astra", "gpt-6.1-sol"];
+  },
   set_active_provider: (a) => {
     const p = state.settings.providers.find((x) => x.id === String(a.id));
     if (!p) throw new Error(`unknown provider ${String(a.id)}`);
@@ -1677,8 +1685,38 @@ const handlers: Record<string, (args: Args) => unknown> = {
   },
   save_provider: (a) => {
     const p = a.provider as ProviderView;
+    if (!p.id) {
+      const added: ProviderView = {
+        ...p,
+        id: `p-${Date.now()}`,
+        hasKey: false,
+        keyCount: 0,
+        keyNames: {},
+        builtin: false,
+        needsKey: p.kind !== "mock",
+        squeezable: false,
+      };
+      state.settings.providers.push(added);
+      return state.settings;
+    }
     const i = state.settings.providers.findIndex((x) => x.id === p.id);
     if (i >= 0) state.settings.providers[i] = { ...state.settings.providers[i], ...p };
+    if (state.settings.activeProvider === p.id && i >= 0) {
+      const cur = state.settings.providers[i];
+      state.settings.activeLabel = cur.kind === "mock" ? "Mock" : `${cur.name} · ${cur.model}`;
+    }
+    return state.settings;
+  },
+  set_api_key: (a) => {
+    const p = state.settings.providers.find((x) => x.id === String(a.id));
+    if (p) {
+      const count = String(a.key ?? "")
+        .split(/[\s,]+/)
+        .map((k) => k.trim())
+        .filter(Boolean).length;
+      p.hasKey = count > 0;
+      p.keyCount = count;
+    }
     return state.settings;
   },
   get_cache: async () => {

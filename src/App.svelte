@@ -48,6 +48,14 @@
   import { anchorsAgree, type Bounds, placeOf as sentencePlace, samePlace, sentenceAtCursor } from "./lib/sentences";
   import { differingStretches } from "./lib/stretch";
   import { Session } from "./lib/session.svelte";
+  import {
+    FONT_SIZE_KEY,
+    applyFontDelta,
+    editorFontSize,
+    fontShortcutAction,
+    isMacPlatform,
+    loadFontDelta,
+  } from "./lib/fontSize";
   import { THEME_KEY, applyTheme, loadTheme, nextTheme, type ThemePref } from "./lib/theme";
   import type {
     PaperView,
@@ -84,7 +92,7 @@
   const ASSIST_KEY = "biwrite.assist.open";
   const PANE_KEY = "biwrite.right";
   const PAPER_KEY = "biwrite.paper";
-  const isMac = navigator.platform.toLowerCase().includes("mac");
+  const isMac = isMacPlatform();
 
   const session = new Session();
   const requestLog = new RequestLogStore();
@@ -96,6 +104,7 @@
   let panes = $state<HTMLElement>();
   let ratio = $state(loadRatio());
   let theme = $state<ThemePref>(loadTheme());
+  let fontDelta = $state(loadFontDelta());
   let highlightTick = $state(0);
   let settings = $state<SettingsView | null>(null);
   let showSettings = $state(false);
@@ -684,12 +693,31 @@
     ipc.announceSettings().catch(() => {});
   }
 
-  /** The interface language or theme chosen in another window. */
+  /** The interface language, theme or text size chosen in another window. */
   function onStorage(e: StorageEvent): void {
     if (e.key === LANG_KEY) language.reload();
     if (e.key === THEME_KEY) {
       theme = loadTheme();
       applyTheme(theme);
+    }
+    if (e.key === FONT_SIZE_KEY) {
+      fontDelta = applyFontDelta(loadFontDelta(), false);
+      editor?.view.requestMeasure();
+      sync.schedule();
+    }
+  }
+
+  function changeFontDelta(next: number, announce = true): void {
+    const clamped = applyFontDelta(next);
+    const changed = clamped !== fontDelta;
+    fontDelta = clamped;
+    if (changed) {
+      editor?.view.requestMeasure();
+      sync.schedule();
+    }
+    if (announce) {
+      const px = editorFontSize(session.mode, clamped);
+      session.flash(t(clamped === 0 ? "editor.fontSizeDefault" : "editor.fontSize", { px }));
     }
   }
 
@@ -1708,6 +1736,15 @@
   }
 
   function onKeydown(e: KeyboardEvent): void {
+    if (e.defaultPrevented) return;
+    const zoom = fontShortcutAction(e, isMac);
+    if (zoom) {
+      e.preventDefault();
+      if (zoom === "in") changeFontDelta(fontDelta + 1);
+      else if (zoom === "out") changeFontDelta(fontDelta - 1);
+      else if (!e.repeat) changeFontDelta(0);
+      return;
+    }
     const primary = isMac ? e.metaKey : e.ctrlKey;
     if (primary && e.altKey && e.code === "KeyJ") {
       e.preventDefault();
@@ -2669,6 +2706,9 @@
     {latex}
     dirty={session.dirty}
     focus={settingsFocus}
+    {fontDelta}
+    fontSize={editorFontSize(session.mode, fontDelta)}
+    onfontsize={(next) => changeFontDelta(next, false)}
     onchange={(view) => settingsChanged(view)}
     onskill={(next) => {
       skill = next;
@@ -2838,7 +2878,7 @@
   }
   .source[data-mode="latex"] {
     --font-source: var(--font-mono);
-    --source-size: 14px;
+    --source-size: calc(14px + var(--font-delta));
     --source-leading: 1.75;
   }
   .source[data-lang="zh"] {

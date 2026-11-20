@@ -167,15 +167,26 @@ impl ProviderConfig {
     pub fn validated(mut self) -> Result<Self, ConfigError> {
         self.name = self.name.trim().to_owned();
         self.model = self.model.trim().to_owned();
+        if self.name.is_empty() {
+            return Err(ConfigError::MissingName);
+        }
+        if self.kind != ProviderKind::Mock && self.model.is_empty() {
+            return Err(ConfigError::MissingModel);
+        }
+        self.validated_for_models()
+    }
+
+    /// Normalize and check the endpoint fields needed to list models (before a
+    /// name or a model is chosen).
+    pub fn validated_for_models(mut self) -> Result<Self, ConfigError> {
+        self.name = self.name.trim().to_owned();
+        self.model = self.model.trim().to_owned();
         self.base_url = self.base_url.trim().trim_end_matches('/').to_owned();
         self.temperature = if self.temperature.is_finite() {
             self.temperature.clamp(0.0, MAX_TEMPERATURE)
         } else {
             0.0
         };
-        if self.name.is_empty() {
-            return Err(ConfigError::MissingName);
-        }
         if self.kind != ProviderKind::OpenaiCompatible {
             self.wire_api = WireApi::Chat;
             self.service_tier = None;
@@ -186,9 +197,6 @@ impl ProviderConfig {
         self.max_retries = self.max_retries.map(|n| n.min(MAX_RETRIES));
         if self.kind == ProviderKind::Mock {
             return Ok(self);
-        }
-        if self.model.is_empty() {
-            return Err(ConfigError::MissingModel);
         }
         let url =
             reqwest::Url::parse(&self.base_url).map_err(|e| ConfigError::BadUrl(e.to_string()))?;
@@ -228,6 +236,13 @@ pub(crate) fn is_loopback(url: &reqwest::Url) -> bool {
         url.host_str(),
         Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
     )
+}
+
+/// Whether `base_url` points to a loopback address (such as a local Ollama or
+/// LM Studio server).
+pub fn is_loopback_url(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url.trim())
+        .is_ok_and(|u| matches!(u.scheme(), "http" | "https") && is_loopback(&u))
 }
 
 /// A starting point offered by "Add provider".
@@ -489,5 +504,27 @@ mod tests {
         assert_eq!(serde_json::to_string(&Effort::Max).unwrap(), "\"max\"");
         // The relay preset stays at high.
         assert_eq!(ANYROUTER.effort, Effort::High);
+    }
+
+    #[test]
+    fn model_listing_validation_allows_an_empty_model_and_checks_the_url() {
+        let mut draft = cfg("https://openrouter.ai/api/v1/");
+        draft.name.clear();
+        draft.model.clear();
+        assert_eq!(draft.clone().validated(), Err(ConfigError::MissingName));
+        let ok = draft.validated_for_models().unwrap();
+        assert_eq!(ok.base_url, "https://openrouter.ai/api/v1");
+        assert!(ok.model.is_empty());
+
+        let mut insecure = cfg("http://openrouter.ai/api/v1");
+        insecure.model.clear();
+        assert_eq!(
+            insecure.validated_for_models(),
+            Err(ConfigError::InsecureUrl)
+        );
+
+        assert!(is_loopback_url("http://localhost:11434/v1"));
+        assert!(is_loopback_url("http://127.0.0.1:8080/v1"));
+        assert!(!is_loopback_url("https://api.openai.com/v1"));
     }
 }

@@ -17,7 +17,7 @@ use tauri::State;
 
 use crate::error::{CommandError, CommandResult};
 use crate::provider_state::translator_for;
-use crate::secrets::{self, MAX_KEYS, NamedKey, Vouched};
+use crate::secrets::{self, MAX_KEYS, NamedKey};
 use crate::settings::{MOCK_ID, ProviderEntry, SettingsView, keeps_keys};
 use crate::state::{AppState, Doc, Document};
 
@@ -972,25 +972,82 @@ pub async fn test_provider(state: Doc, id: String) -> CommandResult<TestAnswer> 
     ask_test(provider.as_ref(), Duration::from_secs(90)).await
 }
 
-#[tauri::command]
-pub async fn list_provider_models(state: Doc, id: String) -> CommandResult<Vec<String>> {
-    let entry = state
-        .settings()
-        .provider(&id)
-        .cloned()
-        .ok_or_else(|| not_found(&id))?;
-    let key = if entry.config.kind.needs_key() {
-        let store = state.secrets.clone();
-        let account = id.clone();
-        blocking(move || secrets::get_keys(store.as_ref(), &account, Vouched::FIRST))
-            .await?
+/// Resolve the endpoint and key for listing models, without ever sending a
+/// stored key to another host or using a key the author set aside.
+async fn model_list_target(
+    state: &AppState,
+    id: &str,
+    draft: Option<ProviderConfig>,
+    pasted_key: Option<String>,
+) -> CommandResult<(ProviderConfig, String)> {
+    let _keys = state.keys_lock.lock().await;
+    let entry = if id.is_empty() {
+        None
+    } else {
+        Some(
+            state
+                .settings()
+                .provider(id)
+                .cloned()
+                .ok_or_else(|| not_found(id))?,
+        )
+    };
+    let config = match (draft, &entry) {
+        (Some(d), _) => d
+            .validated_for_models()
+            .map_err(|e| CommandError::Settings(e.to_string()))?,
+        (None, Some(e)) => e.config.clone(),
+        (None, None) => return Err(not_found(id)),
+    };
+    if !config.kind.needs_key() {
+        return Ok((config, String::new()));
+    }
+    if let Some(raw) = pasted_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let first = parse_named(raw)?
             .into_iter()
             .next()
-            .ok_or_else(|| CommandError::Settings("add an API key first".into()))?
-    } else {
-        String::new()
-    };
-    Ok(list_models(&entry.config, &key).await?)
+            .ok_or_else(|| CommandError::Settings("add an API key first".into()))?;
+        return Ok((config, first.key));
+    }
+    if let Some(saved) = entry {
+        if !keeps_keys(&saved.config, &config) {
+            return Err(CommandError::Settings(
+                "add an API key for the new base URL first".into(),
+            ));
+        }
+        let store = state.secrets.clone();
+        let account = saved.config.id.clone();
+        let vouched = saved.vouched();
+        let keys = blocking(move || secrets::get_keys(store.as_ref(), &account, vouched)).await?;
+        let had_keys = !keys.is_empty();
+        if let Some(key) = saved.usable(keys).into_iter().next() {
+            return Ok((config, key));
+        }
+        if had_keys && !biwrite_providers::is_loopback_url(&config.base_url) {
+            return Err(CommandError::Settings(
+                "all keys of this provider are set aside".into(),
+            ));
+        }
+    }
+    if biwrite_providers::is_loopback_url(&config.base_url) {
+        return Ok((config, String::new()));
+    }
+    Err(CommandError::Settings("add an API key first".into()))
+}
+
+#[tauri::command]
+pub async fn list_provider_models(
+    state: Doc,
+    id: String,
+    provider: Option<ProviderConfig>,
+    key: Option<String>,
+) -> CommandResult<Vec<String>> {
+    let (config, api_key) = model_list_target(&state, &id, provider, key).await?;
+    Ok(list_models(&config, &api_key).await?)
 }
 
 #[tauri::command]
@@ -1225,5 +1282,113 @@ mod tests {
             &openai,
             &cfg(ProviderKind::Anthropic, "https://api.openai.com/v1")
         ));
+    }
+
+    #[tokio::test]
+    async fn model_list_uses_usable_saved_keys_pasted_keys_and_never_sends_keys_elsewhere() {
+        let dir = std::env::temp_dir().join(format!("biwrite-model-list-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = crate::pair_tests::app_state(&dir);
+
+        // Saved provider with two keys, the first ignored: uses the second key.
+        let k1 = "sk-first-0123456789abcdefghij";
+        let k2 = "sk-second-0123456789abcdefghij";
+        let parts = secrets::set_keys(
+            state.secrets.as_ref(),
+            "p-saved",
+            &[k1.into(), k2.into()],
+            None,
+        )
+        .unwrap();
+        {
+            let mut s = state.settings();
+            let mut ignored = std::collections::BTreeSet::new();
+            ignored.insert(key_fingerprint(k1));
+            s.providers.push(ProviderEntry {
+                config: ProviderConfig {
+                    id: "p-saved".into(),
+                    ..cfg(ProviderKind::OpenaiCompatible, "https://anyrouter.top/v1")
+                },
+                has_key: true,
+                key_count: 2,
+                key_names: Default::default(),
+                key_through: Default::default(),
+                key_parts: parts,
+                key_ignored: ignored,
+            });
+            state.persist(&s).unwrap();
+        }
+
+        let (resolved, key) = model_list_target(&state, "p-saved", None, None)
+            .await
+            .unwrap();
+        assert_eq!(resolved.base_url, "https://anyrouter.top/v1");
+        assert_eq!(key, k2);
+
+        // Switching API format on the same host keeps using the stored key.
+        let claude_draft = cfg(ProviderKind::Anthropic, "https://anyrouter.top/");
+        let (resolved, key) = model_list_target(&state, "p-saved", Some(claude_draft), None)
+            .await
+            .unwrap();
+        assert_eq!(resolved.kind, ProviderKind::Anthropic);
+        assert_eq!(resolved.base_url, "https://anyrouter.top");
+        assert_eq!(key, k2);
+
+        // When every key is set aside, none may be sent over the network.
+        {
+            let mut s = state.settings();
+            s.provider_mut("p-saved")
+                .unwrap()
+                .key_ignored
+                .insert(key_fingerprint(k2));
+            state.persist(&s).unwrap();
+        }
+        let err = model_list_target(&state, "p-saved", None, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("set aside"), "{err}");
+        {
+            let mut s = state.settings();
+            s.provider_mut("p-saved")
+                .unwrap()
+                .key_ignored
+                .remove(&key_fingerprint(k2));
+            state.persist(&s).unwrap();
+        }
+
+        // Changing to another host without pasting a key refuses to send the stored key.
+        let other_host = cfg(
+            ProviderKind::OpenaiCompatible,
+            "https://openrouter.ai/api/v1",
+        );
+        let err = model_list_target(&state, "p-saved", Some(other_host.clone()), None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("new base URL"), "{err}");
+
+        // Pasting a new key allows listing models on the new host or for an unsaved provider.
+        let pasted = "sk-fresh-0123456789abcdefghij";
+        let mut unsaved = other_host;
+        unsaved.id.clear();
+        unsaved.name.clear();
+        unsaved.model.clear();
+        let (resolved, key) =
+            model_list_target(&state, "", Some(unsaved), Some(format!("main: {pasted}")))
+                .await
+                .unwrap();
+        assert_eq!(resolved.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(key, pasted);
+
+        // Localhost needs no API key.
+        let mut local = cfg(ProviderKind::OpenaiCompatible, "http://localhost:11434/v1");
+        local.id.clear();
+        local.model.clear();
+        let (resolved, key) = model_list_target(&state, "", Some(local), None)
+            .await
+            .unwrap();
+        assert_eq!(resolved.base_url, "http://localhost:11434/v1");
+        assert!(key.is_empty());
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

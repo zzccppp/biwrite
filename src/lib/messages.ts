@@ -64,6 +64,14 @@ export const messages = {
   // ── Settings: language and translation pacing ─────────────────────
   "settings.language": { en: "Language", zh: "界面语言" },
   "settings.window": { en: "Window", zh: "窗口" },
+  "settings.textSize": { en: "Text size", zh: "正文字号" },
+  "settings.textSizeReset": { en: "Reset", zh: "默认" },
+  "settings.textSizeHint": {
+    en: "Source and translation panes ({inKey} larger, {outKey} smaller, {resetKey} default).",
+    zh: "原文区与译文区字号（{inKey} 增大，{outKey} 减小，{resetKey} 恢复默认）。",
+  },
+  "editor.fontSize": { en: "Text size: {px} px", zh: "正文字号：{px} px" },
+  "editor.fontSizeDefault": { en: "Text size: {px} px (default)", zh: "正文字号：{px} px（默认）" },
   "settings.closeToTray": {
     en: "Closing the window hides BiWrite in the tray",
     zh: "关闭窗口时隐藏到托盘",
@@ -1074,13 +1082,19 @@ export const messages = {
   "provider.model": { en: "Model", zh: "模型" },
   "provider.modelPlaceholder": { en: "model id", zh: "模型 ID" },
   "provider.listModels": { en: "List models", zh: "获取模型列表" },
+  "provider.showModels": { en: "Show models", zh: "展开模型列表" },
+  "provider.addCustomModel": { en: "+ Use “{model}”", zh: "+ 添加并使用「{model}」" },
+  "provider.models.empty": {
+    en: "The provider returned no models. Enter a model ID directly.",
+    zh: "接口未返回模型列表，可直接输入模型 ID。",
+  },
   "provider.models.one": {
     en: "{n} model available. Pick one from the model field.",
-    zh: "有 {n} 个可用模型，可在模型一栏中选择。",
+    zh: "有 {n} 个可用模型，可在下拉框中选择或直接输入。",
   },
   "provider.models.many": {
     en: "{n} models available. Pick one from the model field.",
-    zh: "有 {n} 个可用模型，可在模型一栏中选择。",
+    zh: "有 {n} 个可用模型，可在下拉框中选择或直接输入。",
   },
   "provider.effort": { en: "Effort", zh: "推理强度" },
   "provider.reasoningEffort": { en: "Reasoning effort", zh: "推理强度" },

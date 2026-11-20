@@ -70,7 +70,7 @@
   }
   .text.en {
     font-family: var(--font-prose);
-    font-size: 15.5px;
+    font-size: var(--zh-size);
     line-height: 1.7;
   }
   .text.heading {
@@ -79,7 +79,7 @@
   }
   .missing .text {
     font-family: var(--font-prose);
-    font-size: 14.5px;
+    font-size: calc(14.5px + var(--font-delta));
     color: var(--faint);
   }
 </style>
